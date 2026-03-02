@@ -1,0 +1,232 @@
+<!-- 
+  AutoTest AI - Sidebar Navigation Component
+  Include this in all pages within the body tag
+-->
+
+<aside class="sidebar" id="sidebar">
+  <!-- Logo Section -->
+  <div class="sidebar-logo">
+    <a href="./index.html" class="sidebar-logo-text">
+      AutoTest AI
+    </a>
+  </div>
+  
+  <!-- Navigation Links -->
+  <nav class="sidebar-nav">
+    <ul class="sidebar-nav-list">
+      <!-- 仪表盘 Dashboard -->
+      <li>
+        <a href="./index.html" class="sidebar-nav-item" data-page="index">
+          <i data-lucide="layout-dashboard"></i>
+          <span>仪表盘</span>
+        </a>
+      </li>
+      
+      <!-- US需求管理 -->
+      <li>
+        <a href="./us-management.html" class="sidebar-nav-item" data-page="us-management">
+          <i data-lucide="file-text"></i>
+          <span>US需求管理</span>
+          <span class="badge badge-cyan ml-auto" id="us-badge" style="display: none;">0</span>
+        </a>
+      </li>
+      
+      <!-- 测试用例 -->
+      <li>
+        <a href="./test-cases.html" class="sidebar-nav-item" data-page="test-cases">
+          <i data-lucide="check-square"></i>
+          <span>测试用例</span>
+          <span class="badge badge-purple ml-auto" id="tc-badge" style="display: none;">0</span>
+        </a>
+      </li>
+      
+      <!-- 脚本工作室 -->
+      <li>
+        <a href="./script-studio.html" class="sidebar-nav-item" data-page="script-studio">
+          <i data-lucide="code"></i>
+          <span>脚本工作室</span>
+        </a>
+      </li>
+      
+      <!-- 执行中心 -->
+      <li>
+        <a href="./execution-hub.html" class="sidebar-nav-item" data-page="execution-hub">
+          <i data-lucide="play-circle"></i>
+          <span>执行中心</span>
+          <span class="badge badge-green ml-auto flex items-center gap-1" id="exec-badge" style="display: none;">
+            <span class="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></span>
+            运行中
+          </span>
+        </a>
+      </li>
+      
+      <!-- 报告中心 -->
+      <li>
+        <a href="./reports.html" class="sidebar-nav-item" data-page="reports">
+          <i data-lucide="bar-chart-3"></i>
+          <span>报告中心</span>
+        </a>
+      </li>
+      
+      <!-- Divider -->
+      <li class="my-2">
+        <div class="divider"></div>
+      </li>
+      
+      <!-- 系统设置 -->
+      <li>
+        <a href="./settings.html" class="sidebar-nav-item" data-page="settings">
+          <i data-lucide="settings"></i>
+          <span>系统设置</span>
+        </a>
+      </li>
+    </ul>
+  </nav>
+  
+  <!-- User Profile Section -->
+  <div class="sidebar-footer">
+    <div class="sidebar-user" id="user-menu-trigger">
+      <div class="sidebar-user-avatar">
+        <span id="user-initials">AU</span>
+      </div>
+      <div class="sidebar-user-info">
+        <div class="sidebar-user-name" id="user-name">Admin User</div>
+        <div class="sidebar-user-role" id="user-role">管理员</div>
+      </div>
+      <i data-lucide="chevron-right" class="w-4 h-4 text-gray-500"></i>
+    </div>
+    
+    <!-- User Dropdown Menu (Hidden by default) -->
+    <div class="hidden absolute bottom-full left-4 right-4 mb-2 bg-[#1a1a25] border border-white/10 rounded-lg shadow-xl overflow-hidden" id="user-dropdown">
+      <a href="#" data-action="profile-settings" class="flex items-center gap-3 px-4 py-3 text-sm text-gray-300 hover:bg-white/5 hover:text-white transition-colors">
+        <i data-lucide="user" class="w-4 h-4"></i>
+        <span>个人设置</span>
+      </a>
+      <a href="./settings.html" class="flex items-center gap-3 px-4 py-3 text-sm text-gray-300 hover:bg-white/5 hover:text-white transition-colors">
+        <i data-lucide="settings-2" class="w-4 h-4"></i>
+        <span>系统设置</span>
+      </a>
+      <a href="#" class="flex items-center gap-3 px-4 py-3 text-sm text-gray-300 hover:bg-white/5 hover:text-white transition-colors" onclick="showHelpModal(); return false;">
+        <i data-lucide="help-circle" class="w-4 h-4"></i>
+        <span>帮助中心</span>
+      </a>
+      <div class="border-t border-white/10"></div>
+      <a href="#" class="flex items-center gap-3 px-4 py-3 text-sm text-red-400 hover:bg-red-500/10 transition-colors" onclick="handleLogout(); return false;">
+        <i data-lucide="log-out" class="w-4 h-4"></i>
+        <span>退出登录</span>
+      </a>
+    </div>
+  </div>
+</aside>
+
+<!-- Mobile Sidebar Toggle Button -->
+<button class="lg:hidden fixed top-4 left-4 z-50 p-2 bg-[#12121a] border border-white/10 rounded-lg" id="sidebar-toggle" onclick="toggleSidebar()">
+  <i data-lucide="menu" class="w-5 h-5"></i>
+</button>
+
+<!-- Mobile Sidebar Overlay -->
+<div class="lg:hidden fixed inset-0 bg-black/50 z-40 hidden" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+<script>
+  // Initialize sidebar active state
+  (function() {
+    const currentPage = window.location.pathname.split('/').pop().replace('.html', '') || 'index';
+    const navItems = document.querySelectorAll('.sidebar-nav-item');
+    
+    navItems.forEach(item => {
+      const itemPage = item.getAttribute('data-page');
+      if (itemPage === currentPage) {
+        item.classList.add('active');
+      }
+    });
+  })();
+  
+  // User dropdown toggle
+  (function() {
+    const trigger = document.getElementById('user-menu-trigger');
+    const dropdown = document.getElementById('user-dropdown');
+    
+    if (trigger && dropdown) {
+      trigger.addEventListener('click', function(e) {
+        e.stopPropagation();
+        dropdown.classList.toggle('hidden');
+      });
+      
+      document.addEventListener('click', function() {
+        dropdown.classList.add('hidden');
+      });
+    }
+  })();
+  
+  // Mobile sidebar toggle
+  function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebar-overlay');
+    
+    if (sidebar && overlay) {
+      sidebar.classList.toggle('open');
+      overlay.classList.toggle('hidden');
+      document.body.classList.toggle('overflow-hidden');
+    }
+  }
+  
+  // Logout handler
+  function handleLogout() {
+    if (typeof showToast === 'function') {
+      showToast('info', '正在退出登录...');
+    }
+    setTimeout(() => {
+      window.location.href = './login.html';
+    }, 1000);
+  }
+  
+  // Help modal handler
+  function showHelpModal() {
+    if (typeof showModal === 'function') {
+      showModal({
+        title: '帮助中心',
+        content: `
+          <div class="space-y-4">
+            <p class="text-gray-400">欢迎使用 AutoTest AI 智能自动化测试平台！</p>
+            <div class="space-y-2">
+              <h4 class="font-medium text-white">快速入门</h4>
+              <ul class="list-disc list-inside text-sm text-gray-400 space-y-1">
+                <li>在"US需求管理"中导入用户故事</li>
+                <li>AI 将自动解析并生成测试用例</li>
+                <li>在"脚本工作室"创建自动化脚本</li>
+                <li>在"执行中心"运行测试</li>
+                <li>在"报告中心"查看测试结果</li>
+              </ul>
+            </div>
+            <div class="space-y-2">
+              <h4 class="font-medium text-white">需要帮助？</h4>
+              <p class="text-sm text-gray-400">请联系技术支持团队或发送邮件至 support@autotest.ai</p>
+            </div>
+          </div>
+        `,
+        size: 'md'
+      });
+    }
+  }
+  
+  // Update badge counts (can be called from page scripts)
+  function updateNavBadge(badgeId, count) {
+    const badge = document.getElementById(badgeId);
+    if (badge) {
+      if (count > 0) {
+        badge.textContent = count > 99 ? '99+' : count;
+        badge.style.display = 'inline-flex';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+  }
+  
+  // Show execution indicator
+  function showExecutionIndicator(show) {
+    const badge = document.getElementById('exec-badge');
+    if (badge) {
+      badge.style.display = show ? 'inline-flex' : 'none';
+    }
+  }
+</script>

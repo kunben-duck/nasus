@@ -1,0 +1,199 @@
+- generic [active] [ref=e1]:
+  - complementary [ref=e2]:
+    - generic [ref=e4]:
+      - img [ref=e236]
+      - generic [ref=e8]: AutoTest AI
+    - navigation [ref=e9]:
+      - list [ref=e10]:
+        - listitem [ref=e11]:
+          - link "仪表盘" [ref=e12] [cursor=pointer]:
+            - /url: ./index.html
+            - img [ref=e238]
+            - generic [ref=e18]: 仪表盘
+        - listitem [ref=e19]:
+          - link "US需求管理 3" [ref=e20] [cursor=pointer]:
+            - /url: ./pages/us-management.html
+            - img [ref=e243]
+            - generic [ref=e24]: US需求管理
+            - generic [ref=e25]: "3"
+        - listitem [ref=e26]:
+          - link "测试用例 1.2k" [ref=e27] [cursor=pointer]:
+            - /url: ./pages/test-cases.html
+            - img [ref=e246]
+            - generic [ref=e31]: 测试用例
+            - generic [ref=e32]: 1.2k
+        - listitem [ref=e33]:
+          - link "脚本工作室" [ref=e34] [cursor=pointer]:
+            - /url: ./pages/script-studio.html
+            - img [ref=e249]
+            - generic [ref=e39]: 脚本工作室
+        - listitem [ref=e40]:
+          - link "执行中心" [ref=e41] [cursor=pointer]:
+            - /url: ./pages/execution-hub.html
+            - img [ref=e253]
+            - generic [ref=e45]: 执行中心
+        - listitem [ref=e47]:
+          - link "报告中心" [ref=e48] [cursor=pointer]:
+            - /url: ./pages/reports.html
+            - img [ref=e256]
+            - generic [ref=e51]: 报告中心
+        - listitem [ref=e52]:
+          - link "系统设置" [ref=e53] [cursor=pointer]:
+            - /url: ./pages/settings.html
+            - img [ref=e258]
+            - generic [ref=e57]: 系统设置
+    - generic [ref=e59]:
+      - generic [ref=e62]: 系统运行正常
+      - generic [ref=e63]: v2.1.0
+  - main [ref=e64]:
+    - generic [ref=e65]:
+      - generic [ref=e66]:
+        - heading "仪表盘" [level=1] [ref=e67]
+        - generic [ref=e68]: /
+        - generic [ref=e69]: 概览
+      - generic [ref=e70]:
+        - button [ref=e71]:
+          - img [ref=e261]
+        - button [ref=e76]:
+          - img [ref=e264]
+        - button "AD Admin 管理员" [ref=e82]:
+          - generic [ref=e83]: AD
+          - generic [ref=e84]:
+            - paragraph [ref=e85]: Admin
+            - paragraph [ref=e86]: 管理员
+    - generic [ref=e87]:
+      - generic [ref=e88]:
+        - generic [ref=e89] [cursor=pointer]:
+          - generic [ref=e90]:
+            - img [ref=e267]
+            - generic [ref=e94]: +12%
+          - generic [ref=e95]:
+            - paragraph [ref=e96]: 项目总数
+            - paragraph [ref=e97]: "12"
+            - paragraph [ref=e98]: +2 本月新增
+        - generic [ref=e99] [cursor=pointer]:
+          - generic [ref=e100]:
+            - img [ref=e269]
+            - generic [ref=e106]: +8%
+          - generic [ref=e107]:
+            - paragraph [ref=e108]: 测试用例
+            - paragraph [ref=e109]: 1,248
+            - paragraph [ref=e110]: +56 本周新增
+        - generic [ref=e111] [cursor=pointer]:
+          - generic [ref=e112]:
+            - img [ref=e273]
+            - generic [ref=e116]: +24%
+          - generic [ref=e117]:
+            - paragraph [ref=e118]: 执行次数
+            - paragraph [ref=e119]: 8,592
+            - paragraph [ref=e120]: 成功率 94.2%
+        - generic [ref=e121] [cursor=pointer]:
+          - generic [ref=e122]:
+            - img [ref=e275]
+            - generic [ref=e127]: +2.1%
+          - generic [ref=e128]:
+            - paragraph [ref=e129]: 通过率
+            - paragraph [ref=e130]: 94.2%
+            - paragraph [ref=e131]: 较上月提升
+      - generic [ref=e132]:
+        - generic [ref=e133]:
+          - generic [ref=e134]:
+            - heading "执行趋势" [level=3] [ref=e135]
+            - combobox [ref=e136]:
+              - option "最近30天" [selected]
+              - option "最近7天"
+              - option "最近90天"
+          - generic [ref=e137]:
+            - generic [ref=e278]:
+              - generic "0" [ref=e279]
+              - generic [ref=e280]: 2-14
+            - generic [ref=e281]:
+              - generic "0" [ref=e282]
+              - generic [ref=e283]: 2-15
+            - generic [ref=e284]:
+              - generic "0" [ref=e285]
+              - generic [ref=e286]: 2-16
+            - generic [ref=e287]:
+              - generic "0" [ref=e288]
+              - generic [ref=e289]: 2-17
+            - generic [ref=e290]:
+              - generic "0" [ref=e291]
+              - generic [ref=e292]: 2-18
+            - generic [ref=e293]:
+              - generic "0" [ref=e294]
+              - generic [ref=e295]: 2-19
+            - generic [ref=e296]:
+              - generic "5" [ref=e297]
+              - generic [ref=e298]: 2-20
+        - generic [ref=e140]:
+          - heading "状态分布" [level=3] [ref=e141]
+          - generic [ref=e143]:
+            - img [ref=e299]
+            - generic [ref=e304]:
+              - generic [ref=e305]: "17"
+              - generic [ref=e306]: 总执行
+          - generic [ref=e152]:
+            - generic [ref=e309]: 通过 (70.6%)
+            - generic [ref=e312]: 失败 (0.0%)
+            - generic [ref=e315]: 错误 (29.4%)
+            - generic [ref=e318]: 跳过 (0.0%)
+      - generic [ref=e165]:
+        - generic [ref=e166]:
+          - generic [ref=e167]:
+            - heading "最近活动" [level=3] [ref=e168]
+            - link "查看全部" [ref=e169] [cursor=pointer]:
+              - /url: "#"
+          - generic [ref=e170]:
+            - generic [ref=e319]:
+              - img [ref=e321]
+              - generic [ref=e323]:
+                - paragraph [ref=e324]: Negative scenario
+                - paragraph [ref=e325]: 2026-02-20 07:59:17
+            - generic [ref=e326]:
+              - img [ref=e328]
+              - generic [ref=e332]:
+                - paragraph [ref=e333]: Negative scenario - AI Script
+                - paragraph [ref=e334]: 2026-02-20 07:59:10
+            - generic [ref=e335]:
+              - img [ref=e337]
+              - generic [ref=e340]:
+                - paragraph [ref=e341]: 登录需求
+                - paragraph [ref=e342]: 2026-02-20 07:59:05
+            - generic [ref=e343]:
+              - img [ref=e345]
+              - generic [ref=e347]:
+                - paragraph [ref=e348]: Negative scenario
+                - paragraph [ref=e349]: 2026-02-20 07:58:54
+            - generic [ref=e350]:
+              - img [ref=e352]
+              - generic [ref=e356]:
+                - paragraph [ref=e357]: Negative scenario - AI Script
+                - paragraph [ref=e358]: 2026-02-20 07:58:54
+            - generic [ref=e359]:
+              - img [ref=e361]
+              - generic [ref=e364]:
+                - paragraph [ref=e365]: 登录需求
+                - paragraph [ref=e366]: 2026-02-20 07:58:53
+        - generic [ref=e209]:
+          - heading "快速操作" [level=3] [ref=e210]
+          - generic [ref=e211]:
+            - link "新建用例 创建新的测试用例" [ref=e212] [cursor=pointer]:
+              - /url: ./pages/test-cases.html
+              - img [ref=e367]
+              - paragraph [ref=e215]: 新建用例
+              - paragraph [ref=e216]: 创建新的测试用例
+            - link "导入US 从JIRA导入需求" [ref=e217] [cursor=pointer]:
+              - /url: ./pages/us-management.html
+              - img [ref=e368]
+              - paragraph [ref=e222]: 导入US
+              - paragraph [ref=e223]: 从JIRA导入需求
+            - link "开始执行 运行测试脚本" [ref=e224] [cursor=pointer]:
+              - /url: ./pages/execution-hub.html
+              - img [ref=e371]
+              - paragraph [ref=e228]: 开始执行
+              - paragraph [ref=e229]: 运行测试脚本
+            - link "查看报告 查看最新报告" [ref=e230] [cursor=pointer]:
+              - /url: ./pages/reports.html
+              - img [ref=e373]
+              - paragraph [ref=e234]: 查看报告
+              - paragraph [ref=e235]: 查看最新报告

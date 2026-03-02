@@ -1,0 +1,38 @@
+<!-- 
+  AutoTest AI - Footer Component
+  Simple footer with copyright information
+-->
+
+<footer class="footer">
+  <div class="flex flex-col items-center gap-2">
+    <p class="footer-text">
+      &copy; <span id="current-year">2024</span> AutoTest AI. All rights reserved.
+    </p>
+    <p class="text-xs text-gray-600">
+      智能自动化测试平台 | Intelligent Test Automation Platform
+    </p>
+    <div class="flex items-center gap-4 mt-2">
+      <a href="#" class="text-xs text-gray-500 hover:text-cyan-400 transition-colors" onclick="showToast('info', '隐私政策页面即将上线'); return false;">
+        隐私政策
+      </a>
+      <span class="text-gray-700">|</span>
+      <a href="#" class="text-xs text-gray-500 hover:text-cyan-400 transition-colors" onclick="showToast('info', '服务条款页面即将上线'); return false;">
+        服务条款
+      </a>
+      <span class="text-gray-700">|</span>
+      <a href="#" class="text-xs text-gray-500 hover:text-cyan-400 transition-colors" onclick="showToast('info', '版本 v1.0.0'); return false;">
+        版本 1.0.0
+      </a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Update current year automatically
+  (function() {
+    const yearElement = document.getElementById('current-year');
+    if (yearElement) {
+      yearElement.textContent = new Date().getFullYear();
+    }
+  })();
+</script>

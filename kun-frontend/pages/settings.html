@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>系统设置 | AutoTest AI</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background-color: #0a0a0f;
+      color: #ffffff;
+      margin: 0;
+      padding: 0;
+      overflow-x: hidden;
+    }
+    #particle-canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .glass-card {
+      background: rgba(18, 18, 26, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(20px);
+      border-radius: 12px;
+    }
+    .gradient-text {
+      background: linear-gradient(135deg, #00d4ff 0%, #7c3aed 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .nav-item-active {
+      background: rgba(0, 212, 255, 0.1);
+      border-left: 3px solid #00d4ff;
+    }
+    .tab-active {
+      color: #00d4ff;
+      border-bottom: 2px solid #00d4ff;
+    }
+    .toggle-checkbox:checked {
+      background-color: #00d4ff;
+      border-color: #00d4ff;
+    }
+  </style>
+</head>
+<body class="min-h-screen">
+  <canvas id="particle-canvas"></canvas>
+  
+  <aside class="fixed left-0 top-0 h-full w-60 bg-[#12121a] border-r border-white/5 z-50 flex flex-col">
+    <div class="h-16 flex items-center justify-center border-b border-white/5">
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00d4ff] to-[#7c3aed] flex items-center justify-center">
+          <i data-lucide="zap" class="w-5 h-5 text-white"></i>
+        </div>
+        <span class="text-lg font-bold gradient-text">AutoTest AI</span>
+      </div>
+    </div>
+    
+    <nav class="flex-1 py-4 px-3">
+      <ul class="space-y-1">
+        <li><a href="../index.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="layout-dashboard" class="w-5 h-5"></i><span class="text-sm font-medium flex-1">仪表盘</span></a></li>
+        <li><a href="./us-management.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="file-text" class="w-5 h-5"></i><span class="text-sm font-medium flex-1">US需求管理</span><span id="us-nav-count-badge" class="px-2 py-0.5 text-xs bg-[#7c3aed]/20 text-[#7c3aed] rounded-full">0</span></a></li>
+        <li><a href="./test-cases.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="check-square" class="w-5 h-5"></i><span class="text-sm font-medium flex-1">测试用例</span><span id="tc-nav-count-badge" class="px-2 py-0.5 text-xs bg-[#7c3aed]/20 text-[#7c3aed] rounded-full">0</span></a></li>
+        <li><a href="./script-studio.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="code-2" class="w-5 h-5"></i><span class="text-sm font-medium flex-1">脚本工作室</span></a></li>
+        <li><a href="./execution-hub.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="play-circle" class="w-5 h-5"></i><span class="text-sm font-medium flex-1">执行中心</span><span class="w-2 h-2 bg-[#10b981] rounded-full animate-pulse"></span></a></li>
+        <li><a href="./reports.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="bar-chart-3" class="w-5 h-5"></i><span class="text-sm font-medium flex-1">报告中心</span></a></li>
+        <li><a href="./settings.html" class="nav-item-active flex items-center gap-3 px-4 py-3 rounded-lg text-white"><i data-lucide="settings" class="w-5 h-5 text-[#00d4ff]"></i><span class="text-sm font-medium flex-1">系统设置</span></a></li>
+      </ul>
+    </nav>
+    
+    <div class="p-4 border-t border-white/5">
+      <div class="glass-card p-3 rounded-lg">
+        <div class="flex items-center gap-2 text-xs text-[#a1a1aa]"><div class="w-2 h-2 bg-[#10b981] rounded-full"></div><span>系统运行正常</span></div>
+        <div class="mt-2 text-xs text-[#71717a]">v2.1.0</div>
+      </div>
+    </div>
+  </aside>
+  
+  <main class="ml-60 min-h-screen relative z-10">
+    <header class="h-16 flex items-center px-6 border-b border-white/5 bg-transparent">
+      <h1 class="text-xl font-semibold text-white">系统设置</h1>
+    </header>
+    
+    <div class="p-6">
+      <!-- Tabs -->
+      <div class="flex gap-6 border-b border-white/5 mb-6">
+        <button class="tab-active px-1 py-3 text-sm font-medium transition-colors">通用设置</button>
+        <button class="px-1 py-3 text-sm font-medium text-[#a1a1aa] hover:text-white transition-colors">集成配置</button>
+        <button class="px-1 py-3 text-sm font-medium text-[#a1a1aa] hover:text-white transition-colors">项目管理</button>
+        <button class="px-1 py-3 text-sm font-medium text-[#a1a1aa] hover:text-white transition-colors">账户管理</button>
+        <button class="px-1 py-3 text-sm font-medium text-[#a1a1aa] hover:text-white transition-colors">API密钥</button>
+        <button class="px-1 py-3 text-sm font-medium text-[#a1a1aa] hover:text-white transition-colors">通知设置</button>
+        <button class="px-1 py-3 text-sm font-medium text-[#a1a1aa] hover:text-white transition-colors">执行配置</button>
+      </div>
+      
+      <!-- General Settings -->
+      <div class="max-w-2xl space-y-6">
+        <div class="glass-card p-6">
+          <h3 class="text-lg font-semibold mb-4">平台信息</h3>
+          <div class="space-y-4">
+            <div>
+              <label class="block text-sm text-[#a1a1aa] mb-2">平台名称</label>
+              <input type="text" value="AutoTest AI" class="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+            </div>
+            <div>
+              <label class="block text-sm text-[#a1a1aa] mb-2">Logo</label>
+              <div class="flex items-center gap-4">
+                <div class="w-16 h-16 rounded-lg bg-gradient-to-br from-[#00d4ff] to-[#7c3aed] flex items-center justify-center">
+                  <i data-lucide="zap" class="w-8 h-8 text-white"></i>
+                </div>
+                <button class="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-sm">更换 Logo</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="glass-card p-6">
+          <h3 class="text-lg font-semibold mb-4">外观设置</h3>
+          <div class="space-y-4">
+            <div>
+              <label class="block text-sm text-[#a1a1aa] mb-2">主题</label>
+              <div class="flex gap-2">
+                <button class="flex-1 py-2 rounded-lg bg-[#00d4ff]/20 text-[#00d4ff] text-sm font-medium">深色</button>
+                <button class="flex-1 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-sm text-[#a1a1aa]">浅色</button>
+                <button class="flex-1 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-sm text-[#a1a1aa]">自动</button>
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm text-[#a1a1aa] mb-2">语言</label>
+              <select class="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+                <option>简体中文</option>
+                <option>English</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm text-[#a1a1aa] mb-2">时区</label>
+              <select class="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+                <option>Asia/Shanghai (UTC+8)</option>
+                <option>Asia/Tokyo (UTC+9)</option>
+                <option>America/New_York (UTC-5)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        
+        <div class="glass-card p-6">
+          <h3 class="text-lg font-semibold mb-4">系统选项</h3>
+          <div class="space-y-4">
+            <label class="flex items-center justify-between">
+              <div>
+                <p class="text-sm font-medium">自动保存</p>
+                <p class="text-xs text-[#71717a]">自动保存编辑中的内容</p>
+              </div>
+              <input type="checkbox" class="w-5 h-5 rounded border-white/20 bg-white/5 toggle-checkbox" checked>
+            </label>
+            <label class="flex items-center justify-between">
+              <div>
+                <p class="text-sm font-medium">启用通知</p>
+                <p class="text-xs text-[#71717a]">接收系统和执行通知</p>
+              </div>
+              <input type="checkbox" class="w-5 h-5 rounded border-white/20 bg-white/5 toggle-checkbox" checked>
+            </label>
+            <label class="flex items-center justify-between">
+              <div>
+                <p class="text-sm font-medium">匿名数据收集</p>
+                <p class="text-xs text-[#71717a]">帮助我们改进产品</p>
+              </div>
+              <input type="checkbox" class="w-5 h-5 rounded border-white/20 bg-white/5 toggle-checkbox">
+            </label>
+          </div>
+        </div>
+        
+        <div class="flex justify-end gap-3">
+          <button class="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-sm">重置</button>
+          <button onclick="saveSettings()" class="px-4 py-2 rounded-lg bg-gradient-to-r from-[#00d4ff] to-[#7c3aed] hover:opacity-90 transition-opacity text-sm font-medium">保存设置</button>
+        </div>
+      </div>
+    </div>
+  </main>
+  
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      lucide.createIcons();
+      initParticleBackground();
+    });
+    
+    function saveSettings() {
+      showToast('设置已保存', 'success');
+    }
+    
+    function showToast(message, type) {
+      const toast = document.createElement('div');
+      toast.className = `fixed bottom-4 right-4 px-4 py-3 rounded-lg glass-card z-50 flex items-center gap-2 ${type === 'error' ? 'text-[#ef4444]' : type === 'success' ? 'text-[#10b981]' : 'text-[#00d4ff]'}`;
+      toast.innerHTML = `<i data-lucide="${type === 'error' ? 'alert-circle' : type === 'success' ? 'check-circle' : 'info'}" class="w-4 h-4"></i><span class="text-sm">${message}</span>`;
+      document.body.appendChild(toast);
+      lucide.createIcons();
+      setTimeout(() => toast.remove(), 3000);
+    }
+    
+    function initParticleBackground() {
+      const canvas = document.getElementById('particle-canvas');
+      if (!canvas) return;
+      
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+      let renderer;
+      try {
+        renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+      } catch (error) {
+        console.warn('Particle background disabled:', error.message);
+        return;
+      }
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      
+      const particleCount = 60;
+      const positions = new Float32Array(particleCount * 3);
+      const velocities = [];
+      const color1 = new THREE.Color('#00d4ff');
+      const color2 = new THREE.Color('#7c3aed');
+      const colors = new Float32Array(particleCount * 3);
+      
+      for (let i = 0; i < particleCount; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 20;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 20;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 10;
+        
+        velocities.push({
+          x: (Math.random() - 0.5) * 0.01,
+          y: (Math.random() - 0.5) * 0.01,
+          z: (Math.random() - 0.5) * 0.005
+        });
+        
+        const mixFactor = Math.random();
+        const color = color1.clone().lerp(color2, mixFactor);
+        colors[i * 3] = color.r;
+        colors[i * 3 + 1] = color.g;
+        colors[i * 3 + 2] = color.b;
+      }
+      
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      
+      const material = new THREE.PointsMaterial({
+        size: 0.08,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending
+      });
+      
+      const particles = new THREE.Points(geometry, material);
+      scene.add(particles);
+      
+      camera.position.z = 8;
+      
+      let mouseX = 0, mouseY = 0;
+      const handleMouseMove = (e) => {
+        mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+        mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
+      };
+      window.addEventListener('mousemove', handleMouseMove, { passive: true });
+      
+      let animationId;
+      const animate = () => {
+        animationId = requestAnimationFrame(animate);
+        const posArray = geometry.attributes.position.array;
+        
+        for (let i = 0; i < particleCount; i++) {
+          posArray[i * 3] += velocities[i].x;
+          posArray[i * 3 + 1] += velocities[i].y;
+          posArray[i * 3 + 2] += velocities[i].z;
+          
+          const dx = mouseX * 5 - posArray[i * 3];
+          const dy = mouseY * 5 - posArray[i * 3 + 1];
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          
+          if (dist < 3) {
+            posArray[i * 3] -= dx * 0.01;
+            posArray[i * 3 + 1] -= dy * 0.01;
+          }
+          
+          if (Math.abs(posArray[i * 3]) > 10) velocities[i].x *= -1;
+          if (Math.abs(posArray[i * 3 + 1]) > 10) velocities[i].y *= -1;
+          if (Math.abs(posArray[i * 3 + 2]) > 5) velocities[i].z *= -1;
+        }
+        
+        geometry.attributes.position.needsUpdate = true;
+        particles.rotation.y += 0.0005;
+        renderer.render(scene, camera);
+      };
+      animate();
+      
+      const handleResize = () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      };
+      window.addEventListener('resize', handleResize, { passive: true });
+    }
+  </script>
+  <script src="../shared/app-runtime.js?v=20260226-global-sidebar-toggle-fix4"></script>
+  <script src="../shared/app-pages.js?v=20260226-global-sidebar-toggle-fix4"></script>
+</body>
+</html>

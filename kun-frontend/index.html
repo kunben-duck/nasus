@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>仪表盘 | AutoTest AI</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background-color: #0a0a0f;
+      color: #ffffff;
+      margin: 0;
+      padding: 0;
+      overflow-x: hidden;
+    }
+    #particle-canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .glass-card {
+      background: rgba(18, 18, 26, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(20px);
+      border-radius: 12px;
+    }
+    .gradient-text {
+      background: linear-gradient(135deg, #00d4ff 0%, #7c3aed 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .nav-item-active {
+      background: rgba(0, 212, 255, 0.1);
+      border-left: 3px solid #00d4ff;
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fade-in-up {
+      animation: fadeInUp 0.5s ease forwards;
+      opacity: 0;
+    }
+    .stagger-1 { animation-delay: 0.1s; }
+    .stagger-2 { animation-delay: 0.2s; }
+    .stagger-3 { animation-delay: 0.3s; }
+    .stagger-4 { animation-delay: 0.4s; }
+    .stagger-5 { animation-delay: 0.5s; }
+    .chart-bar {
+      transition: height 0.5s ease;
+    }
+    .chart-bar:hover {
+      opacity: 0.8;
+    }
+  </style>
+</head>
+<body class="min-h-screen">
+  <!-- 3D Particle Background -->
+  <canvas id="particle-canvas"></canvas>
+  
+  <!-- Sidebar -->
+  <aside class="fixed left-0 top-0 h-full w-60 bg-[#12121a] border-r border-white/5 z-50 flex flex-col">
+    <!-- Logo -->
+    <div class="h-16 flex items-center justify-center border-b border-white/5">
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00d4ff] to-[#7c3aed] flex items-center justify-center">
+          <i data-lucide="zap" class="w-5 h-5 text-white"></i>
+        </div>
+        <span class="text-lg font-bold gradient-text">AutoTest AI</span>
+      </div>
+    </div>
+    
+    <!-- Navigation -->
+    <nav class="flex-1 py-4 px-3">
+      <ul class="space-y-1">
+        <li>
+          <a href="./index.html" class="nav-item-active flex items-center gap-3 px-4 py-3 rounded-lg text-white">
+            <i data-lucide="layout-dashboard" class="w-5 h-5 text-[#00d4ff]"></i>
+            <span class="text-sm font-medium flex-1">仪表盘</span>
+          </a>
+        </li>
+        <li>
+          <a href="./pages/us-management.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all">
+            <i data-lucide="file-text" class="w-5 h-5 group-hover:text-[#00d4ff]"></i>
+            <span class="text-sm font-medium flex-1">US需求管理</span>
+            <span id="us-nav-count-badge" class="px-2 py-0.5 text-xs bg-[#7c3aed]/20 text-[#7c3aed] rounded-full">0</span>
+          </a>
+        </li>
+        <li>
+          <a href="./pages/test-cases.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all">
+            <i data-lucide="check-square" class="w-5 h-5"></i>
+            <span class="text-sm font-medium flex-1">测试用例</span>
+            <span id="tc-nav-count-badge" class="px-2 py-0.5 text-xs bg-[#7c3aed]/20 text-[#7c3aed] rounded-full">0</span>
+          </a>
+        </li>
+        <li>
+          <a href="./pages/script-studio.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all">
+            <i data-lucide="code-2" class="w-5 h-5"></i>
+            <span class="text-sm font-medium flex-1">脚本工作室</span>
+          </a>
+        </li>
+        <li>
+          <a href="./pages/execution-hub.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all">
+            <i data-lucide="play-circle" class="w-5 h-5"></i>
+            <span class="text-sm font-medium flex-1">执行中心</span>
+            <span class="w-2 h-2 bg-[#10b981] rounded-full animate-pulse"></span>
+          </a>
+        </li>
+        <li>
+          <a href="./pages/reports.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all">
+            <i data-lucide="bar-chart-3" class="w-5 h-5"></i>
+            <span class="text-sm font-medium flex-1">报告中心</span>
+          </a>
+        </li>
+        <li>
+          <a href="./pages/settings.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all">
+            <i data-lucide="settings" class="w-5 h-5"></i>
+            <span class="text-sm font-medium flex-1">系统设置</span>
+          </a>
+        </li>
+      </ul>
+    </nav>
+    
+    <!-- Bottom section -->
+    <div class="p-4 border-t border-white/5">
+      <div class="glass-card p-3 rounded-lg">
+        <div class="flex items-center gap-2 text-xs text-[#a1a1aa]">
+          <div class="w-2 h-2 bg-[#10b981] rounded-full"></div>
+          <span>系统运行正常</span>
+        </div>
+        <div class="mt-2 text-xs text-[#71717a]">v2.1.0</div>
+      </div>
+    </div>
+  </aside>
+  
+  <!-- Main Content -->
+  <main class="ml-60 min-h-screen relative z-10">
+    <!-- Header -->
+    <header class="h-16 flex items-center justify-between px-6 border-b border-white/5 bg-transparent">
+      <div class="flex items-center gap-2">
+        <h1 class="text-xl font-semibold text-white">仪表盘</h1>
+        <span class="text-[#71717a]">/</span>
+        <span class="text-sm text-[#a1a1aa]">概览</span>
+      </div>
+      
+      <div class="flex items-center gap-4">
+        <button id="dashboard-search-trigger" title="搜索" class="p-2 text-[#a1a1aa] hover:text-white hover:bg-white/5 rounded-lg transition-colors">
+          <i data-lucide="search" class="w-5 h-5"></i>
+        </button>
+        
+        <div class="relative" id="notification-dropdown">
+          <button onclick="toggleNotifications()" class="p-2 text-[#a1a1aa] hover:text-white hover:bg-white/5 rounded-lg transition-colors relative">
+            <i data-lucide="bell" class="w-5 h-5"></i>
+            <span class="absolute top-1 right-1 w-2 h-2 bg-[#ef4444] rounded-full"></span>
+          </button>
+          <div id="notifications-panel" class="hidden absolute right-0 top-full mt-2 w-80 glass-card rounded-xl p-4 z-50">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="font-semibold">通知</h3>
+              <span class="text-xs text-[#00d4ff] cursor-pointer">全部标记为已读</span>
+            </div>
+            <div class="space-y-2">
+              <div class="p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-colors cursor-pointer">
+                <div class="flex items-center gap-2">
+                  <div class="w-2 h-2 rounded-full bg-[#10b981]"></div>
+                  <p class="font-medium text-sm">测试执行完成</p>
+                </div>
+                <p class="text-xs text-[#a1a1aa] mt-1">项目 "电商平台" 的回归测试已完成</p>
+                <p class="text-xs text-[#71717a] mt-1">5分钟前</p>
+              </div>
+              <div class="p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-colors cursor-pointer">
+                <div class="flex items-center gap-2">
+                  <div class="w-2 h-2 rounded-full bg-[#3b82f6]"></div>
+                  <p class="font-medium text-sm">US解析成功</p>
+                </div>
+                <p class="text-xs text-[#a1a1aa] mt-1">US-1234 已成功解析并生成测试用例</p>
+                <p class="text-xs text-[#71717a] mt-1">1小时前</p>
+              </div>
+              <div class="p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-colors cursor-pointer">
+                <div class="flex items-center gap-2">
+                  <div class="w-2 h-2 rounded-full bg-[#ef4444]"></div>
+                  <p class="font-medium text-sm">执行失败</p>
+                </div>
+                <p class="text-xs text-[#a1a1aa] mt-1">脚本 "登录流程" 执行失败</p>
+                <p class="text-xs text-[#71717a] mt-1">2小时前</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="relative" id="user-dropdown">
+          <button onclick="toggleUserMenu()" class="flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 transition-colors">
+            <div class="w-8 h-8 rounded-full bg-gradient-to-br from-[#00d4ff] to-[#7c3aed] flex items-center justify-center text-sm font-medium">AD</div>
+            <div class="hidden md:block text-left">
+              <p class="text-sm font-medium">Admin</p>
+              <p class="text-xs text-[#71717a]">管理员</p>
+            </div>
+          </button>
+          <div id="user-menu" class="hidden absolute right-0 top-full mt-2 w-48 glass-card rounded-xl p-2 z-50">
+            <a href="#" data-action="profile-settings" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors">
+              <i data-lucide="user" class="w-4 h-4"></i>
+              <span class="text-sm">个人设置</span>
+            </a>
+            <a href="./pages/settings.html" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors">
+              <i data-lucide="settings" class="w-4 h-4"></i>
+              <span class="text-sm">系统设置</span>
+            </a>
+            <div class="my-1 h-px bg-white/10"></div>
+            <a href="#" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-[#ef4444]">
+              <i data-lucide="log-out" class="w-4 h-4"></i>
+              <span class="text-sm">退出登录</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </header>
+    
+    <!-- Dashboard Content -->
+    <div class="p-6">
+      <!-- Stats Cards Row -->
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+        <div class="glass-card p-6 animate-fade-in-up stagger-1 hover:scale-[1.02] transition-transform duration-300 cursor-pointer">
+          <div class="flex items-start justify-between">
+            <div class="w-12 h-12 rounded-xl flex items-center justify-center" style="background-color: rgba(0, 212, 255, 0.2);">
+              <i data-lucide="folder" class="w-6 h-6" style="color: #00d4ff;"></i>
+            </div>
+            <span class="text-xs px-2 py-1 rounded-full" style="backgroundColor: rgba(59, 130, 246, 0.2); color: #3b82f6;">实时</span>
+          </div>
+          <div class="mt-4">
+            <p class="text-sm text-[#a1a1aa]">项目总数</p>
+            <p class="text-2xl font-bold mt-1" id="stat-projects">0</p>
+            <p class="text-xs text-[#71717a] mt-1">当前账号可访问的项目空间（租户）数量</p>
+          </div>
+        </div>
+        
+        <div class="glass-card p-6 animate-fade-in-up stagger-2 hover:scale-[1.02] transition-transform duration-300 cursor-pointer">
+          <div class="flex items-start justify-between">
+            <div class="w-12 h-12 rounded-xl flex items-center justify-center" style="background-color: rgba(124, 58, 237, 0.2);">
+              <i data-lucide="file-text" class="w-6 h-6" style="color: #7c3aed;"></i>
+            </div>
+            <span class="text-xs px-2 py-1 rounded-full" style="backgroundColor: rgba(59, 130, 246, 0.2); color: #3b82f6;">实时</span>
+          </div>
+          <div class="mt-4">
+            <p class="text-sm text-[#a1a1aa]">US总数</p>
+            <p class="text-2xl font-bold mt-1" id="stat-us">0</p>
+            <p class="text-xs text-[#71717a] mt-1">当前项目空间下的用户故事总量</p>
+          </div>
+        </div>
+        
+        <div class="glass-card p-6 animate-fade-in-up stagger-3 hover:scale-[1.02] transition-transform duration-300 cursor-pointer">
+          <div class="flex items-start justify-between">
+            <div class="w-12 h-12 rounded-xl flex items-center justify-center" style="background-color: rgba(16, 185, 129, 0.2);">
+              <i data-lucide="file-check" class="w-6 h-6" style="color: #10b981;"></i>
+            </div>
+            <span class="text-xs px-2 py-1 rounded-full" style="backgroundColor: rgba(59, 130, 246, 0.2); color: #3b82f6;">实时</span>
+          </div>
+          <div class="mt-4">
+            <p class="text-sm text-[#a1a1aa]">测试用例</p>
+            <p class="text-2xl font-bold mt-1" id="stat-cases">0</p>
+            <p class="text-xs text-[#71717a] mt-1">系统中已维护的测试用例总量</p>
+          </div>
+        </div>
+        
+        <div class="glass-card p-6 animate-fade-in-up stagger-4 hover:scale-[1.02] transition-transform duration-300 cursor-pointer">
+          <div class="flex items-start justify-between">
+            <div class="w-12 h-12 rounded-xl flex items-center justify-center" style="background-color: rgba(59, 130, 246, 0.2);">
+              <i data-lucide="trending-up" class="w-6 h-6" style="color: #3b82f6;"></i>
+            </div>
+            <span class="text-xs px-2 py-1 rounded-full" style="backgroundColor: rgba(59, 130, 246, 0.2); color: #3b82f6;">实时</span>
+          </div>
+          <div class="mt-4">
+            <p class="text-sm text-[#a1a1aa]">通过率</p>
+            <p class="text-2xl font-bold mt-1" id="stat-passrate">0%</p>
+            <p class="text-xs text-[#71717a] mt-1">通过执行数 / 总执行数（实时计算）</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Charts Row -->
+      <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6">
+        <div class="lg:col-span-3 glass-card p-6 animate-fade-in-up stagger-3">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">执行趋势</h3>
+            <select id="dashboard-trend-range" class="bg-white/5 border border-white/10 rounded-lg px-3 py-1 text-sm">
+              <option value="30" selected>最近30天</option>
+              <option value="7">最近7天</option>
+              <option value="90">最近90天</option>
+            </select>
+          </div>
+          <div id="dashboard-trend-bars" class="h-64 flex items-end gap-3">
+            <div class="w-full h-full flex items-end">
+              <span class="text-xs text-[#71717a]">加载中...</span>
+            </div>
+          </div>
+        </div>
+        
+        <div class="lg:col-span-2 glass-card p-6 animate-fade-in-up stagger-4">
+          <h3 class="text-lg font-semibold mb-4">状态分布</h3>
+          <div class="flex items-center justify-center">
+            <div id="dashboard-status-donut" class="relative w-40 h-40">
+              <svg viewBox="0 0 100 100" class="w-full h-full -rotate-90">
+                <circle cx="50" cy="50" r="40" fill="none" stroke="#10b981" stroke-width="12" stroke-dasharray="170 251.2" stroke-dashoffset="0"></circle>
+                <circle cx="50" cy="50" r="40" fill="none" stroke="#ef4444" stroke-width="12" stroke-dasharray="38 251.2" stroke-dashoffset="-170"></circle>
+                <circle cx="50" cy="50" r="40" fill="none" stroke="#f59e0b" stroke-width="12" stroke-dasharray="25 251.2" stroke-dashoffset="-208"></circle>
+                <circle cx="50" cy="50" r="40" fill="none" stroke="#3b82f6" stroke-width="12" stroke-dasharray="18 251.2" stroke-dashoffset="-233"></circle>
+              </svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-center">
+                <span class="text-2xl font-bold">1,248</span>
+                <span class="text-xs text-[#71717a]">总用例</span>
+              </div>
+            </div>
+          </div>
+          <div id="dashboard-status-legend" class="mt-4 grid grid-cols-2 gap-2">
+            <div class="flex items-center gap-2">
+              <div class="w-3 h-3 rounded-full bg-[#10b981]"></div>
+              <span class="text-xs text-[#a1a1aa]">通过 (68%)</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <div class="w-3 h-3 rounded-full bg-[#ef4444]"></div>
+              <span class="text-xs text-[#a1a1aa]">失败 (15%)</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <div class="w-3 h-3 rounded-full bg-[#f59e0b]"></div>
+              <span class="text-xs text-[#a1a1aa]">跳过 (10%)</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <div class="w-3 h-3 rounded-full bg-[#3b82f6]"></div>
+              <span class="text-xs text-[#a1a1aa]">运行中 (7%)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Bottom Row -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2 glass-card p-6 animate-fade-in-up stagger-5">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">最近活动</h3>
+            <a href="#" class="text-sm text-[#00d4ff] hover:underline">查看全部</a>
+          </div>
+          <div id="dashboard-recent-activities" class="space-y-3">
+            <div class="flex items-start gap-3 p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
+              <div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style="background-color: rgba(16, 185, 129, 0.2);">
+                <i data-lucide="check-circle" class="w-4 h-4 text-[#10b981]"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm">测试套件 "回归测试" 执行完成</p>
+                <p class="text-xs text-[#71717a] mt-1">5分钟前</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
+              <div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style="background-color: rgba(0, 212, 255, 0.2);">
+                <i data-lucide="file-text" class="w-4 h-4 text-[#00d4ff]"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm">US-1234 已成功解析并生成 5 个测试用例</p>
+                <p class="text-xs text-[#71717a] mt-1">1小时前</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
+              <div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style="background-color: rgba(59, 130, 246, 0.2);">
+                <i data-lucide="play" class="w-4 h-4 text-[#3b82f6]"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm">开始执行测试套件 "冒烟测试"</p>
+                <p class="text-xs text-[#71717a] mt-1">2小时前</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
+              <div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style="background-color: rgba(239, 68, 68, 0.2);">
+                <i data-lucide="alert-circle" class="w-4 h-4 text-[#ef4444]"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm">脚本 "登录流程" 执行失败</p>
+                <p class="text-xs text-[#71717a] mt-1">3小时前</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-3 p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-colors">
+              <div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style="background-color: rgba(124, 58, 237, 0.2);">
+                <i data-lucide="user" class="w-4 h-4 text-[#7c3aed]"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm">管理员导入了 12 个 US</p>
+                <p class="text-xs text-[#71717a] mt-1">5小时前</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="glass-card p-6 animate-fade-in-up stagger-5">
+          <h3 class="text-lg font-semibold mb-4">快速操作</h3>
+          <div class="grid grid-cols-2 gap-3">
+            <a href="./pages/test-cases.html" class="group p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 hover:border-white/10 transition-all duration-300">
+              <div class="w-10 h-10 rounded-lg flex items-center justify-center mb-3 transition-transform group-hover:scale-110" style="background-color: rgba(0, 212, 255, 0.2);">
+                <i data-lucide="plus" class="w-5 h-5 text-[#00d4ff]"></i>
+              </div>
+              <p class="font-medium text-sm">新建用例</p>
+              <p class="text-xs text-[#71717a] mt-1">创建新的测试用例</p>
+            </a>
+            <a href="./pages/us-management.html" class="group p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 hover:border-white/10 transition-all duration-300">
+              <div class="w-10 h-10 rounded-lg flex items-center justify-center mb-3 transition-transform group-hover:scale-110" style="background-color: rgba(124, 58, 237, 0.2);">
+                <i data-lucide="upload" class="w-5 h-5 text-[#7c3aed]"></i>
+              </div>
+              <p class="font-medium text-sm">导入US</p>
+              <p class="text-xs text-[#71717a] mt-1">从JIRA导入需求</p>
+            </a>
+            <a href="./pages/execution-hub.html" class="group p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 hover:border-white/10 transition-all duration-300">
+              <div class="w-10 h-10 rounded-lg flex items-center justify-center mb-3 transition-transform group-hover:scale-110" style="background-color: rgba(16, 185, 129, 0.2);">
+                <i data-lucide="play" class="w-5 h-5 text-[#10b981]"></i>
+              </div>
+              <p class="font-medium text-sm">开始执行</p>
+              <p class="text-xs text-[#71717a] mt-1">运行测试脚本</p>
+            </a>
+            <a href="./pages/reports.html" class="group p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 hover:border-white/10 transition-all duration-300">
+              <div class="w-10 h-10 rounded-lg flex items-center justify-center mb-3 transition-transform group-hover:scale-110" style="background-color: rgba(245, 158, 11, 0.2);">
+                <i data-lucide="bar-chart-3" class="w-5 h-5 text-[#f59e0b]"></i>
+              </div>
+              <p class="font-medium text-sm">查看报告</p>
+              <p class="text-xs text-[#71717a] mt-1">查看最新报告</p>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+  
+  <script>
+    // Initialize Lucide icons
+    document.addEventListener('DOMContentLoaded', () => {
+      lucide.createIcons();
+      initParticleBackground();
+    });
+    
+    // Toggle notifications
+    function toggleNotifications() {
+      const panel = document.getElementById('notifications-panel');
+      panel.classList.toggle('hidden');
+      document.getElementById('user-menu').classList.add('hidden');
+    }
+    
+    // Toggle user menu
+    function toggleUserMenu() {
+      const menu = document.getElementById('user-menu');
+      menu.classList.toggle('hidden');
+      document.getElementById('notifications-panel').classList.add('hidden');
+    }
+    
+    // Close dropdowns when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('#notification-dropdown')) {
+        document.getElementById('notifications-panel').classList.add('hidden');
+      }
+      if (!e.target.closest('#user-dropdown')) {
+        document.getElementById('user-menu').classList.add('hidden');
+      }
+    });
+    
+    // 3D Particle Background
+    function initParticleBackground() {
+      const canvas = document.getElementById('particle-canvas');
+      if (!canvas) return;
+      
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+      let renderer;
+      try {
+        renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+      } catch (error) {
+        console.warn('Particle background disabled:', error.message);
+        return;
+      }
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      
+      const particleCount = 80;
+      const positions = new Float32Array(particleCount * 3);
+      const velocities = [];
+      const color1 = new THREE.Color('#00d4ff');
+      const color2 = new THREE.Color('#7c3aed');
+      const colors = new Float32Array(particleCount * 3);
+      
+      for (let i = 0; i < particleCount; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 20;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 20;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 10;
+        
+        velocities.push({
+          x: (Math.random() - 0.5) * 0.01,
+          y: (Math.random() - 0.5) * 0.01,
+          z: (Math.random() - 0.5) * 0.005
+        });
+        
+        const mixFactor = Math.random();
+        const color = color1.clone().lerp(color2, mixFactor);
+        colors[i * 3] = color.r;
+        colors[i * 3 + 1] = color.g;
+        colors[i * 3 + 2] = color.b;
+      }
+      
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      
+      const material = new THREE.PointsMaterial({
+        size: 0.08,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending
+      });
+      
+      const particles = new THREE.Points(geometry, material);
+      scene.add(particles);
+      
+      camera.position.z = 8;
+      
+      let mouseX = 0, mouseY = 0;
+      const handleMouseMove = (e) => {
+        mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+        mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
+      };
+      window.addEventListener('mousemove', handleMouseMove, { passive: true });
+      
+      let animationId;
+      const animate = () => {
+        animationId = requestAnimationFrame(animate);
+        const posArray = geometry.attributes.position.array;
+        
+        for (let i = 0; i < particleCount; i++) {
+          posArray[i * 3] += velocities[i].x;
+          posArray[i * 3 + 1] += velocities[i].y;
+          posArray[i * 3 + 2] += velocities[i].z;
+          
+          const dx = mouseX * 5 - posArray[i * 3];
+          const dy = mouseY * 5 - posArray[i * 3 + 1];
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          
+          if (dist < 3) {
+            posArray[i * 3] -= dx * 0.01;
+            posArray[i * 3 + 1] -= dy * 0.01;
+          }
+          
+          if (Math.abs(posArray[i * 3]) > 10) velocities[i].x *= -1;
+          if (Math.abs(posArray[i * 3 + 1]) > 10) velocities[i].y *= -1;
+          if (Math.abs(posArray[i * 3 + 2]) > 5) velocities[i].z *= -1;
+        }
+        
+        geometry.attributes.position.needsUpdate = true;
+        particles.rotation.y += 0.0005;
+        renderer.render(scene, camera);
+      };
+      animate();
+      
+      const handleResize = () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      };
+      window.addEventListener('resize', handleResize, { passive: true });
+    }
+  </script>
+  <script src="./shared/app-runtime.js?v=20260226-global-sidebar-toggle-fix4"></script>
+  <script src="./shared/app-pages.js?v=20260226-global-sidebar-toggle-fix4"></script>
+</body>
+</html>

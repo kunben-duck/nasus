@@ -1,0 +1,9 @@
+{
+  "name": "autotest-playwright-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}

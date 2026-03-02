@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoTest Platform</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div id="toast-container" class="toast-container"></div>
+
+  <div id="login-view" class="login-layout">
+    <div class="login-card">
+      <h1>AutoTest Platform</h1>
+      <p>Java + Spring AI 自动化测试平台</p>
+      <form id="login-form" class="form-grid">
+        <label>
+          <span>用户名</span>
+          <input id="login-username" type="text" value="admin" required>
+        </label>
+        <label>
+          <span>密码</span>
+          <input id="login-password" type="password" value="admin123" required>
+        </label>
+        <button type="submit" class="btn btn-primary">登录</button>
+      </form>
+      <p class="hint">默认账号：admin / admin123</p>
+      <p id="login-error" class="error-text hidden"></p>
+    </div>
+  </div>
+
+  <div id="app-shell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand">AutoTest</div>
+      <nav class="nav-list">
+        <button class="nav-item active" data-section="dashboard">仪表盘</button>
+        <button class="nav-item" data-section="user-stories">US管理</button>
+        <button class="nav-item" data-section="test-cases">测试用例</button>
+        <button class="nav-item" data-section="test-scripts">测试脚本</button>
+        <button class="nav-item" data-section="executions">执行中心</button>
+        <button class="nav-item" data-section="reports">报告中心</button>
+        <button class="nav-item" data-section="settings">系统设置</button>
+      </nav>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div>
+          <h2 id="section-title">仪表盘</h2>
+          <p id="section-subtitle">系统总览与运行状态</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="global-refresh" class="btn btn-secondary">刷新当前页</button>
+          <span id="current-user" class="badge">未登录</span>
+          <button id="logout-btn" class="btn btn-danger">退出登录</button>
+        </div>
+      </header>
+
+      <section id="section-dashboard" class="section active">
+        <div class="card-grid cols-4">
+          <article class="card metric"><h3>US 总数</h3><p id="dash-total-us">-</p></article>
+          <article class="card metric"><h3>测试用例</h3><p id="dash-total-cases">-</p></article>
+          <article class="card metric"><h3>测试脚本</h3><p id="dash-total-scripts">-</p></article>
+          <article class="card metric"><h3>执行成功率</h3><p id="dash-success-rate">-</p></article>
+        </div>
+
+        <div class="card-grid cols-2 mt-16">
+          <article class="card">
+            <h3>最近活动</h3>
+            <div class="split-list">
+              <div>
+                <h4>最新执行</h4>
+                <ul id="dash-recent-executions" class="list"></ul>
+              </div>
+              <div>
+                <h4>最新 US</h4>
+                <ul id="dash-recent-us" class="list"></ul>
+              </div>
+            </div>
+          </article>
+          <article class="card">
+            <h3>系统状态</h3>
+            <ul id="dash-system-status" class="list"></ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="section-user-stories" class="section">
+        <div class="card-grid cols-2">
+          <article class="card">
+            <h3>新建 / 编辑 US</h3>
+            <form id="us-form" class="form-grid">
+              <input id="us-id" type="hidden">
+              <label><span>US 编号</span><input id="us-number" type="text" placeholder="US-1001" required></label>
+              <label><span>标题</span><input id="us-title" type="text" required></label>
+              <label><span>优先级</span>
+                <select id="us-priority">
+                  <option>LOW</option><option selected>MEDIUM</option><option>HIGH</option><option>CRITICAL</option>
+                </select>
+              </label>
+              <label><span>状态</span>
+                <select id="us-status">
+                  <option selected>DRAFT</option><option>ANALYZING</option><option>READY</option><option>IN_PROGRESS</option><option>DONE</option><option>ARCHIVED</option>
+                </select>
+              </label>
+              <label><span>Sprint</span><input id="us-sprint" type="text" placeholder="Sprint 1"></label>
+              <label><span>Epic</span><input id="us-epic" type="text" placeholder="Authentication"></label>
+              <label><span>Story Points</span><input id="us-story-points" type="text" placeholder="5"></label>
+              <label class="full"><span>描述</span><textarea id="us-description" rows="3"></textarea></label>
+              <label class="full"><span>验收标准</span><textarea id="us-acceptance" rows="4"></textarea></label>
+              <div class="form-actions full">
+                <button type="submit" class="btn btn-primary">保存 US</button>
+                <button type="button" id="us-form-reset" class="btn btn-secondary">清空</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="card">
+            <h3>AI 分析结果</h3>
+            <div id="us-analysis" class="analysis-box">选择一条 US 后点击“AI 分析”查看结果。</div>
+          </article>
+        </div>
+
+        <article class="card mt-16">
+          <div class="card-head">
+            <h3>US 列表</h3>
+            <button id="us-reload" class="btn btn-secondary">刷新</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th><th>US编号</th><th>标题</th><th>优先级</th><th>状态</th><th>测试用例数</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="us-table-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section id="section-test-cases" class="section">
+        <div class="card-grid cols-2">
+          <article class="card">
+            <h3>新建 / 编辑测试用例</h3>
+            <form id="case-form" class="form-grid">
+              <input id="case-id" type="hidden">
+              <label><span>标题</span><input id="case-title" type="text" required></label>
+              <label><span>US ID</span><input id="case-us-id" type="number" min="1"></label>
+              <label><span>类型</span>
+                <select id="case-type">
+                  <option selected>FUNCTIONAL</option><option>UI</option><option>API</option><option>PERFORMANCE</option><option>SECURITY</option><option>COMPATIBILITY</option>
+                </select>
+              </label>
+              <label><span>优先级</span>
+                <select id="case-priority">
+                  <option>LOW</option><option selected>MEDIUM</option><option>HIGH</option><option>CRITICAL</option>
+                </select>
+              </label>
+              <label><span>状态</span>
+                <select id="case-status">
+                  <option selected>DRAFT</option><option>REVIEW</option><option>READY</option><option>DEPRECATED</option><option>ARCHIVED</option>
+                </select>
+              </label>
+              <label><span>标签</span><input id="case-tags" type="text" placeholder="login,smoke"></label>
+              <label class="full"><span>前置条件</span><textarea id="case-preconditions" rows="2"></textarea></label>
+              <label class="full"><span>描述</span><textarea id="case-description" rows="3"></textarea></label>
+              <label class="full"><span>步骤（每行：动作 | 预期结果 | 测试数据）</span><textarea id="case-steps" rows="5"></textarea></label>
+              <div class="form-actions full">
+                <button type="submit" class="btn btn-primary">保存用例</button>
+                <button type="button" id="case-form-reset" class="btn btn-secondary">清空</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="card">
+            <h3>测试用例统计</h3>
+            <ul id="case-stats" class="list"></ul>
+          </article>
+        </div>
+
+        <article class="card mt-16">
+          <div class="card-head">
+            <h3>测试用例列表</h3>
+            <button id="case-reload" class="btn btn-secondary">刷新</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th><th>编号</th><th>标题</th><th>类型</th><th>优先级</th><th>状态</th><th>US</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="case-table-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section id="section-test-scripts" class="section">
+        <div class="card-grid cols-2">
+          <article class="card">
+            <h3>手工维护脚本</h3>
+            <form id="script-form" class="form-grid">
+              <input id="script-id" type="hidden">
+              <label><span>名称</span><input id="script-name" type="text" required></label>
+              <label><span>测试用例 ID</span><input id="script-case-id" type="number" min="1" required></label>
+              <label><span>框架</span>
+                <select id="script-type">
+                  <option selected>PLAYWRIGHT</option><option>SELENIUM</option><option>CYPRESS</option><option>APPIUM</option><option>REST_ASSURED</option>
+                </select>
+              </label>
+              <label><span>语言</span>
+                <select id="script-language">
+                  <option selected>JAVASCRIPT</option><option>TYPESCRIPT</option><option>PYTHON</option><option>JAVA</option><option>CSHARP</option>
+                </select>
+              </label>
+              <label><span>状态</span>
+                <select id="script-status">
+                  <option selected>DRAFT</option><option>GENERATING</option><option>READY</option><option>TESTING</option><option>PRODUCTION</option><option>DEPRECATED</option>
+                </select>
+              </label>
+              <label class="full"><span>运行配置（JSON）</span><textarea id="script-config" rows="2">{"headless":true}</textarea></label>
+              <label class="full"><span>脚本代码</span><textarea id="script-code" rows="7"></textarea></label>
+              <div class="form-actions full">
+                <button type="submit" class="btn btn-primary">保存脚本</button>
+                <button type="button" id="script-form-reset" class="btn btn-secondary">清空</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="card">
+            <h3>Spring AI 生成脚本</h3>
+            <form id="ai-script-form" class="form-grid">
+              <label><span>测试用例 ID</span><input id="ai-script-case-id" type="number" min="1" required></label>
+              <label><span>框架</span>
+                <select id="ai-script-type">
+                  <option selected>PLAYWRIGHT</option><option>SELENIUM</option><option>CYPRESS</option><option>APPIUM</option><option>REST_ASSURED</option>
+                </select>
+              </label>
+              <label><span>语言</span>
+                <select id="ai-script-language">
+                  <option selected>JAVASCRIPT</option><option>TYPESCRIPT</option><option>PYTHON</option><option>JAVA</option><option>CSHARP</option>
+                </select>
+              </label>
+              <label><span>目标 URL</span><input id="ai-target-url" type="text" placeholder="https://example.com"></label>
+              <label class="full"><span>附加说明</span><textarea id="ai-instructions" rows="3"></textarea></label>
+              <div class="form-actions full">
+                <button type="submit" class="btn btn-primary">AI 生成并保存</button>
+              </div>
+            </form>
+            <h4 class="mt-16">生成结果</h4>
+            <pre id="ai-script-output" class="code-view">尚未生成</pre>
+          </article>
+        </div>
+
+        <article class="card mt-16">
+          <div class="card-head">
+            <h3>脚本列表</h3>
+            <button id="script-reload" class="btn btn-secondary">刷新</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th><th>名称</th><th>框架</th><th>语言</th><th>状态</th><th>关联用例</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="script-table-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section id="section-executions" class="section">
+        <div class="card-grid cols-2">
+          <article class="card">
+            <h3>创建执行任务</h3>
+            <form id="execution-form" class="form-grid">
+              <label><span>测试用例 ID</span><input id="execution-case-id" type="number" min="1" required></label>
+              <label><span>浏览器</span><input id="execution-browser" type="text" placeholder="chromium" value="chromium"></label>
+              <label><span>环境</span><input id="execution-env" type="text" placeholder="staging" value="staging"></label>
+              <div class="form-actions full">
+                <button type="submit" class="btn btn-primary">创建执行</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="card">
+            <h3>执行统计</h3>
+            <ul id="execution-stats" class="list"></ul>
+          </article>
+        </div>
+
+        <article class="card mt-16">
+          <div class="card-head">
+            <h3>执行列表</h3>
+            <button id="execution-reload" class="btn btn-secondary">刷新</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th><th>执行编号</th><th>测试用例</th><th>状态</th><th>结果</th><th>耗时(ms)</th><th>执行人</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="execution-table-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section id="section-reports" class="section">
+        <div class="card-grid cols-4">
+          <article class="card metric"><h3>总执行数</h3><p id="report-total">-</p></article>
+          <article class="card metric"><h3>通过</h3><p id="report-pass">-</p></article>
+          <article class="card metric"><h3>失败/错误</h3><p id="report-fail">-</p></article>
+          <article class="card metric"><h3>通过率</h3><p id="report-rate">-</p></article>
+        </div>
+
+        <article class="card mt-16">
+          <div class="card-head">
+            <h3>执行报告明细</h3>
+            <button id="download-report-btn" class="btn btn-primary">下载 JSON 报告</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>执行编号</th><th>测试用例</th><th>状态</th><th>结果</th><th>开始时间</th><th>结束时间</th><th>错误信息</th>
+                </tr>
+              </thead>
+              <tbody id="report-table-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section id="section-settings" class="section">
+        <article class="card">
+          <h3>系统配置</h3>
+          <form id="settings-form" class="form-grid">
+            <label><span>API Base URL</span><input id="settings-api-base" type="text" placeholder="/api"></label>
+            <label><span>默认执行浏览器</span><input id="settings-browser" type="text" placeholder="chromium"></label>
+            <label><span>默认执行环境</span><input id="settings-environment" type="text" placeholder="staging"></label>
+            <label><span>默认脚本目标 URL</span><input id="settings-target-url" type="text" placeholder="https://example.com"></label>
+            <div class="form-actions full">
+              <button type="submit" class="btn btn-primary">保存设置</button>
+              <button type="button" id="settings-test-connection" class="btn btn-secondary">测试连接</button>
+              <span id="settings-connection-status" class="badge">未检测</span>
+            </div>
+          </form>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

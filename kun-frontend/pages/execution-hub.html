@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>执行中心 | AutoTest AI</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background-color: #0a0a0f;
+      color: #ffffff;
+      margin: 0;
+      padding: 0;
+      overflow-x: hidden;
+    }
+    #particle-canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .glass-card {
+      background: rgba(18, 18, 26, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(20px);
+      border-radius: 12px;
+    }
+    .gradient-text {
+      background: linear-gradient(135deg, #00d4ff 0%, #7c3aed 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .nav-item-active {
+      background: rgba(0, 212, 255, 0.1);
+      border-left: 3px solid #00d4ff;
+    }
+    .waterfall-bar {
+      transition: width 0.5s ease;
+    }
+    .status-running { animation: pulse 2s infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .log-info { color: #3b82f6; }
+    .log-success { color: #10b981; }
+    .log-error { color: #ef4444; }
+    .log-warn { color: #f59e0b; }
+    #execution-header-title {
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    #execution-header-left {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex: 1 1 auto;
+    }
+    #execution-toolbar {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: nowrap;
+      margin-left: auto;
+    }
+    #execution-case-select {
+      width: clamp(180px, 20vw, 260px);
+      min-width: 180px;
+      max-width: 260px;
+      flex: 0 1 260px;
+    }
+    #execution-env-select,
+    #execution-browser-select {
+      width: 120px;
+      min-width: 120px;
+      max-width: 120px;
+      flex: 0 0 120px;
+    }
+    #execution-case-select,
+    #execution-env-select,
+    #execution-browser-select {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #start-btn,
+    #stop-btn {
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    @media (max-width: 1600px) {
+      #execution-case-select {
+        width: clamp(160px, 16vw, 220px);
+        min-width: 160px;
+        max-width: 220px;
+        flex-basis: 220px;
+      }
+      #execution-env-select,
+      #execution-browser-select {
+        width: 110px;
+        min-width: 110px;
+        max-width: 110px;
+        flex-basis: 110px;
+      }
+    }
+    @media (max-width: 1280px) {
+      #execution-header-left {
+        gap: 0.5rem;
+      }
+      #execution-case-select {
+        width: 150px;
+        min-width: 150px;
+        max-width: 180px;
+        flex-basis: 180px;
+      }
+    }
+  </style>
+</head>
+<body class="min-h-screen">
+  <canvas id="particle-canvas"></canvas>
+  
+  <aside class="fixed left-0 top-0 h-full w-60 bg-[#12121a] border-r border-white/5 z-50 flex flex-col">
+    <div class="h-16 flex items-center justify-center border-b border-white/5">
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00d4ff] to-[#7c3aed] flex items-center justify-center">
+          <i data-lucide="zap" class="w-5 h-5 text-white"></i>
+        </div>
+        <span class="text-lg font-bold gradient-text">AutoTest AI</span>
+      </div>
+    </div>
+    
+    <nav class="flex-1 py-4 px-3">
+      <ul class="space-y-1">
+        <li><a href="../index.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="layout-dashboard" class="w-5 h-5"></i><span class="text-sm font-medium flex-1">仪表盘</span></a></li>
+        <li><a href="./us-management.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="file-text" class="w-5 h-5"></i><span class="text-sm font-medium flex-1">US需求管理</span><span id="us-nav-count-badge" class="px-2 py-0.5 text-xs bg-[#7c3aed]/20 text-[#7c3aed] rounded-full">0</span></a></li>
+        <li><a href="./test-cases.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="check-square" class="w-5 h-5"></i><span class="text-sm font-medium flex-1">测试用例</span><span id="tc-nav-count-badge" class="px-2 py-0.5 text-xs bg-[#7c3aed]/20 text-[#7c3aed] rounded-full">0</span></a></li>
+        <li><a href="./script-studio.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="code-2" class="w-5 h-5"></i><span class="text-sm font-medium flex-1">脚本工作室</span></a></li>
+        <li><a href="./execution-hub.html" class="nav-item-active flex items-center gap-3 px-4 py-3 rounded-lg text-white"><i data-lucide="play-circle" class="w-5 h-5 text-[#00d4ff]"></i><span class="text-sm font-medium flex-1">执行中心</span><span class="w-2 h-2 bg-[#10b981] rounded-full animate-pulse"></span></a></li>
+        <li><a href="./reports.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="bar-chart-3" class="w-5 h-5"></i><span class="text-sm font-medium flex-1">报告中心</span></a></li>
+        <li><a href="./settings.html" class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="settings" class="w-5 h-5"></i><span class="text-sm font-medium flex-1">系统设置</span></a></li>
+      </ul>
+    </nav>
+    
+    <div class="p-4 border-t border-white/5">
+      <div class="glass-card p-3 rounded-lg">
+        <div class="flex items-center gap-2 text-xs text-[#a1a1aa]"><div class="w-2 h-2 bg-[#10b981] rounded-full"></div><span>系统运行正常</span></div>
+        <div class="mt-2 text-xs text-[#71717a]">v2.1.0</div>
+      </div>
+    </div>
+  </aside>
+  
+  <main class="ml-60 min-h-screen relative z-10">
+    <header class="h-16 flex items-center justify-between gap-4 px-6 border-b border-white/5 bg-transparent">
+      <div id="execution-header-left">
+        <h1 id="execution-header-title" class="text-xl font-semibold text-white">执行中心</h1>
+        <select id="execution-case-select" class="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+          <option>登录测试套件</option>
+          <option>订单流程套件</option>
+          <option>回归测试套件</option>
+        </select>
+      </div>
+      
+      <div id="execution-toolbar">
+        <select id="execution-env-select" class="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+          <option>Staging 环境</option>
+          <option>Dev 环境</option>
+          <option>Prod 环境</option>
+        </select>
+        <select id="execution-browser-select" class="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+          <option>Chrome</option>
+          <option>Firefox</option>
+          <option>Safari</option>
+        </select>
+        <button onclick="startExecution()" id="start-btn" class="px-6 py-2 rounded-lg bg-gradient-to-r from-[#00d4ff] to-[#7c3aed] hover:opacity-90 transition-opacity text-sm font-medium flex items-center gap-2">
+          <i data-lucide="play" class="w-4 h-4"></i>开始执行
+        </button>
+        <button onclick="stopExecution()" id="stop-btn" class="hidden px-6 py-2 rounded-lg bg-[#ef4444]/20 text-[#ef4444] hover:bg-[#ef4444]/30 transition-colors text-sm font-medium flex items-center gap-2">
+          <i data-lucide="square" class="w-4 h-4"></i>停止
+        </button>
+      </div>
+    </header>
+    
+    <div class="p-6">
+      <!-- Status Panel -->
+      <div class="glass-card p-6 mb-6">
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-3">
+            <div id="status-indicator" class="w-3 h-3 rounded-full bg-[#10b981]"></div>
+            <span id="status-text" class="font-medium">准备就绪</span>
+          </div>
+          <div class="flex items-center gap-4 text-sm">
+            <span class="text-[#a1a1aa]">预计剩余时间: <span id="eta" class="text-white">--:--</span></span>
+          </div>
+        </div>
+        
+        <div class="w-full h-2 bg-white/5 rounded-full overflow-hidden mb-4">
+          <div id="progress-bar" class="h-full bg-gradient-to-r from-[#00d4ff] to-[#7c3aed] transition-all duration-500" style="width: 0%"></div>
+        </div>
+        
+        <div class="grid grid-cols-4 gap-4">
+          <div class="text-center">
+            <p class="text-2xl font-bold" id="stat-total">0/15</p>
+            <p class="text-xs text-[#a1a1aa]">已执行/总数</p>
+          </div>
+          <div class="text-center">
+            <p class="text-2xl font-bold text-[#10b981]" id="stat-pass">0</p>
+            <p class="text-xs text-[#a1a1aa]">通过</p>
+          </div>
+          <div class="text-center">
+            <p class="text-2xl font-bold text-[#ef4444]" id="stat-fail">0</p>
+            <p class="text-xs text-[#a1a1aa]">失败</p>
+          </div>
+          <div class="text-center">
+            <p class="text-2xl font-bold text-[#f59e0b]" id="stat-skip">0</p>
+            <p class="text-xs text-[#a1a1aa]">跳过</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Waterfall Chart -->
+      <div class="glass-card p-6 mb-6">
+        <h3 class="text-lg font-semibold mb-4">执行瀑布图</h3>
+        <div class="space-y-2" id="waterfall-container">
+          <!-- Test Case 1 -->
+          <div class="flex items-center gap-4">
+            <div class="w-32 text-sm truncate">TC-2001 登录成功</div>
+            <div class="flex-1 h-8 bg-white/5 rounded-full overflow-hidden relative">
+              <div class="waterfall-bar absolute h-full bg-[#10b981] rounded-full" style="left: 0%; width: 0%;" data-width="15"></div>
+            </div>
+            <div class="w-16 text-xs text-[#71717a] text-right">3.2s</div>
+          </div>
+          <!-- Test Case 2 -->
+          <div class="flex items-center gap-4">
+            <div class="w-32 text-sm truncate">TC-2002 密码错误</div>
+            <div class="flex-1 h-8 bg-white/5 rounded-full overflow-hidden relative">
+              <div class="waterfall-bar absolute h-full bg-[#10b981] rounded-full" style="left: 15%; width: 0%;" data-width="12"></div>
+            </div>
+            <div class="w-16 text-xs text-[#71717a] text-right">2.8s</div>
+          </div>
+          <!-- Test Case 3 -->
+          <div class="flex items-center gap-4">
+            <div class="w-32 text-sm truncate">TC-2003 用户锁定</div>
+            <div class="flex-1 h-8 bg-white/5 rounded-full overflow-hidden relative">
+              <div class="waterfall-bar absolute h-full bg-[#ef4444] rounded-full" style="left: 27%; width: 0%;" data-width="18"></div>
+            </div>
+            <div class="w-16 text-xs text-[#71717a] text-right">4.1s</div>
+          </div>
+          <!-- Test Case 4 -->
+          <div class="flex items-center gap-4">
+            <div class="w-32 text-sm truncate">TC-2004 记住密码</div>
+            <div class="flex-1 h-8 bg-white/5 rounded-full overflow-hidden relative">
+              <div class="waterfall-bar absolute h-full bg-[#10b981] rounded-full" style="left: 45%; width: 0%;" data-width="10"></div>
+            </div>
+            <div class="w-16 text-xs text-[#71717a] text-right">2.5s</div>
+          </div>
+          <!-- Test Case 5 -->
+          <div class="flex items-center gap-4">
+            <div class="w-32 text-sm truncate">TC-2005 验证码</div>
+            <div class="flex-1 h-8 bg-white/5 rounded-full overflow-hidden relative">
+              <div class="waterfall-bar absolute h-full bg-[#f59e0b] rounded-full status-running" style="left: 55%; width: 0%;" data-width="20"></div>
+            </div>
+            <div class="w-16 text-xs text-[#71717a] text-right">运行中</div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Bottom Row: Logs & Screenshots -->
+      <div class="grid grid-cols-2 gap-6">
+        <!-- Live Log -->
+        <div class="glass-card p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">执行日志</h3>
+            <div class="flex items-center gap-2">
+              <button class="p-1.5 hover:bg-white/10 rounded transition-colors" title="自动滚动" onclick="toggleAutoScroll()">
+                <i data-lucide="scroll-text" class="w-4 h-4 text-[#00d4ff]" id="autoscroll-icon"></i>
+              </button>
+              <button class="p-1.5 hover:bg-white/10 rounded transition-colors" title="清空">
+                <i data-lucide="trash-2" class="w-4 h-4 text-[#71717a]"></i>
+              </button>
+            </div>
+          </div>
+          <div class="h-64 overflow-auto font-mono text-xs space-y-1" id="log-container">
+            <div class="log-info">[10:23:45] 开始执行测试套件: 登录测试套件</div>
+            <div class="log-success">[10:23:46] ✓ TC-2001 登录成功 - 通过 (3.2s)</div>
+            <div class="log-success">[10:23:49] ✓ TC-2002 密码错误 - 通过 (2.8s)</div>
+            <div class="log-error">[10:23:53] ✗ TC-2003 用户锁定 - 失败 (4.1s)</div>
+            <div class="log-warn">[10:23:53]   错误: 预期显示锁定提示，实际显示密码错误</div>
+            <div class="log-success">[10:23:56] ✓ TC-2004 记住密码 - 通过 (2.5s)</div>
+            <div class="log-info">[10:23:58] 正在执行: TC-2005 验证码...</div>
+          </div>
+        </div>
+        
+        <!-- Screenshots -->
+        <div class="glass-card p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">执行截图</h3>
+            <a id="execution-screenshots-view-all" href="#" class="text-sm text-[#00d4ff] hover:underline">查看全部</a>
+          </div>
+          <div id="execution-screenshot-grid" class="grid grid-cols-3 gap-3">
+            <div class="aspect-video bg-white/5 rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-[#00d4ff] transition-all">
+              <div class="w-full h-full flex items-center justify-center text-[#71717a]">
+                <i data-lucide="image" class="w-8 h-8"></i>
+              </div>
+            </div>
+            <div class="aspect-video bg-white/5 rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-[#00d4ff] transition-all">
+              <div class="w-full h-full flex items-center justify-center text-[#71717a]">
+                <i data-lucide="image" class="w-8 h-8"></i>
+              </div>
+            </div>
+            <div class="aspect-video bg-white/5 rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-[#00d4ff] transition-all relative">
+              <div class="absolute inset-0 bg-[#ef4444]/20 flex items-center justify-center">
+                <span class="text-xs text-[#ef4444] font-medium">失败</span>
+              </div>
+            </div>
+          </div>
+          <div class="mt-4">
+            <h4 class="text-sm font-medium mb-2">步骤时间线</h4>
+            <div id="execution-timeline-list" class="space-y-2 text-xs text-[#a1a1aa]">
+              <div class="p-2 rounded-lg bg-white/5">暂无时间线数据</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+  
+  <script>
+    let isExecuting = false;
+    let autoScroll = true;
+    let executionInterval;
+    
+    document.addEventListener('DOMContentLoaded', () => {
+      lucide.createIcons();
+      initParticleBackground();
+    });
+    
+    function startExecution() {
+      isExecuting = true;
+      document.getElementById('start-btn').classList.add('hidden');
+      document.getElementById('stop-btn').classList.remove('hidden');
+      document.getElementById('status-indicator').className = 'w-3 h-3 rounded-full bg-[#3b82f6] status-running';
+      document.getElementById('status-text').textContent = '执行中...';
+      
+      // Animate waterfall bars
+      const bars = document.querySelectorAll('.waterfall-bar');
+      bars.forEach((bar, i) => {
+        setTimeout(() => {
+          bar.style.width = bar.dataset.width + '%';
+        }, i * 200);
+      });
+      
+      // Update progress
+      let progress = 0;
+      executionInterval = setInterval(() => {
+        progress += 2;
+        document.getElementById('progress-bar').style.width = progress + '%';
+        if (progress >= 60) clearInterval(executionInterval);
+      }, 100);
+      
+      // Update stats
+      document.getElementById('stat-total').textContent = '5/15';
+      document.getElementById('stat-pass').textContent = '3';
+      document.getElementById('stat-fail').textContent = '1';
+      document.getElementById('stat-skip').textContent = '0';
+    }
+    
+    function stopExecution() {
+      isExecuting = false;
+      clearInterval(executionInterval);
+      document.getElementById('start-btn').classList.remove('hidden');
+      document.getElementById('stop-btn').classList.add('hidden');
+      document.getElementById('status-indicator').className = 'w-3 h-3 rounded-full bg-[#f59e0b]';
+      document.getElementById('status-text').textContent = '已停止';
+    }
+    
+    function toggleAutoScroll() {
+      autoScroll = !autoScroll;
+      const icon = document.getElementById('autoscroll-icon');
+      if (autoScroll) {
+        icon.classList.add('text-[#00d4ff]');
+        icon.classList.remove('text-[#71717a]');
+      } else {
+        icon.classList.remove('text-[#00d4ff]');
+        icon.classList.add('text-[#71717a]');
+      }
+    }
+    
+    function initParticleBackground() {
+      const canvas = document.getElementById('particle-canvas');
+      if (!canvas) return;
+      
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+      let renderer;
+      try {
+        renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+      } catch (error) {
+        console.warn('Particle background disabled:', error.message);
+        return;
+      }
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      
+      const particleCount = 60;
+      const positions = new Float32Array(particleCount * 3);
+      const velocities = [];
+      const color1 = new THREE.Color('#00d4ff');
+      const color2 = new THREE.Color('#7c3aed');
+      const colors = new Float32Array(particleCount * 3);
+      
+      for (let i = 0; i < particleCount; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 20;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 20;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 10;
+        
+        velocities.push({
+          x: (Math.random() - 0.5) * 0.01,
+          y: (Math.random() - 0.5) * 0.01,
+          z: (Math.random() - 0.5) * 0.005
+        });
+        
+        const mixFactor = Math.random();
+        const color = color1.clone().lerp(color2, mixFactor);
+        colors[i * 3] = color.r;
+        colors[i * 3 + 1] = color.g;
+        colors[i * 3 + 2] = color.b;
+      }
+      
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      
+      const material = new THREE.PointsMaterial({
+        size: 0.08,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending
+      });
+      
+      const particles = new THREE.Points(geometry, material);
+      scene.add(particles);
+      
+      camera.position.z = 8;
+      
+      let mouseX = 0, mouseY = 0;
+      const handleMouseMove = (e) => {
+        mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+        mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
+      };
+      window.addEventListener('mousemove', handleMouseMove, { passive: true });
+      
+      let animationId;
+      const animate = () => {
+        animationId = requestAnimationFrame(animate);
+        const posArray = geometry.attributes.position.array;
+        
+        for (let i = 0; i < particleCount; i++) {
+          posArray[i * 3] += velocities[i].x;
+          posArray[i * 3 + 1] += velocities[i].y;
+          posArray[i * 3 + 2] += velocities[i].z;
+          
+          const dx = mouseX * 5 - posArray[i * 3];
+          const dy = mouseY * 5 - posArray[i * 3 + 1];
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          
+          if (dist < 3) {
+            posArray[i * 3] -= dx * 0.01;
+            posArray[i * 3 + 1] -= dy * 0.01;
+          }
+          
+          if (Math.abs(posArray[i * 3]) > 10) velocities[i].x *= -1;
+          if (Math.abs(posArray[i * 3 + 1]) > 10) velocities[i].y *= -1;
+          if (Math.abs(posArray[i * 3 + 2]) > 5) velocities[i].z *= -1;
+        }
+        
+        geometry.attributes.position.needsUpdate = true;
+        particles.rotation.y += 0.0005;
+        renderer.render(scene, camera);
+      };
+      animate();
+      
+      const handleResize = () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      };
+      window.addEventListener('resize', handleResize, { passive: true });
+    }
+  </script>
+  <script src="../shared/app-runtime.js?v=20260226-global-sidebar-toggle-fix4"></script>
+  <script src="../shared/app-pages.js?v=20260226-global-sidebar-toggle-fix4"></script>
+</body>
+</html>

@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>仪表盘 | AutoTest AI</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://unpkg.com/recharts/umd/Recharts.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
+    :root {
+      --color-bg-primary: #0a0a0f;
+      --color-bg-secondary: #12121a;
+      --color-bg-tertiary: #1a1a25;
+      --color-bg-elevated: #222230;
+      --color-accent-cyan: #00d4ff;
+      --color-accent-purple: #7c3aed;
+      --color-accent-blue: #3b82f6;
+      --color-accent-green: #10b981;
+      --color-accent-yellow: #f59e0b;
+      --color-accent-red: #ef4444;
+      --color-text-primary: #ffffff;
+      --color-text-secondary: #a1a1aa;
+      --color-text-muted: #71717a;
+      --glass-bg: rgba(18, 18, 26, 0.7);
+      --glass-border: rgba(255, 255, 255, 0.08);
+      --glass-blur: blur(20px);
+    }
+    
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background-color: var(--color-bg-primary);
+      color: var(--color-text-primary);
+      overflow-x: hidden;
+    }
+    
+    #particle-canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    
+    .glass-card {
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      backdrop-filter: var(--glass-blur);
+      border-radius: 12px;
+    }
+    
+    .gradient-text {
+      background: linear-gradient(135deg, #00d4ff 0%, #7c3aed 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    
+    .gradient-border {
+      position: relative;
+    }
+    
+    .gradient-border::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 12px;
+      padding: 1px;
+      background: linear-gradient(135deg, #00d4ff, #7c3aed);
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    
+    .gradient-border:hover::before {
+      opacity: 1;
+    }
+    
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    @keyframes countUp {
+      from { opacity: 0; transform: scale(0.8); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    
+    @keyframes pulseGlow {
+      0%, 100% { box-shadow: 0 0 5px rgba(0, 212, 255, 0.3); }
+      50% { box-shadow: 0 0 20px rgba(0, 212, 255, 0.6), 0 0 40px rgba(0, 212, 255, 0.3); }
+    }
+    
+    .animate-fade-in-up {
+      animation: fadeInUp 0.5s ease-out forwards;
+    }
+    
+    .animate-pulse-glow {
+      animation: pulseGlow 2s ease-in-out infinite;
+    }
+    
+    .stagger-1 { animation-delay: 0.1s; }
+    .stagger-2 { animation-delay: 0.2s; }
+    .stagger-3 { animation-delay: 0.3s; }
+    .stagger-4 { animation-delay: 0.4s; }
+    
+    .nav-item-active {
+      background: rgba(0, 212, 255, 0.1);
+      border-left: 3px solid #00d4ff;
+    }
+    
+    .scrollbar-thin::-webkit-scrollbar {
+      width: 6px;
+    }
+    
+    .scrollbar-thin::-webkit-scrollbar-track {
+      background: rgba(255, 255, 255, 0.05);
+    }
+    
+    .scrollbar-thin::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 3px;
+    }
+    
+    .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+    
+    .dropdown-menu {
+      transform-origin: top right;
+      transition: transform 0.2s ease, opacity 0.2s ease;
+    }
+    
+    .dropdown-menu.hidden {
+      transform: scale(0.95);
+      opacity: 0;
+      pointer-events: none;
+    }
+    
+    .dropdown-menu.visible {
+      transform: scale(1);
+      opacity: 1;
+      pointer-events: auto;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo } = React;
+    const { 
+      LayoutDashboard, FileText, CheckSquare, Code2, PlayCircle, 
+      BarChart3, Settings, Search, Bell, User, ChevronDown, 
+      Folder, FileCheck, Play, TrendingUp, Activity, Plus, 
+      Upload, Zap, Clock, MoreHorizontal, CheckCircle, 
+      XCircle, Loader, ArrowRight, LogOut, Settings2, HelpCircle
+    } = lucide;
+    const { 
+      AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+      PieChart, Pie, Cell, Legend
+    } = Recharts;
+
+    // Particle Background Component
+    const ParticleBackground = () => {
+      const canvasRef = useRef(null);
+      
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        let renderer;
+      try {
+        renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+      } catch (error) {
+        console.warn('Particle background disabled:', error.message);
+        return;
+      }
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        
+        // Particles
+        const particleCount = 80;
+        const positions = new Float32Array(particleCount * 3);
+        const velocities = [];
+        const colors = new Float32Array(particleCount * 3);
+        
+        const color1 = new THREE.Color('#00d4ff');
+        const color2 = new THREE.Color('#7c3aed');
+        
+        for (let i = 0; i < particleCount; i++) {
+          positions[i * 3] = (Math.random() - 0.5) * 20;
+          positions[i * 3 + 1] = (Math.random() - 0.5) * 20;
+          positions[i * 3 + 2] = (Math.random() - 0.5) * 10;
+          
+          velocities.push({
+            x: (Math.random() - 0.5) * 0.01,
+            y: (Math.random() - 0.5) * 0.01,
+            z: (Math.random() - 0.5) * 0.005
+          });
+          
+          const mixFactor = Math.random();
+          const color = color1.clone().lerp(color2, mixFactor);
+          colors[i * 3] = color.r;
+          colors[i * 3 + 1] = color.g;
+          colors[i * 3 + 2] = color.b;
+        }
+        
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        
+        const material = new THREE.PointsMaterial({
+          size: 0.08,
+          vertexColors: true,
+          transparent: true,
+          opacity: 0.8,
+          blending: THREE.AdditiveBlending
+        });
+        
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+        
+        // Connection lines
+        const lineMaterial = new THREE.LineBasicMaterial({
+          color: 0x00d4ff,
+          transparent: true,
+          opacity: 0.1
+        });
+        
+        camera.position.z = 8;
+        
+        let mouseX = 0;
+        let mouseY = 0;
+        
+        const handleMouseMove = (e) => {
+          mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+          mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
+        };
+        
+        window.addEventListener('mousemove', handleMouseMove, { passive: true });
+        
+        let animationId;
+        const animate = () => {
+          animationId = requestAnimationFrame(animate);
+          
+          const posArray = geometry.attributes.position.array;
+          
+          for (let i = 0; i < particleCount; i++) {
+            posArray[i * 3] += velocities[i].x;
+            posArray[i * 3 + 1] += velocities[i].y;
+            posArray[i * 3 + 2] += velocities[i].z;
+            
+            // Mouse interaction
+            const dx = mouseX * 5 - posArray[i * 3];
+            const dy = mouseY * 5 - posArray[i * 3 + 1];
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            
+            if (dist < 3) {
+              posArray[i * 3] -= dx * 0.01;
+              posArray[i * 3 + 1] -= dy * 0.01;
+            }
+            
+            // Boundary check
+            if (Math.abs(posArray[i * 3]) > 10) velocities[i].x *= -1;
+            if (Math.abs(posArray[i * 3 + 1]) > 10) velocities[i].y *= -1;
+            if (Math.abs(posArray[i * 3 + 2]) > 5) velocities[i].z *= -1;
+          }
+          
+          geometry.attributes.position.needsUpdate = true;
+          particles.rotation.y += 0.0005;
+          
+          renderer.render(scene, camera);
+        };
+        
+        animate();
+        
+        const handleResize = () => {
+          camera.aspect = window.innerWidth / window.innerHeight;
+          camera.updateProjectionMatrix();
+          renderer.setSize(window.innerWidth, window.innerHeight);
+        };
+        
+        window.addEventListener('resize', handleResize, { passive: true });
+        
+        return () => {
+          cancelAnimationFrame(animationId);
+          window.removeEventListener('mousemove', handleMouseMove);
+          window.removeEventListener('resize', handleResize);
+          renderer.dispose();
+          geometry.dispose();
+          material.dispose();
+        };
+      }, []);
+      
+      return <canvas ref={canvasRef} id="particle-canvas" />;
+    };
+
+    // Sidebar Component
+    const Sidebar = () => {
+      const navItems = [
+        { icon: LayoutDashboard, label: '仪表盘', href: '../index.html', active: true },
+        { icon: FileText, label: 'US需求管理', href: './us-management.html', badge: 3 },
+        { icon: CheckSquare, label: '测试用例', href: './test-cases.html', badge: 1248 },
+        { icon: Code2, label: '脚本工作室', href: './script-studio.html' },
+        { icon: PlayCircle, label: '执行中心', href: './execution-hub.html', indicator: true },
+        { icon: BarChart3, label: '报告中心', href: './reports.html' },
+        { icon: Settings, label: '系统设置', href: './settings.html' },
+      ];
+      
+      return (
+        <aside className="fixed left-0 top-0 h-full w-60 bg-[#12121a] border-r border-white/5 z-50 flex flex-col">
+          {/* Logo */}
+          <div className="h-16 flex items-center justify-center border-b border-white/5">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00d4ff] to-[#7c3aed] flex items-center justify-center">
+                <Zap className="w-5 h-5 text-white" />
+              </div>
+              <span className="text-lg font-bold gradient-text">AutoTest AI</span>
+            </div>
+          </div>
+          
+          {/* Navigation */}
+          <nav className="flex-1 py-4 px-3">
+            <ul className="space-y-1">
+              {navItems.map((item, index) => (
+                <li key={index}>
+                  <a
+                    href={item.href}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 group ${
+                      item.active 
+                        ? 'nav-item-active text-white' 
+                        : 'text-[#a1a1aa] hover:bg-white/5 hover:text-white'
+                    }`}
+                  >
+                    <item.icon className={`w-5 h-5 ${item.active ? 'text-[#00d4ff]' : 'group-hover:text-[#00d4ff]'}`} />
+                    <span className="text-sm font-medium flex-1">{item.label}</span>
+                    {item.badge && (
+                      <span className="px-2 py-0.5 text-xs bg-[#7c3aed]/20 text-[#7c3aed] rounded-full">
+                        {item.badge > 99 ? '99+' : item.badge}
+                      </span>
+                    )}
+                    {item.indicator && (
+                      <span className="w-2 h-2 bg-[#10b981] rounded-full animate-pulse" />
+                    )}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+          
+          {/* Bottom section */}
+          <div className="p-4 border-t border-white/5">
+            <div className="glass-card p-3 rounded-lg">
+              <div className="flex items-center gap-2 text-xs text-[#a1a1aa]">
+                <div className="w-2 h-2 bg-[#10b981] rounded-full" />
+                <span>系统运行正常</span>
+              </div>
+              <div className="mt-2 text-xs text-[#71717a]">v2.1.0</div>
+            </div>
+          </div>
+        </aside>
+      );
+    };
+
+    // Header Component
+    const Header = () => {
+      const [showUserMenu, setShowUserMenu] = useState(false);
+      const [showNotifications, setShowNotifications] = useState(false);
+      
+      const notifications = [
+        { id: 1, title: '测试执行完成', message: '项目 "电商平台" 的回归测试已完成', time: '5分钟前', type: 'success' },
+        { id: 2, title: 'US解析成功', message: 'US-1234 已成功解析并生成测试用例', time: '1小时前', type: 'info' },
+        { id: 3, title: '执行失败', message: '脚本 "登录流程" 执行失败', time: '2小时前', type: 'error' },
+      ];
+      
+      return (
+        <header className="h-16 flex items-center justify-between px-6 border-b border-white/5 bg-transparent">
+          {/* Left: Title & Breadcrumb */}
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold text-white">仪表盘</h1>
+            <span className="text-[#71717a]">/</span>
+            <span className="text-sm text-[#a1a1aa]">概览</span>
+          </div>
+          
+          {/* Right: Actions */}
+          <div className="flex items-center gap-4">
+            {/* Search */}
+            <button className="p-2 text-[#a1a1aa] hover:text-white hover:bg-white/5 rounded-lg transition-colors">
+              <Search className="w-5 h-5" />
+            </button>
+            
+            {/* Notifications */}
+            <div className="relative">
+              <button 
+                className="p-2 text-[#a1a1aa] hover:text-white hover:bg-white/5 rounded-lg transition-colors relative"
+                onClick={() => setShowNotifications(!showNotifications)}
+              >
+                <Bell className="w-5 h-5" />
+                <span className="absolute top-1 right-1 w-2 h-2 bg-[#ef4444] rounded-full" />
+              </button>
+              
+              {/* Notification Dropdown */}
+              <div className={`dropdown-menu absolute right-0 top-full mt-2 w-80 glass-card rounded-xl overflow-hidden z-50 ${showNotifications ? 'visible' : 'hidden'}`}>
+                <div className="p-4 border-b border-white/5 flex items-center justify-between">
+                  <span className="font-medium">通知</span>
+                  <span className="text-xs text-[#00d4ff] cursor-pointer hover:underline">全部标记为已读</span>
+                </div>
+                <div className="max-h-80 overflow-y-auto">
+                  {notifications.map(notif => (
+                    <div key={notif.id} className="p-4 border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors">
+                      <div className="flex items-start gap-3">
+                        <div className={`w-2 h-2 rounded-full mt-1.5 ${
+                          notif.type === 'success' ? 'bg-[#10b981]' :
+                          notif.type === 'error' ? 'bg-[#ef4444]' : 'bg-[#3b82f6]'
+                        }`} />
+                        <div className="flex-1">
+                          <p className="text-sm font-medium">{notif.title}</p>
+                          <p className="text-xs text-[#a1a1aa] mt-1">{notif.message}</p>
+                          <p className="text-xs text-[#71717a] mt-2">{notif.time}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            
+            {/* User Avatar */}
+            <div className="relative">
+              <button 
+                className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-white/5 transition-colors"
+                onClick={() => setShowUserMenu(!showUserMenu)}
+              >
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#00d4ff] to-[#7c3aed] flex items-center justify-center">
+                  <User className="w-4 h-4 text-white" />
+                </div>
+                <ChevronDown className="w-4 h-4 text-[#a1a1aa]" />
+              </button>
+              
+              {/* User Dropdown */}
+              <div className={`dropdown-menu absolute right-0 top-full mt-2 w-48 glass-card rounded-xl overflow-hidden z-50 ${showUserMenu ? 'visible' : 'hidden'}`}>
+                <div className="p-3 border-b border-white/5">
+                  <p className="font-medium text-sm">张三</p>
+                  <p className="text-xs text-[#a1a1aa]">zhangsan@example.com</p>
+                </div>
+                <div className="p-2">
+                  <a href="#" className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-colors">
+                    <User className="w-4 h-4" />
+                    个人资料
+                  </a>
+                  <a href="./settings.html" className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-colors">
+                    <Settings2 className="w-4 h-4" />
+                    我的设置
+                  </a>
+                  <a href="#" className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-colors">
+                    <HelpCircle className="w-4 h-4" />
+                    帮助中心
+                  </a>
+                  <div className="border-t border-white/5 my-2" />
+                  <a href="#" className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#ef4444] hover:bg-[#ef4444]/10 transition-colors">
+                    <LogOut className="w-4 h-4" />
+                    退出登录
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </header>
+      );
+    };
+
+    // Stats Card Component
+    const StatsCard = ({ icon: Icon, label, value, subtext, color, delay }) => {
+      const [displayValue, setDisplayValue] = useState(0);
+      const numericValue = parseFloat(value.toString().replace(/[^0-9.]/g, ''));
+      const isPercentage = value.toString().includes('%');
+      
+      useEffect(() => {
+        const duration = 1500;
+        const steps = 60;
+        const increment = numericValue / steps;
+        let current = 0;
+        
+        const timer = setInterval(() => {
+          current += increment;
+          if (current >= numericValue) {
+            setDisplayValue(numericValue);
+            clearInterval(timer);
+          } else {
+            setDisplayValue(current);
+          }
+        }, duration / steps);
+        
+        return () => clearInterval(timer);
+      }, [numericValue]);
+      
+      const colorClasses = {
+        cyan: 'from-[#00d4ff]/20 to-[#00d4ff]/5 text-[#00d4ff]',
+        purple: 'from-[#7c3aed]/20 to-[#7c3aed]/5 text-[#7c3aed]',
+        green: 'from-[#10b981]/20 to-[#10b981]/5 text-[#10b981]',
+        blue: 'from-[#3b82f6]/20 to-[#3b82f6]/5 text-[#3b82f6]'
+      };
+      
+      const formattedValue = isPercentage 
+        ? displayValue.toFixed(1) + '%'
+        : displayValue.toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+      
+      return (
+        <div 
+          className={`glass-card gradient-border p-6 opacity-0 animate-fade-in-up stagger-${delay} hover:scale-[1.02] transition-transform duration-300`}
+          style={{ borderLeft: `3px solid ${color === 'cyan' ? '#00d4ff' : color === 'purple' ? '#7c3aed' : color === 'green' ? '#10b981' : '#3b82f6'}` }}
+        >
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-sm text-[#a1a1aa] mb-1">{label}</p>
+              <p className="text-3xl font-bold text-white">{formattedValue}</p>
+              <p className="text-xs text-[#71717a] mt-2">{subtext}</p>
+            </div>
+            <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${colorClasses[color]} flex items-center justify-center`}>
+              <Icon className="w-6 h-6" />
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // Area Chart Component
+    const ExecutionTrendChart = () => {
+      const data = [
+        { date: '11-01', executions: 245, passed: 230 },
+        { date: '11-03', executions: 312, passed: 298 },
+        { date: '11-05', executions: 287, passed: 275 },
+        { date: '11-07', executions: 356, passed: 340 },
+        { date: '11-09', executions: 298, passed: 285 },
+        { date: '11-11', executions: 412, passed: 395 },
+        { date: '11-13', executions: 378, passed: 365 },
+        { date: '11-15', executions: 445, passed: 428 },
+        { date: '11-17', executions: 389, passed: 375 },
+        { date: '11-19', executions: 467, passed: 450 },
+        { date: '11-21', executions: 423, passed: 408 },
+        { date: '11-23', executions: 512, passed: 495 },
+        { date: '11-25', executions: 478, passed: 462 },
+        { date: '11-27', executions: 534, passed: 518 },
+        { date: '11-29', executions: 489, passed: 475 },
+        { date: '12-01', executions: 567, passed: 550 },
+      ];
+      
+      return (
+        <div className="glass-card p-6 opacity-0 animate-fade-in-up stagger-2">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-semibold">执行趋势</h3>
+            <div className="flex items-center gap-4 text-sm">
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-[#00d4ff]" />
+                <span className="text-[#a1a1aa]">总执行</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-[#10b981]" />
+                <span className="text-[#a1a1aa]">通过</span>
+              </div>
+            </div>
+          </div>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="colorExecutions" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#00d4ff" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#00d4ff" stopOpacity={0}/>
+                  </linearGradient>
+                  <linearGradient id="colorPassed" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                <XAxis dataKey="date" stroke="#71717a" fontSize={12} tickLine={false} axisLine={false} />
+                <YAxis stroke="#71717a" fontSize={12} tickLine={false} axisLine={false} />
+                <Tooltip 
+                  contentStyle={{ 
+                    background: '#1a1a25', 
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '8px',
+                    color: '#fff'
+                  }}
+                />
+                <Area type="monotone" dataKey="executions" stroke="#00d4ff" strokeWidth={2} fillOpacity={1} fill="url(#colorExecutions)" />
+                <Area type="monotone" dataKey="passed" stroke="#10b981" strokeWidth={2} fillOpacity={1} fill="url(#colorPassed)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      );
+    };
+
+    // Donut Chart Component
+    const StatusDistributionChart = () => {
+      const data = [
+        { name: '通过', value: 7856, color: '#10b981' },
+        { name: '失败', value: 412, color: '#ef4444' },
+        { name: '运行中', value: 189, color: '#00d4ff' },
+        { name: '待执行', value: 135, color: '#f59e0b' },
+      ];
+      
+      const total = data.reduce((acc, item) => acc + item.value, 0);
+      
+      return (
+        <div className="glass-card p-6 opacity-0 animate-fade-in-up stagger-3">
+          <h3 className="text-lg font-semibold mb-6">状态分布</h3>
+          <div className="h-56 relative">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={data}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={60}
+                  outerRadius={80}
+                  paddingAngle={4}
+                  dataKey="value"
+                >
+                  {data.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip 
+                  contentStyle={{ 
+                    background: '#1a1a25', 
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '8px',
+                    color: '#fff'
+                  }}
+                  formatter={(value) => [value.toLocaleString(), '数量']}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+              <span className="text-2xl font-bold">{total.toLocaleString()}</span>
+              <span className="text-xs text-[#a1a1aa]">总计</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mt-4">
+            {data.map((item, index) => (
+              <div key={index} className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }} />
+                <span className="text-sm text-[#a1a1aa]">{item.name}</span>
+                <span className="text-sm font-medium ml-auto">{item.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    };
+
+    // Activity Feed Component
+    const ActivityFeed = () => {
+      const activities = [
+        { id: 1, icon: CheckCircle, iconColor: '#10b981', text: '测试执行完成', detail: '项目 "电商平台" 的回归测试已通过', time: '5分钟前' },
+        { id: 2, icon: FileText, iconColor: '#3b82f6', text: 'US 解析成功', detail: 'US-1234 已解析并生成 5 个测试用例', time: '1小时前' },
+        { id: 3, icon: Code2, iconColor: '#7c3aed', text: '脚本生成完成', detail: '为 "登录流程" 用例生成了 Playwright 脚本', time: '2小时前' },
+        { id: 4, icon: XCircle, iconColor: '#ef4444', text: '执行失败', detail: '脚本 "订单支付" 在第 3 步失败', time: '3小时前' },
+        { id: 5, icon: PlayCircle, iconColor: '#00d4ff', text: '开始执行', detail: '项目 "移动端APP" 的冒烟测试已开始', time: '5小时前' },
+        { id: 6, icon: Upload, iconColor: '#f59e0b', text: 'US 导入成功', detail: '从 JIRA 导入了 12 个用户故事', time: '昨天' },
+        { id: 7, icon: User, iconColor: '#a1a1aa', text: '用户加入', detail: '李四加入了团队', time: '昨天' },
+      ];
+      
+      return (
+        <div className="glass-card p-6 opacity-0 animate-fade-in-up stagger-4 h-full">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold">最近活动</h3>
+            <button className="text-sm text-[#00d4ff] hover:underline">查看全部</button>
+          </div>
+          <div className="space-y-4 max-h-80 overflow-y-auto scrollbar-thin pr-2">
+            {activities.map((activity) => (
+              <div key={activity.id} className="flex items-start gap-3 group cursor-pointer hover:bg-white/5 p-2 rounded-lg transition-colors">
+                <div 
+                  className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                  style={{ backgroundColor: `${activity.iconColor}20` }}
+                >
+                  <activity.icon className="w-4 h-4" style={{ color: activity.iconColor }} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-white">{activity.text}</p>
+                  <p className="text-xs text-[#a1a1aa] mt-0.5 truncate">{activity.detail}</p>
+                </div>
+                <span className="text-xs text-[#71717a] flex-shrink-0">{activity.time}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    };
+
+    // Quick Actions Component
+    const QuickActions = () => {
+      const actions = [
+        { icon: Plus, label: '新建用例', description: '创建新的测试用例', color: '#00d4ff', href: './test-cases.html' },
+        { icon: Upload, label: '导入US', description: '从JIRA导入需求', color: '#7c3aed', href: './us-management.html' },
+        { icon: Play, label: '开始执行', description: '运行测试脚本', color: '#10b981', href: './execution-hub.html' },
+        { icon: BarChart3, label: '查看报告', description: '查看最新报告', color: '#f59e0b', href: './reports.html' },
+      ];
+      
+      return (
+        <div className="glass-card p-6 opacity-0 animate-fade-in-up stagger-4 h-full">
+          <h3 className="text-lg font-semibold mb-4">快速操作</h3>
+          <div className="grid grid-cols-2 gap-3">
+            {actions.map((action, index) => (
+              <a
+                key={index}
+                href={action.href}
+                className="group p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 hover:border-white/10 transition-all duration-300"
+              >
+                <div 
+                  className="w-10 h-10 rounded-lg flex items-center justify-center mb-3 transition-transform group-hover:scale-110"
+                  style={{ backgroundColor: `${action.color}20` }}
+                >
+                  <action.icon className="w-5 h-5" style={{ color: action.color }} />
+                </div>
+                <p className="font-medium text-sm">{action.label}</p>
+                <p className="text-xs text-[#71717a] mt-1">{action.description}</p>
+              </a>
+            ))}
+          </div>
+        </div>
+      );
+    };
+
+    // Main Dashboard Component
+    const Dashboard = () => {
+      return (
+        <div className="min-h-screen">
+          <ParticleBackground />
+          <Sidebar />
+          
+          <main className="ml-60 min-h-screen relative z-10">
+            <Header />
+            
+            <div className="p-6">
+              {/* Stats Cards Row */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+                <StatsCard 
+                  icon={Folder} 
+                  label="项目总数" 
+                  value={12} 
+                  subtext="+2 本月新增" 
+                  color="cyan" 
+                  delay={1} 
+                />
+                <StatsCard 
+                  icon={FileCheck} 
+                  label="测试用例" 
+                  value={1248} 
+                  subtext="+56 本周新增" 
+                  color="purple" 
+                  delay={2} 
+                />
+                <StatsCard 
+                  icon={Play} 
+                  label="执行次数" 
+                  value={8592} 
+                  subtext="成功率 94.2%" 
+                  color="green" 
+                  delay={3} 
+                />
+                <StatsCard 
+                  icon={TrendingUp} 
+                  label="通过率" 
+                  value="94.2%" 
+                  subtext="+2.1% 较上月" 
+                  color="blue" 
+                  delay={4} 
+                />
+              </div>
+              
+              {/* Charts Row */}
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6">
+                <div className="lg:col-span-3">
+                  <ExecutionTrendChart />
+                </div>
+                <div className="lg:col-span-2">
+                  <StatusDistributionChart />
+                </div>
+              </div>
+              
+              {/* Bottom Row */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-2">
+                  <ActivityFeed />
+                </div>
+                <div className="lg:col-span-1">
+                  <QuickActions />
+                </div>
+              </div>
+            </div>
+          </main>
+        </div>
+      );
+    };
+
+    // Initialize Lucide icons and render app
+    document.addEventListener('DOMContentLoaded', () => {
+      lucide.createIcons();
+    });
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<Dashboard />);
+  </script>
+</body>
+</html>

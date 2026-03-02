@@ -1,0 +1,130 @@
+services:
+  frontend:
+    build:
+      context: ./kun-frontend
+      dockerfile: Dockerfile
+    container_name: autotest-frontend
+    ports:
+      - '${FRONTEND_PORT:-3000}:80'
+    depends_on:
+      backend-java:
+        condition: service_healthy
+    networks:
+      - autotest-network
+    restart: unless-stopped
+
+  backend-java:
+    build:
+      context: ./kun-backend
+    container_name: autotest-backend-java
+    user: "0:0"
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DB: ${MYSQL_DB:-autotest}
+      MYSQL_USER: ${MYSQL_USER:-root}
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-password}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:-guest}
+      JWT_SECRET: ${JWT_SECRET:-AutoTestPlatformSecretKey2024SecureJwtTokenForEnterprise}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-local-placeholder}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-0.7}
+      PLATFORM_EXECUTION_LOCALHOST_REWRITE_BASE_URL: ${PLATFORM_EXECUTION_LOCALHOST_REWRITE_BASE_URL:-http://frontend}
+    ports:
+      - '${BACKEND_PORT:-8080}:8080'
+    volumes:
+      - backend-uploads:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/actuator/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 90s
+    networks:
+      - autotest-network
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.4
+    container_name: autotest-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-password}
+      MYSQL_DATABASE: ${MYSQL_DB:-autotest}
+      MYSQL_ROOT_HOST: '%'
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    ports:
+      - '${MYSQL_HOST_PORT:-3306}:3306'
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - autotest-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: autotest-redis
+    command: redis-server --appendonly yes
+    ports:
+      - '${REDIS_HOST_PORT:-6379}:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - autotest-network
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: autotest-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+    ports:
+      - '${RABBITMQ_HOST_PORT:-5672}:5672'
+      - '${RABBITMQ_MANAGEMENT_PORT:-15672}:15672'
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - autotest-network
+    restart: unless-stopped
+
+volumes:
+  backend-uploads:
+  mysql-data:
+  redis-data:
+  rabbitmq-data:
+
+networks:
+  autotest-network:
+    driver: bridge

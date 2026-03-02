@@ -1,0 +1,116 @@
+- generic [active] [ref=e1]:
+  - complementary [ref=e2]:
+    - generic [ref=e4]:
+      - img [ref=e6]
+      - generic [ref=e8]: AutoTest AI
+    - navigation [ref=e9]:
+      - list [ref=e10]:
+        - listitem [ref=e11]:
+          - link "仪表盘" [ref=e12] [cursor=pointer]:
+            - /url: ../index.html
+            - img [ref=e13]
+            - generic [ref=e18]: 仪表盘
+        - listitem [ref=e19]:
+          - link "US需求管理 23" [ref=e20] [cursor=pointer]:
+            - /url: ./us-management.html
+            - img [ref=e21]
+            - generic [ref=e24]: US需求管理
+            - generic [ref=e25]: "23"
+        - listitem [ref=e26]:
+          - link "测试用例 1.2k" [ref=e27] [cursor=pointer]:
+            - /url: ./test-cases.html
+            - img [ref=e28]
+            - generic [ref=e31]: 测试用例
+            - generic [ref=e32]: 1.2k
+        - listitem [ref=e33]:
+          - link "脚本工作室" [ref=e34] [cursor=pointer]:
+            - /url: ./script-studio.html
+            - img [ref=e35]
+            - generic [ref=e39]: 脚本工作室
+        - listitem [ref=e40]:
+          - link "执行中心" [ref=e41] [cursor=pointer]:
+            - /url: ./execution-hub.html
+            - img [ref=e42]
+            - generic [ref=e45]: 执行中心
+        - listitem [ref=e47]:
+          - link "报告中心" [ref=e48] [cursor=pointer]:
+            - /url: ./reports.html
+            - img [ref=e49]
+            - generic [ref=e51]: 报告中心
+        - listitem [ref=e52]:
+          - link "系统设置" [ref=e53] [cursor=pointer]:
+            - /url: ./settings.html
+            - img [ref=e54]
+            - generic [ref=e57]: 系统设置
+    - generic [ref=e59]:
+      - generic [ref=e62]: 系统运行正常
+      - generic [ref=e63]: v2.1.0
+  - main [ref=e64]:
+    - generic [ref=e65]:
+      - generic [ref=e66]:
+        - heading "US 需求管理" [level=1] [ref=e67]
+        - generic [ref=e68]: "23"
+      - generic [ref=e69]:
+        - button "导入 US" [ref=e70]:
+          - img [ref=e71]
+          - generic [ref=e74]: 导入 US
+        - button "新建 US" [ref=e75]:
+          - img [ref=e76]
+          - generic [ref=e77]: 新建 US
+    - generic [ref=e78]:
+      - generic [ref=e80]:
+        - generic [ref=e82]:
+          - img [ref=e83]
+          - textbox "搜索 US 编号或标题..." [ref=e86]
+        - combobox [ref=e87]:
+          - option "全部状态" [selected]
+          - option "待解析"
+          - option "解析中"
+          - option "已完成"
+          - option "失败"
+        - combobox [ref=e88]:
+          - option "全部项目" [selected]
+          - option "电商平台"
+          - option "支付系统"
+          - option "用户中心"
+        - generic [ref=e89]:
+          - button "表格视图" [ref=e90]:
+            - img [ref=e91]
+          - button "卡片视图" [ref=e92]:
+            - img [ref=e93]
+      - table [ref=e96]:
+        - rowgroup [ref=e97]:
+          - row "US 编号 标题 所属项目 用例数 状态 更新时间 操作" [ref=e98]:
+            - columnheader "US 编号" [ref=e99]
+            - columnheader "标题" [ref=e100]
+            - columnheader "所属项目" [ref=e101]
+            - columnheader "用例数" [ref=e102]
+            - columnheader "状态" [ref=e103]
+            - columnheader "更新时间" [ref=e104]
+            - columnheader "操作" [ref=e105]
+        - rowgroup [ref=e106]:
+          - row "加载中..." [ref=e107]:
+            - cell "加载中..." [ref=e108]
+      - generic [ref=e109]:
+        - paragraph [ref=e110]: 显示 1-5 共 24 条
+        - generic [ref=e111]:
+          - button "上一页" [disabled] [ref=e112]
+          - button "1" [ref=e113]
+          - button "2" [ref=e114]
+          - button "3" [ref=e115]
+          - button "下一页" [ref=e116]
+  - generic [ref=e118]:
+    - heading "登录 AutoTest" [level=3] [ref=e119]
+    - paragraph [ref=e120]: 需要登录后才能访问当前功能
+    - generic [ref=e121]:
+      - generic [ref=e122]:
+        - generic [ref=e123]: 用户名
+        - textbox "用户名" [ref=e124]: admin
+      - generic [ref=e125]:
+        - generic [ref=e126]: 密码
+        - textbox "密码" [ref=e127]: admin123
+      - paragraph [ref=e128]
+      - generic [ref=e129]:
+        - button "登录页" [ref=e130] [cursor=pointer]
+        - button "取消" [ref=e131] [cursor=pointer]
+        - button "登录" [ref=e132] [cursor=pointer]

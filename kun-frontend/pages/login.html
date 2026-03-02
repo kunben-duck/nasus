@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 | AutoTest AI</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background-color: #0a0a0f;
+      color: #ffffff;
+      margin: 0;
+      overflow-x: hidden;
+    }
+    #particle-canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .glass-card {
+      background: rgba(18, 18, 26, 0.72);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(18px);
+      border-radius: 14px;
+    }
+    .gradient-text {
+      background: linear-gradient(135deg, #00d4ff 0%, #7c3aed 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+  </style>
+</head>
+<body class="min-h-screen">
+  <canvas id="particle-canvas"></canvas>
+
+  <main class="relative z-10 min-h-screen flex items-center justify-center px-4 py-10">
+    <div class="w-full max-w-md">
+      <section class="glass-card p-8">
+        <div class="flex items-center gap-3 mb-6">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-[#00d4ff] to-[#7c3aed] flex items-center justify-center">
+            <i data-lucide="zap" class="w-6 h-6 text-white"></i>
+          </div>
+          <div>
+            <p class="text-sm text-[#a1a1aa]">智能自动化测试平台</p>
+            <h1 class="text-2xl font-bold gradient-text">AutoTest AI</h1>
+          </div>
+        </div>
+
+        <h2 class="text-xl font-semibold mb-2">账号登录</h2>
+        <p class="text-sm text-[#a1a1aa] mb-6">登录后可进入测试平台的完整工作台。</p>
+
+        <form id="login-page-form" class="space-y-4">
+          <div>
+            <label class="block text-sm text-[#a1a1aa] mb-2">用户名</label>
+            <input id="login-page-username" type="text" value="admin" required class="w-full px-4 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+          </div>
+          <div>
+            <label class="block text-sm text-[#a1a1aa] mb-2">密码</label>
+            <input id="login-page-password" type="password" value="admin123" required class="w-full px-4 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+          </div>
+          <p id="login-page-error" class="text-sm text-[#ef4444] min-h-5"></p>
+          <button type="submit" class="w-full py-2.5 rounded-lg bg-gradient-to-r from-[#00d4ff] to-[#7c3aed] hover:opacity-90 transition-opacity text-sm font-medium">
+            登录平台
+          </button>
+        </form>
+        <div class="mt-6 pt-4 border-t border-white/10 text-xs text-[#71717a]">
+          示例账号: admin/admin123
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="../shared/app-runtime.js?v=20260226-global-sidebar-toggle-fix4"></script>
+  <script>
+    function resolveRedirectTarget() {
+      const params = new URLSearchParams(window.location.search);
+      const redirect = params.get('redirect');
+      if (!redirect) return '../index.html';
+      if (/^https?:\/\//i.test(redirect)) return '../index.html';
+      return redirect;
+    }
+
+    async function bootstrapLoginPage() {
+      if (window.lucide) window.lucide.createIcons();
+      initParticleBackground();
+
+      const existingUser = await window.AppRuntime.ensureAuth({ silent: true });
+      if (existingUser) {
+        window.location.href = resolveRedirectTarget();
+        return;
+      }
+
+      const form = document.getElementById('login-page-form');
+      const errorNode = document.getElementById('login-page-error');
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        errorNode.textContent = '';
+        const username = document.getElementById('login-page-username').value.trim();
+        const password = document.getElementById('login-page-password').value;
+
+        try {
+          await window.AppRuntime.login(username, password);
+          window.location.href = resolveRedirectTarget();
+        } catch (error) {
+          errorNode.textContent = error.message || '登录失败，请检查账号密码';
+        }
+      });
+    }
+
+    function initParticleBackground() {
+      const canvas = document.getElementById('particle-canvas');
+      if (!canvas) return;
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+      let renderer;
+      try {
+        renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+      } catch (error) {
+        console.warn('Particle background disabled:', error.message);
+        return;
+      }
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+      const particleCount = 56;
+      const positions = new Float32Array(particleCount * 3);
+      const velocities = [];
+      const color1 = new THREE.Color('#00d4ff');
+      const color2 = new THREE.Color('#7c3aed');
+      const colors = new Float32Array(particleCount * 3);
+
+      for (let i = 0; i < particleCount; i += 1) {
+        positions[i * 3] = (Math.random() - 0.5) * 20;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 20;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 10;
+
+        velocities.push({
+          x: (Math.random() - 0.5) * 0.01,
+          y: (Math.random() - 0.5) * 0.01,
+          z: (Math.random() - 0.5) * 0.005
+        });
+
+        const mixFactor = Math.random();
+        const color = color1.clone().lerp(color2, mixFactor);
+        colors[i * 3] = color.r;
+        colors[i * 3 + 1] = color.g;
+        colors[i * 3 + 2] = color.b;
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+      const material = new THREE.PointsMaterial({
+        size: 0.08,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending
+      });
+
+      const particles = new THREE.Points(geometry, material);
+      scene.add(particles);
+      camera.position.z = 8;
+
+      let animationId;
+      const animate = () => {
+        animationId = requestAnimationFrame(animate);
+        const posArray = geometry.attributes.position.array;
+
+        for (let i = 0; i < particleCount; i += 1) {
+          posArray[i * 3] += velocities[i].x;
+          posArray[i * 3 + 1] += velocities[i].y;
+          posArray[i * 3 + 2] += velocities[i].z;
+
+          if (Math.abs(posArray[i * 3]) > 10) velocities[i].x *= -1;
+          if (Math.abs(posArray[i * 3 + 1]) > 10) velocities[i].y *= -1;
+          if (Math.abs(posArray[i * 3 + 2]) > 5) velocities[i].z *= -1;
+        }
+
+        geometry.attributes.position.needsUpdate = true;
+        particles.rotation.y += 0.00045;
+        renderer.render(scene, camera);
+      };
+      animate();
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      }, { passive: true });
+
+      window.addEventListener('beforeunload', () => {
+        if (animationId) cancelAnimationFrame(animationId);
+      });
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      bootstrapLoginPage().catch((error) => {
+        const errorNode = document.getElementById('login-page-error');
+        if (errorNode) errorNode.textContent = error.message || '页面初始化失败';
+      });
+    });
+  </script>
+</body>
+</html>

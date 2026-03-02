@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# Node / Playwright test artifacts
+node_modules/
+playwright-report/
+test-results/
+.playwright-cli/
+
+# Local env
+.env

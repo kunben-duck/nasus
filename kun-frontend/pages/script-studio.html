@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>脚本工作室 | AutoTest AI</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --studio-sidebar-width: 15rem;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background-color: #0a0a0f;
+      color: #ffffff;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+    #particle-canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .glass-card {
+      background: rgba(18, 18, 26, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(20px);
+      border-radius: 12px;
+    }
+    .gradient-text {
+      background: linear-gradient(135deg, #00d4ff 0%, #7c3aed 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .nav-item-active {
+      background: rgba(0, 212, 255, 0.1);
+      border-left: 3px solid #00d4ff;
+    }
+    .code-editor {
+      font-family: 'JetBrains Mono', monospace;
+      background: rgba(10, 10, 15, 0.9);
+    }
+    .action-block {
+      transition: all 0.2s ease;
+    }
+    .action-block:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 212, 255, 0.2);
+    }
+    .grid-bg {
+      background-image: 
+        linear-gradient(rgba(0, 212, 255, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 212, 255, 0.05) 1px, transparent 1px);
+      background-size: 20px 20px;
+    }
+    .studio-scroll {
+      overscroll-behavior: contain;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(113, 113, 122, 0.28) transparent;
+      scrollbar-gutter: stable;
+    }
+    .studio-scroll:hover {
+      scrollbar-color: rgba(0, 212, 255, 0.45) transparent;
+    }
+    .studio-scroll::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    .studio-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .studio-scroll::-webkit-scrollbar-thumb {
+      background: rgba(113, 113, 122, 0.28);
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .studio-scroll:hover::-webkit-scrollbar-thumb {
+      background: rgba(0, 212, 255, 0.45);
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .studio-scroll::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+    .studio-sidebar {
+      width: var(--studio-sidebar-width);
+      transition: width 0.22s ease;
+      overflow: hidden;
+    }
+    .studio-main {
+      margin-left: var(--studio-sidebar-width);
+      transition: margin-left 0.22s ease;
+    }
+    .studio-palette {
+      left: calc(var(--studio-sidebar-width) + 1rem);
+      transition: left 0.22s ease;
+    }
+    body.sidebar-collapsed {
+      --studio-sidebar-width: 4.5rem;
+    }
+    body.sidebar-collapsed .sidebar-logo-text,
+    body.sidebar-collapsed .sidebar-label,
+    body.sidebar-collapsed .sidebar-badge,
+    body.sidebar-collapsed .sidebar-status-text,
+    body.sidebar-collapsed .sidebar-version {
+      opacity: 0;
+      width: 0;
+      margin: 0;
+      overflow: hidden;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    body.sidebar-collapsed .sidebar-nav-link {
+      justify-content: center;
+      padding-left: 0.75rem;
+      padding-right: 0.75rem;
+    }
+    body.sidebar-collapsed .sidebar-system-card {
+      justify-content: center;
+      padding: 0.5rem;
+    }
+  </style>
+</head>
+<body class="min-h-screen">
+  <canvas id="particle-canvas"></canvas>
+  
+  <aside id="studio-sidebar" class="studio-sidebar fixed left-0 top-0 h-full bg-[#12121a] border-r border-white/5 z-50 flex flex-col">
+    <div class="h-16 flex items-center justify-center border-b border-white/5">
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00d4ff] to-[#7c3aed] flex items-center justify-center">
+          <i data-lucide="zap" class="w-5 h-5 text-white"></i>
+        </div>
+        <span class="sidebar-logo-text text-lg font-bold gradient-text transition-all duration-200">AutoTest AI</span>
+      </div>
+    </div>
+    
+    <nav class="flex-1 py-4 px-3">
+      <ul class="space-y-1">
+        <li><a href="../index.html" title="仪表盘" class="sidebar-nav-link flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="layout-dashboard" class="w-5 h-5"></i><span class="sidebar-label text-sm font-medium flex-1 transition-all duration-200">仪表盘</span></a></li>
+        <li><a href="./us-management.html" title="US需求管理" class="sidebar-nav-link flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="file-text" class="w-5 h-5"></i><span class="sidebar-label text-sm font-medium flex-1 transition-all duration-200">US需求管理</span><span id="us-nav-count-badge" class="sidebar-badge px-2 py-0.5 text-xs bg-[#7c3aed]/20 text-[#7c3aed] rounded-full transition-all duration-200">0</span></a></li>
+        <li><a href="./test-cases.html" title="测试用例" class="sidebar-nav-link flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="check-square" class="w-5 h-5"></i><span class="sidebar-label text-sm font-medium flex-1 transition-all duration-200">测试用例</span><span id="tc-nav-count-badge" class="sidebar-badge px-2 py-0.5 text-xs bg-[#7c3aed]/20 text-[#7c3aed] rounded-full transition-all duration-200">0</span></a></li>
+        <li><a href="./script-studio.html" title="脚本工作室" class="sidebar-nav-link nav-item-active flex items-center gap-3 px-4 py-3 rounded-lg text-white"><i data-lucide="code-2" class="w-5 h-5 text-[#00d4ff]"></i><span class="sidebar-label text-sm font-medium flex-1 transition-all duration-200">脚本工作室</span></a></li>
+        <li><a href="./execution-hub.html" title="执行中心" class="sidebar-nav-link flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="play-circle" class="w-5 h-5"></i><span class="sidebar-label text-sm font-medium flex-1 transition-all duration-200">执行中心</span><span class="sidebar-badge w-2 h-2 bg-[#10b981] rounded-full animate-pulse transition-all duration-200"></span></a></li>
+        <li><a href="./reports.html" title="报告中心" class="sidebar-nav-link flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="bar-chart-3" class="w-5 h-5"></i><span class="sidebar-label text-sm font-medium flex-1 transition-all duration-200">报告中心</span></a></li>
+        <li><a href="./settings.html" title="系统设置" class="sidebar-nav-link flex items-center gap-3 px-4 py-3 rounded-lg text-[#a1a1aa] hover:bg-white/5 hover:text-white transition-all"><i data-lucide="settings" class="w-5 h-5"></i><span class="sidebar-label text-sm font-medium flex-1 transition-all duration-200">系统设置</span></a></li>
+      </ul>
+    </nav>
+    
+    <div class="p-4 border-t border-white/5">
+      <div class="sidebar-system-card glass-card p-3 rounded-lg transition-all duration-200">
+        <div class="flex items-center gap-2 text-xs text-[#a1a1aa]">
+          <div class="w-2 h-2 bg-[#10b981] rounded-full"></div>
+          <span class="sidebar-status-text transition-all duration-200">系统运行正常</span>
+        </div>
+        <div class="sidebar-version mt-2 text-xs text-[#71717a] transition-all duration-200">v2.1.0</div>
+      </div>
+    </div>
+  </aside>
+  
+  <main id="studio-main" class="studio-main h-screen relative z-10 flex flex-col overflow-hidden">
+    <!-- Toolbar -->
+    <header class="h-16 flex items-center justify-between px-6 border-b border-white/5 bg-transparent">
+      <div class="flex items-center gap-4">
+        <input type="text" value="登录流程测试" class="bg-transparent text-lg font-semibold focus:outline-none border-b border-transparent hover:border-white/20 focus:border-[#00d4ff] transition-colors px-1">
+        <button class="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-sm flex items-center gap-2">
+          <i data-lucide="save" class="w-4 h-4"></i>保存
+        </button>
+        <button class="px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#00d4ff] to-[#7c3aed] hover:opacity-90 transition-opacity text-sm font-medium flex items-center gap-2">
+          <i data-lucide="play" class="w-4 h-4"></i>运行
+        </button>
+      </div>
+      
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-1 bg-white/5 rounded-lg p-1">
+          <button class="p-1.5 rounded hover:bg-white/10 transition-colors" title="撤销"><i data-lucide="undo" class="w-4 h-4 text-[#71717a]"></i></button>
+          <button class="p-1.5 rounded hover:bg-white/10 transition-colors" title="重做"><i data-lucide="redo" class="w-4 h-4 text-[#71717a]"></i></button>
+        </div>
+        <div class="flex items-center gap-1 bg-white/5 rounded-lg p-1">
+          <button class="p-1.5 rounded hover:bg-white/10 transition-colors" title="缩小"><i data-lucide="zoom-out" class="w-4 h-4 text-[#71717a]"></i></button>
+          <span class="text-xs text-[#a1a1aa] px-2">100%</span>
+          <button class="p-1.5 rounded hover:bg-white/10 transition-colors" title="放大"><i data-lucide="zoom-in" class="w-4 h-4 text-[#71717a]"></i></button>
+        </div>
+        <div class="flex items-center gap-1 bg-white/5 rounded-lg p-1">
+          <button class="p-1.5 rounded bg-white/10 transition-colors" title="分屏"><i data-lucide="columns" class="w-4 h-4"></i></button>
+          <button class="p-1.5 rounded hover:bg-white/10 transition-colors" title="仅可视化"><i data-lucide="layout" class="w-4 h-4 text-[#71717a]"></i></button>
+          <button class="p-1.5 rounded hover:bg-white/10 transition-colors" title="仅代码"><i data-lucide="code" class="w-4 h-4 text-[#71717a]"></i></button>
+        </div>
+      </div>
+    </header>
+    
+    <!-- Editor Area -->
+    <div class="flex-1 min-h-0 flex overflow-hidden">
+      <!-- Visual Canvas -->
+      <div class="flex-1 grid-bg relative overflow-auto studio-scroll p-6">
+        <div class="min-h-[600px] flex flex-col items-center gap-6 py-8">
+          <!-- Action Blocks -->
+          <div class="action-block w-64 p-4 rounded-xl bg-[#12121a] border border-[#3b82f6]/30 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-lg bg-[#3b82f6]/20 flex items-center justify-center">
+                <i data-lucide="globe" class="w-5 h-5 text-[#3b82f6]"></i>
+              </div>
+              <div class="flex-1">
+                <p class="text-sm font-medium">Navigate</p>
+                <p class="text-xs text-[#71717a] truncate">https://example.com/login</p>
+              </div>
+            </div>
+          </div>
+          
+          <div class="w-0.5 h-8 bg-gradient-to-b from-[#3b82f6] to-[#00d4ff]"></div>
+          
+          <div class="action-block w-64 p-4 rounded-xl bg-[#12121a] border border-[#00d4ff]/30 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-lg bg-[#00d4ff]/20 flex items-center justify-center">
+                <i data-lucide="clock" class="w-5 h-5 text-[#00d4ff]"></i>
+              </div>
+              <div class="flex-1">
+                <p class="text-sm font-medium">Wait</p>
+                <p class="text-xs text-[#71717a]">for element visible</p>
+              </div>
+            </div>
+          </div>
+          
+          <div class="w-0.5 h-8 bg-gradient-to-b from-[#00d4ff] to-[#7c3aed]"></div>
+          
+          <div class="action-block w-64 p-4 rounded-xl bg-[#12121a] border border-[#7c3aed]/30 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-lg bg-[#7c3aed]/20 flex items-center justify-center">
+                <i data-lucide="type" class="w-5 h-5 text-[#7c3aed]"></i>
+              </div>
+              <div class="flex-1">
+                <p class="text-sm font-medium">Type</p>
+                <p class="text-xs text-[#71717a] truncate">#username -&gt; testuser</p>
+              </div>
+            </div>
+          </div>
+          
+          <div class="w-0.5 h-8 bg-gradient-to-b from-[#7c3aed] to-[#7c3aed]"></div>
+          
+          <div class="action-block w-64 p-4 rounded-xl bg-[#12121a] border border-[#7c3aed]/30 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-lg bg-[#7c3aed]/20 flex items-center justify-center">
+                <i data-lucide="type" class="w-5 h-5 text-[#7c3aed]"></i>
+              </div>
+              <div class="flex-1">
+                <p class="text-sm font-medium">Type</p>
+                <p class="text-xs text-[#71717a] truncate">#password -&gt; ********</p>
+              </div>
+            </div>
+          </div>
+          
+          <div class="w-0.5 h-8 bg-gradient-to-b from-[#7c3aed] to-[#10b981]"></div>
+          
+          <div class="action-block w-64 p-4 rounded-xl bg-[#12121a] border border-[#10b981]/30 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-lg bg-[#10b981]/20 flex items-center justify-center">
+                <i data-lucide="mouse-pointer-click" class="w-5 h-5 text-[#10b981]"></i>
+              </div>
+              <div class="flex-1">
+                <p class="text-sm font-medium">Click</p>
+                <p class="text-xs text-[#71717a] truncate">#login-button</p>
+              </div>
+            </div>
+          </div>
+          
+          <div class="w-0.5 h-8 bg-gradient-to-b from-[#10b981] to-[#00d4ff]"></div>
+          
+          <div class="action-block w-64 p-4 rounded-xl bg-[#12121a] border border-[#00d4ff]/30 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-lg bg-[#00d4ff]/20 flex items-center justify-center">
+                <i data-lucide="clock" class="w-5 h-5 text-[#00d4ff]"></i>
+              </div>
+              <div class="flex-1">
+                <p class="text-sm font-medium">Wait</p>
+                <p class="text-xs text-[#71717a]">for navigation</p>
+              </div>
+            </div>
+          </div>
+          
+          <div class="w-0.5 h-8 bg-gradient-to-b from-[#00d4ff] to-[#f59e0b]"></div>
+          
+          <div class="action-block w-64 p-4 rounded-xl bg-[#12121a] border border-[#f59e0b]/30 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-lg bg-[#f59e0b]/20 flex items-center justify-center">
+                <i data-lucide="check-square" class="w-5 h-5 text-[#f59e0b]"></i>
+              </div>
+              <div class="flex-1">
+                <p class="text-sm font-medium">Assert</p>
+                <p class="text-xs text-[#71717a] truncate">text visible: 欢迎回来</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Code Editor -->
+      <div class="w-[500px] h-full border-l border-white/5 flex flex-col code-editor">
+        <div class="h-10 flex items-center justify-between px-4 border-b border-white/5">
+          <span class="text-sm text-[#a1a1aa]">login.spec.js</span>
+          <div class="flex items-center gap-2">
+            <button class="p-1.5 hover:bg-white/10 rounded transition-colors" title="复制"><i data-lucide="copy" class="w-4 h-4 text-[#71717a]"></i></button>
+            <button class="p-1.5 hover:bg-white/10 rounded transition-colors" title="下载"><i data-lucide="download" class="w-4 h-4 text-[#71717a]"></i></button>
+          </div>
+        </div>
+        <div class="flex-1 p-4 overflow-auto studio-scroll">
+          <pre class="text-sm leading-relaxed"><code><span class="text-[#7c3aed]">const</span> <span class="text-[#00d4ff]">{ test, expect }</span> = <span class="text-[#7c3aed]">require</span>(<span class="text-[#10b981]">'@playwright/test'</span>);
+
+<span class="text-[#7c3aed]">test</span>(<span class="text-[#10b981]">('用户登录流程', async ({ page }) => {</span>
+  <span class="text-[#71717a]">// 步骤 1: 导航到登录页</span>
+  <span class="text-[#7c3aed]">await</span> page.<span class="text-[#00d4ff]">goto</span>(<span class="text-[#10b981]">'https://example.com/login'</span>);
+  
+  <span class="text-[#71717a]">// 步骤 2: 等待登录表单可见</span>
+  <span class="text-[#7c3aed]">await</span> page.<span class="text-[#00d4ff]">waitForSelector</span>(<span class="text-[#10b981]">'#login-form'</span>);
+  
+  <span class="text-[#71717a]">// 步骤 3: 输入用户名</span>
+  <span class="text-[#7c3aed]">await</span> page.<span class="text-[#00d4ff]">fill</span>(<span class="text-[#10b981]">'#username', 'testuser'</span>);
+  
+  <span class="text-[#71717a]">// 步骤 4: 输入密码</span>
+  <span class="text-[#7c3aed]">await</span> page.<span class="text-[#00d4ff]">fill</span>(<span class="text-[#10b981]">'#password', 'Test@123'</span>);
+  
+  <span class="text-[#71717a]">// 步骤 5: 点击登录按钮</span>
+  <span class="text-[#7c3aed]">await</span> page.<span class="text-[#00d4ff]">click</span>(<span class="text-[#10b981]">'#login-button'</span>);
+  
+  <span class="text-[#71717a]">// 步骤 6: 等待页面跳转</span>
+  <span class="text-[#7c3aed]">await</span> page.<span class="text-[#00d4ff]">waitForNavigation</span>();
+  
+  <span class="text-[#71717a]">// 步骤 7: 验证登录成功</span>
+  <span class="text-[#7c3aed]">await</span> <span class="text-[#7c3aed]">expect</span>(page.<span class="text-[#00d4ff]">locator</span>(<span class="text-[#10b981]">'.welcome-msg'</span>)).
+    <span class="text-[#00d4ff]">toContainText</span>(<span class="text-[#10b981]">'欢迎回来'</span>);
+});</code></pre>
+        </div>
+      </div>
+      
+      <!-- Properties Panel -->
+      <div class="w-72 h-full border-l border-white/5 bg-[#12121a]/50 p-4 overflow-auto studio-scroll">
+        <h3 class="text-sm font-semibold mb-4">属性面板</h3>
+        <div class="space-y-4">
+          <div>
+            <label class="block text-xs text-[#a1a1aa] mb-1">动作类型</label>
+            <select class="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+              <option>Navigate</option>
+              <option>Click</option>
+              <option>Type</option>
+              <option>Wait</option>
+              <option>Assert</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-[#a1a1aa] mb-1">URL</label>
+            <input type="text" value="https://example.com/login" class="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+          </div>
+          <div>
+            <label class="block text-xs text-[#a1a1aa] mb-1">超时时间 (ms)</label>
+            <input type="number" value="30000" class="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+          </div>
+          <div>
+            <label class="block text-xs text-[#a1a1aa] mb-1">描述</label>
+            <textarea class="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff] resize-none h-20">导航到登录页面</textarea>
+          </div>
+          <div class="pt-4 border-t border-white/5">
+            <button class="w-full py-2 rounded-lg bg-[#ef4444]/20 text-[#ef4444] text-sm hover:bg-[#ef4444]/30 transition-colors">删除动作</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Action Palette -->
+    <div class="studio-palette fixed bottom-6 glass-card p-3 rounded-xl flex items-center gap-2 z-40">
+      <div class="text-xs text-[#71717a] px-2">动作库:</div>
+      <button class="p-2 rounded-lg bg-[#3b82f6]/20 text-[#3b82f6] hover:bg-[#3b82f6]/30 transition-colors" title="Navigate"><i data-lucide="globe" class="w-4 h-4"></i></button>
+      <button class="p-2 rounded-lg bg-[#00d4ff]/20 text-[#00d4ff] hover:bg-[#00d4ff]/30 transition-colors" title="Click"><i data-lucide="mouse-pointer-click" class="w-4 h-4"></i></button>
+      <button class="p-2 rounded-lg bg-[#7c3aed]/20 text-[#7c3aed] hover:bg-[#7c3aed]/30 transition-colors" title="Type"><i data-lucide="type" class="w-4 h-4"></i></button>
+      <button class="p-2 rounded-lg bg-[#00d4ff]/20 text-[#00d4ff] hover:bg-[#00d4ff]/30 transition-colors" title="Wait"><i data-lucide="clock" class="w-4 h-4"></i></button>
+      <button class="p-2 rounded-lg bg-[#10b981]/20 text-[#10b981] hover:bg-[#10b981]/30 transition-colors" title="Assert"><i data-lucide="check-square" class="w-4 h-4"></i></button>
+      <button class="p-2 rounded-lg bg-[#f59e0b]/20 text-[#f59e0b] hover:bg-[#f59e0b]/30 transition-colors" title="Screenshot"><i data-lucide="camera" class="w-4 h-4"></i></button>
+      <div class="w-px h-6 bg-white/10 mx-1"></div>
+      <button class="p-2 rounded-lg hover:bg-white/10 transition-colors" title="更多"><i data-lucide="more-horizontal" class="w-4 h-4 text-[#71717a]"></i></button>
+    </div>
+  </main>
+  
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      lucide.createIcons();
+      initParticleBackground();
+    });
+    
+    function initParticleBackground() {
+      const canvas = document.getElementById('particle-canvas');
+      if (!canvas) return;
+      
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+      let renderer;
+      try {
+        renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+      } catch (error) {
+        console.warn('Particle background disabled:', error.message);
+        return;
+      }
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      
+      const particleCount = 60;
+      const positions = new Float32Array(particleCount * 3);
+      const velocities = [];
+      const color1 = new THREE.Color('#00d4ff');
+      const color2 = new THREE.Color('#7c3aed');
+      const colors = new Float32Array(particleCount * 3);
+      
+      for (let i = 0; i < particleCount; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 20;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 20;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 10;
+        
+        velocities.push({
+          x: (Math.random() - 0.5) * 0.01,
+          y: (Math.random() - 0.5) * 0.01,
+          z: (Math.random() - 0.5) * 0.005
+        });
+        
+        const mixFactor = Math.random();
+        const color = color1.clone().lerp(color2, mixFactor);
+        colors[i * 3] = color.r;
+        colors[i * 3 + 1] = color.g;
+        colors[i * 3 + 2] = color.b;
+      }
+      
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      
+      const material = new THREE.PointsMaterial({
+        size: 0.08,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending
+      });
+      
+      const particles = new THREE.Points(geometry, material);
+      scene.add(particles);
+      
+      camera.position.z = 8;
+      
+      let mouseX = 0, mouseY = 0;
+      const handleMouseMove = (e) => {
+        mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+        mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
+      };
+      window.addEventListener('mousemove', handleMouseMove, { passive: true });
+      
+      let animationId;
+      const animate = () => {
+        animationId = requestAnimationFrame(animate);
+        const posArray = geometry.attributes.position.array;
+        
+        for (let i = 0; i < particleCount; i++) {
+          posArray[i * 3] += velocities[i].x;
+          posArray[i * 3 + 1] += velocities[i].y;
+          posArray[i * 3 + 2] += velocities[i].z;
+          
+          const dx = mouseX * 5 - posArray[i * 3];
+          const dy = mouseY * 5 - posArray[i * 3 + 1];
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          
+          if (dist < 3) {
+            posArray[i * 3] -= dx * 0.01;
+            posArray[i * 3 + 1] -= dy * 0.01;
+          }
+          
+          if (Math.abs(posArray[i * 3]) > 10) velocities[i].x *= -1;
+          if (Math.abs(posArray[i * 3 + 1]) > 10) velocities[i].y *= -1;
+          if (Math.abs(posArray[i * 3 + 2]) > 5) velocities[i].z *= -1;
+        }
+        
+        geometry.attributes.position.needsUpdate = true;
+        particles.rotation.y += 0.0005;
+        renderer.render(scene, camera);
+      };
+      animate();
+      
+      const handleResize = () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      };
+      window.addEventListener('resize', handleResize, { passive: true });
+    }
+  </script>
+  <script src="../shared/app-runtime.js?v=20260226-global-sidebar-toggle-fix4"></script>
+  <script src="../shared/app-pages.js?v=20260226-global-sidebar-toggle-fix4"></script>
+</body>
+</html>
