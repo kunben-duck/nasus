@@ -1,6 +1,5 @@
 package com.autotest.platform.listener;
 
-import com.autotest.platform.config.RabbitMQConfig;
 import com.autotest.platform.dto.TestExecutionDTO;
 import com.autotest.platform.entity.ExecutionScreenshot;
 import com.autotest.platform.entity.ExecutionTimeline;
@@ -14,7 +13,6 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -50,7 +48,6 @@ public class TestExecutionListener {
     @Value("${platform.execution.localhost-rewrite-base-url:}")
     private String localhostRewriteBaseUrl;
 
-    @RabbitListener(queues = RabbitMQConfig.TEST_EXECUTION_QUEUE)
     public void handleTestExecution(Long executionId) {
         log.info("Received test execution task: {}", executionId);
         TestExecutionDTO initial = null;
@@ -369,12 +366,10 @@ public class TestExecutionListener {
         return StringUtils.hasText(value) ? value.trim() : fallback;
     }
 
-    @RabbitListener(queues = RabbitMQConfig.AI_GENERATION_QUEUE)
     public void handleAIGeneration(String task) {
         log.info("Received AI generation task: {}", task);
     }
 
-    @RabbitListener(queues = RabbitMQConfig.NOTIFICATION_QUEUE)
     public void handleNotification(String notification) {
         log.info("Received notification: {}", notification);
     }

@@ -9,8 +9,7 @@
 - Spring Security + JWT
 - Spring Data JPA + Hibernate
 - Spring AI（OpenAI Provider）
-- Redis（缓存）
-- RabbitMQ（执行异步任务）
+- Redis（缓存 + 执行异步队列）
 - PostgreSQL（生产）/ H2（开发）
 
 ## 2. Spring AI 方案
@@ -36,7 +35,7 @@ Controller
     -> Repository
       -> Entity (PostgreSQL)
   -> AI Service (Spring AI ChatClient)
-  -> RabbitMQ Listener (execution async)
+  -> Redis Queue Consumer (execution async)
   -> WebSocket Push (execution status/timeline/screenshot)
 ```
 
@@ -49,7 +48,7 @@ kun-backend/src/main/java/com/autotest/platform/
   controller/    REST API
   dto/           请求/响应模型
   entity/        领域实体
-  listener/      MQ 消费者
+  listener/      执行处理器
   repository/    数据访问
   security/      JWT 与鉴权
   service/       业务逻辑
@@ -138,7 +137,7 @@ US：
 - `HIBERNATE_DIALECT`：如 `org.hibernate.dialect.PostgreSQLDialect`
 - `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD`（本地 compose 默认）
 - `SPRING_DATA_REDIS_URL`（优先）或 `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD`
-- `SPRING_RABBITMQ_ADDRESSES`（优先）或 `RABBITMQ_HOST` / `RABBITMQ_PORT` / `RABBITMQ_USER` / `RABBITMQ_PASS`
+- `platform.execution.queue.redis-key`（可选，默认 `platform:execution:queue`）
 - `JWT_SECRET`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
