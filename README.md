@@ -17,7 +17,8 @@ Browser Pages (kun-frontend/index + kun-frontend/pages/*)
   -> REST API (/api/*)
 Java Backend (Spring Boot + Spring Security + Spring Data JPA + Spring AI)
   -> PostgreSQL (domain data)
-  -> Redis (cache + execution async queue)
+  -> Redis (cache/runtime state)
+  -> RabbitMQ (execution async queue)
   -> OpenAI Model Provider (via Spring AI)
 ```
 
@@ -52,7 +53,7 @@ Java Backend (Spring Boot + Spring Security + Spring Data JPA + Spring AI)
   - Spring Security + JWT
   - Spring Data JPA (Hibernate)
   - Spring AI（OpenAI Provider）
-  - Redis + PostgreSQL
+  - RabbitMQ + Redis + PostgreSQL
 - AI 框架
   - Spring AI 使用 GA 版本线（当前工程基线：`1.1.2`）。
 - 编排
@@ -67,6 +68,7 @@ docker compose up -d --build
 
 - 前端：`http://localhost:3000`
 - 后端 API：`http://localhost:8080/api`
+- RabbitMQ 管理台：`http://localhost:15672`
 
 默认账号：
 
@@ -93,9 +95,10 @@ docker compose up -d --build
 3. 确认创建资源：
    - `autotest-frontend`（Web Service）
    - `autotest-backend`（Web Service）
+   - `autotest-rabbitmq`（Private Service, Docker）
    - `autotest-postgres`（PostgreSQL）
    - `autotest-redis`（Redis）
-   - 说明：当前蓝图使用 Render 免费计划（free）。
+   - 说明：当前蓝图统一使用 `starter` 计划，避免 Free 计划不可用导致创建失败。
 4. 在 `autotest-backend` 环境变量中补齐：
    - `OPENAI_API_KEY`
 5. 触发部署，待两个 Web 服务都为 `Live` 后访问前端 URL。
@@ -106,13 +109,13 @@ docker compose up -d --build
   - 前端 `API_PROXY_TARGET=http://autotest-backend:10000`
   - 后端 `PLATFORM_EXECUTION_LOCALHOST_REWRITE_BASE_URL=http://autotest-frontend:10000`
 - 后端在 Render 固定使用 `PORT=10000`，并通过 `/api/actuator/health` 做健康检查。
-- Redis 使用私网 `host/port` 注入，并承担缓存与执行队列能力。
+- Redis 使用私网 `host/port` 注入，RabbitMQ 使用私网服务发现与凭据注入。
 
 ### 3. 部署后校验
 
 1. 后端健康检查：`https://<backend-domain>/api/actuator/health`
 2. 前端登录页可访问并完成登录。
-3. 执行一次 US 分析 / 用例生成 / 执行任务，确认异步任务可完成（验证 Redis 队列链路）。
+3. 执行一次 US 分析 / 用例生成，确认异步任务可完成（验证内部 RabbitMQ 链路）。
 
 ## 验收与验证标准
 

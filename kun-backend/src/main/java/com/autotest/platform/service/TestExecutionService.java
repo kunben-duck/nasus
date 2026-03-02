@@ -13,13 +13,13 @@ import com.autotest.platform.repository.TestExecutionRepository;
 import com.autotest.platform.repository.TestScriptRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -46,12 +46,10 @@ public class TestExecutionService {
     private final TestCaseRepository testCaseRepository;
     private final TestScriptRepository testScriptRepository;
     private final TenantContextService tenantContextService;
-    private final StringRedisTemplate stringRedisTemplate;
+    private final RabbitTemplate rabbitTemplate;
     private final UserStoryService userStoryService;
     @Value("${platform.file-storage.local-path:./uploads}")
     private String fileStoragePath;
-    @Value("${platform.execution.queue.redis-key:platform:execution:queue}")
-    private String executionQueueRedisKey;
 
     @Cacheable(value = "executions", key = "#id")
     @Transactional(readOnly = true)
@@ -162,11 +160,13 @@ public class TestExecutionService {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    enqueueExecutionTask(executionDbId);
+                    rabbitTemplate.convertAndSend("test.execution.queue", executionDbId);
+                    log.debug("Published execution task after commit. executionId={}", executionDbId);
                 }
             });
         } else {
-            enqueueExecutionTask(executionDbId);
+            rabbitTemplate.convertAndSend("test.execution.queue", executionDbId);
+            log.debug("Published execution task immediately (no active tx). executionId={}", executionDbId);
         }
 
         return mapToDTO(savedExecution);
@@ -537,20 +537,6 @@ public class TestExecutionService {
                 ? execution.getExecutionId()
                 : "unknown";
         return "/videos/" + executionKey + ".mp4";
-    }
-
-    private void enqueueExecutionTask(Long executionDbId) {
-        if (executionDbId == null) {
-            return;
-        }
-        try {
-            stringRedisTemplate.opsForList().leftPush(executionQueueRedisKey, String.valueOf(executionDbId));
-            log.debug("Published execution task to redis queue. key={}, executionId={}",
-                    executionQueueRedisKey, executionDbId);
-        } catch (Exception ex) {
-            log.error("Failed to enqueue execution task. key={}, executionId={}, reason={}",
-                    executionQueueRedisKey, executionDbId, ex.getMessage(), ex);
-        }
     }
 
     private void markUserStoryExecutionCompleted(TestExecution execution) {

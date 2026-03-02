@@ -1,13 +1,31 @@
 services:
   - type: keyvalue
     name: autotest-redis
-    plan: free
+    plan: starter
     ipAllowList: []
+
+  - type: pserv
+    name: autotest-rabbitmq
+    runtime: image
+    plan: starter
+    image:
+      url: rabbitmq:3.13-management-alpine
+    disk:
+      name: rabbitmq-data
+      mountPath: /var/lib/rabbitmq
+      sizeGB: 10
+    envVars:
+      - key: RABBITMQ_DEFAULT_USER
+        value: autotest
+      - key: RABBITMQ_DEFAULT_PASS
+        generateValue: true
+      - key: RABBITMQ_ERLANG_COOKIE
+        generateValue: true
 
   - type: web
     name: autotest-backend
     runtime: docker
-    plan: free
+    plan: starter
     dockerContext: ./kun-backend
     dockerfilePath: ./kun-backend/Dockerfile
     autoDeploy: true
@@ -47,12 +65,6 @@ services:
           type: keyvalue
           name: autotest-redis
           property: port
-      - key: EXECUTION_QUEUE_REDIS_KEY
-        value: platform:execution:queue
-      - key: EXECUTION_QUEUE_CONSUMER_ENABLED
-        value: "true"
-      - key: EXECUTION_QUEUE_POLL_INTERVAL_MS
-        value: "300"
       - key: PLATFORM_EXECUTION_LOCALHOST_REWRITE_BASE_URL
         value: http://autotest-frontend:10000
       - key: JWT_SECRET
@@ -63,11 +75,28 @@ services:
         value: gpt-4o-mini
       - key: OPENAI_TEMPERATURE
         value: "0.7"
+      - key: RABBITMQ_HOST
+        fromService:
+          type: pserv
+          name: autotest-rabbitmq
+          property: host
+      - key: RABBITMQ_PORT
+        value: "5672"
+      - key: RABBITMQ_USER
+        fromService:
+          type: pserv
+          name: autotest-rabbitmq
+          envVarKey: RABBITMQ_DEFAULT_USER
+      - key: RABBITMQ_PASS
+        fromService:
+          type: pserv
+          name: autotest-rabbitmq
+          envVarKey: RABBITMQ_DEFAULT_PASS
 
   - type: web
     name: autotest-frontend
     runtime: docker
-    plan: free
+    plan: starter
     dockerContext: ./kun-frontend
     dockerfilePath: ./kun-frontend/Dockerfile
     autoDeploy: true
@@ -76,13 +105,10 @@ services:
       - key: PORT
         value: "10000"
       - key: API_PROXY_TARGET
-        fromService:
-          type: web
-          name: autotest-backend
-          envVarKey: RENDER_EXTERNAL_URL
+        value: http://autotest-backend:10000
 
 databases:
   - name: autotest-postgres
     databaseName: autotest
     user: autotest
-    plan: free
+    plan: starter
