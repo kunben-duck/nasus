@@ -9,25 +9,23 @@ services:
       - "8080:8080"
     environment:
       - SPRING_PROFILES_ACTIVE=prod
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_DB=autotest
-      - MYSQL_USER=root
-      - MYSQL_PASSWORD=password
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=autotest
+      - DB_USER=postgres
+      - DB_PASSWORD=password
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - RABBITMQ_HOST=rabbitmq
-      - RABBITMQ_PORT=5672
-      - RABBITMQ_USER=guest
-      - RABBITMQ_PASS=guest
+      - EXECUTION_QUEUE_REDIS_KEY=platform:execution:queue
+      - EXECUTION_QUEUE_CONSUMER_ENABLED=true
+      - EXECUTION_QUEUE_POLL_INTERVAL_MS=300
+      - EXECUTION_QUEUE_ERROR_BACKOFF_MS=1000
       - JWT_SECRET=AutoTestPlatformSecretKey2024SecureJwtTokenForEnterprise
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
-        condition: service_started
-      rabbitmq:
         condition: service_healthy
     networks:
       - autotest-network
@@ -39,22 +37,23 @@ services:
       retries: 3
       start_period: 60s
 
-  # MySQL Database
-  mysql:
-    image: mysql:8.0
-    container_name: autotest-mysql
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: autotest-postgres
     ports:
-      - "3306:3306"
+      - "5432:5432"
     environment:
-      - MYSQL_ROOT_PASSWORD=password
-      - MYSQL_DATABASE=autotest
+      - POSTGRES_DB=autotest
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
     volumes:
-      - mysql-data:/var/lib/mysql
+      - postgres-data:/var/lib/postgresql/data
     networks:
       - autotest-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d autotest"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,32 +72,9 @@ services:
     restart: unless-stopped
     command: redis-server --appendonly yes
 
-  # RabbitMQ Message Queue
-  rabbitmq:
-    image: rabbitmq:3-management-alpine
-    container_name: autotest-rabbitmq
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    environment:
-      - RABBITMQ_DEFAULT_USER=guest
-      - RABBITMQ_DEFAULT_PASS=guest
-    volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
-    networks:
-      - autotest-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
 volumes:
-  mysql-data:
+  postgres-data:
   redis-data:
-  rabbitmq-data:
 
 networks:
   autotest-network:

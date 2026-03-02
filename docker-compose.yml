@@ -30,10 +30,10 @@ services:
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-      RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
-      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
-      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_PASS: ${RABBITMQ_PASS:-guest}
+      EXECUTION_QUEUE_REDIS_KEY: ${EXECUTION_QUEUE_REDIS_KEY:-platform:execution:queue}
+      EXECUTION_QUEUE_CONSUMER_ENABLED: ${EXECUTION_QUEUE_CONSUMER_ENABLED:-true}
+      EXECUTION_QUEUE_POLL_INTERVAL_MS: ${EXECUTION_QUEUE_POLL_INTERVAL_MS:-300}
+      EXECUTION_QUEUE_ERROR_BACKOFF_MS: ${EXECUTION_QUEUE_ERROR_BACKOFF_MS:-1000}
       JWT_SECRET: ${JWT_SECRET:-AutoTestPlatformSecretKey2024SecureJwtTokenForEnterprise}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-local-placeholder}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
@@ -47,8 +47,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      rabbitmq:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/actuator/health"]
@@ -99,32 +97,10 @@ services:
       - autotest-network
     restart: unless-stopped
 
-  rabbitmq:
-    image: rabbitmq:3.13-management-alpine
-    container_name: autotest-rabbitmq
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
-    ports:
-      - '${RABBITMQ_HOST_PORT:-5672}:5672'
-      - '${RABBITMQ_MANAGEMENT_PORT:-15672}:15672'
-    volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    networks:
-      - autotest-network
-    restart: unless-stopped
-
 volumes:
   backend-uploads:
   postgres-data:
   redis-data:
-  rabbitmq-data:
 
 networks:
   autotest-network:

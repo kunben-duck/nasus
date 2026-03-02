@@ -236,7 +236,7 @@ public class DashboardService {
         return DashboardDTO.SystemStatus.builder()
                 .databaseStatus("Connected")
                 .redisStatus("Connected")
-                .rabbitmqStatus("Connected")
+                .rabbitmqStatus("Redis Queue")
                 .aiServiceStatus("Available")
                 .activeExecutors(testExecutionRepository.countByStatus(tenantId, TestExecution.ExecutionStatus.RUNNING))
                 .queuedTasks(testExecutionRepository.countByStatus(tenantId, TestExecution.ExecutionStatus.PENDING))
