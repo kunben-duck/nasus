@@ -45,6 +45,9 @@
 
 - Dockerfile：`/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/Dockerfile`
 - Nginx 配置：`/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/nginx.conf`
+- 关键环境变量：
+  - `API_PROXY_TARGET`：后端根地址（例如 `https://xxx.onrender.com`）
+  - `PORT`：容器监听端口（Render 自动注入）
 
 ```bash
 cd /Users/uben/project/project/test-auto/test-auto-pro

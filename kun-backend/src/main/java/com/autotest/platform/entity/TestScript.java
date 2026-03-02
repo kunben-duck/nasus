@@ -33,7 +33,7 @@ public class TestScript {
     @Column(nullable = false)
     private Language language = Language.JAVASCRIPT;
     
-    @Column(columnDefinition = "LONGTEXT")
+    @Column(columnDefinition = "TEXT")
     private String code;
     
     @Column(columnDefinition = "TEXT")

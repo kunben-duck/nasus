@@ -11,7 +11,7 @@
 - Spring AI（OpenAI Provider）
 - Redis（缓存）
 - RabbitMQ（执行异步任务）
-- MySQL（生产）/ H2（开发）
+- PostgreSQL（生产）/ H2（开发）
 
 ## 2. Spring AI 方案
 
@@ -34,7 +34,7 @@
 Controller
   -> Service
     -> Repository
-      -> Entity (MySQL)
+      -> Entity (PostgreSQL)
   -> AI Service (Spring AI ChatClient)
   -> RabbitMQ Listener (execution async)
   -> WebSocket Push (execution status/timeline/screenshot)
@@ -132,9 +132,13 @@ US：
 ## 7. 环境变量
 
 - `SPRING_PROFILES_ACTIVE`：`prod`/`dev`
-- `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` / `MYSQL_USER` / `MYSQL_PASSWORD`
-- `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD`
-- `RABBITMQ_HOST` / `RABBITMQ_PORT` / `RABBITMQ_USER` / `RABBITMQ_PASS`
+- `PORT`：服务监听端口（Render 注入）
+- `SPRING_DATASOURCE_URL` / `SPRING_DATASOURCE_USERNAME` / `SPRING_DATASOURCE_PASSWORD`
+- `SPRING_DATASOURCE_DRIVER_CLASS_NAME`：如 `org.postgresql.Driver`
+- `HIBERNATE_DIALECT`：如 `org.hibernate.dialect.PostgreSQLDialect`
+- `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD`（本地 compose 默认）
+- `SPRING_DATA_REDIS_URL`（优先）或 `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD`
+- `SPRING_RABBITMQ_ADDRESSES`（优先）或 `RABBITMQ_HOST` / `RABBITMQ_PORT` / `RABBITMQ_USER` / `RABBITMQ_PASS`
 - `JWT_SECRET`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`

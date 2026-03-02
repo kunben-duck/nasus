@@ -67,10 +67,10 @@ public class TestScriptGenerationRecord {
     @Column(name = "dependencies_json", columnDefinition = "TEXT")
     private String dependenciesJson;
 
-    @Column(name = "prompt_text", columnDefinition = "LONGTEXT")
+    @Column(name = "prompt_text", columnDefinition = "TEXT")
     private String promptText;
 
-    @Column(name = "generated_code", columnDefinition = "LONGTEXT", nullable = false)
+    @Column(name = "generated_code", columnDefinition = "TEXT", nullable = false)
     private String generatedCode;
 
     @Column(name = "model_provider", length = 32)

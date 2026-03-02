@@ -22,7 +22,7 @@ public class PlatformSetting {
     @Column(nullable = false, unique = true, length = 64)
     private String scopeKey;
 
-    @Column(columnDefinition = "LONGTEXT", nullable = false)
+    @Column(columnDefinition = "TEXT", nullable = false)
     private String settingsJson;
 
     @Column(length = 100)
@@ -35,4 +35,3 @@ public class PlatformSetting {
     @UpdateTimestamp
     private LocalDateTime updatedAt;
 }
-

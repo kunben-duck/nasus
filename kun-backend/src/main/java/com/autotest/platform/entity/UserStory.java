@@ -36,12 +36,12 @@ public class UserStory {
     @Column(columnDefinition = "TEXT")
     private String acceptanceCriteria;
 
-    @Column(columnDefinition = "LONGTEXT")
+    @Column(columnDefinition = "TEXT")
     private String latestAnalysisPayload;
 
     private LocalDateTime latestAnalyzedAt;
 
-    @Column(columnDefinition = "LONGTEXT")
+    @Column(columnDefinition = "TEXT")
     private String latestCaseGenerationPayload;
 
     private LocalDateTime latestCaseGeneratedAt;

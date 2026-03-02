@@ -4,6 +4,8 @@ services:
       context: ./kun-frontend
       dockerfile: Dockerfile
     container_name: autotest-frontend
+    environment:
+      API_PROXY_TARGET: ${API_PROXY_TARGET:-http://backend-java:8080}
     ports:
       - '${FRONTEND_PORT:-3000}:80'
     depends_on:
@@ -20,11 +22,11 @@ services:
     user: "0:0"
     environment:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
-      MYSQL_HOST: ${MYSQL_HOST:-mysql}
-      MYSQL_PORT: ${MYSQL_PORT:-3306}
-      MYSQL_DB: ${MYSQL_DB:-autotest}
-      MYSQL_USER: ${MYSQL_USER:-root}
-      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-password}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-autotest}
+      POSTGRES_USER: ${POSTGRES_USER:-autotest}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
@@ -42,7 +44,7 @@ services:
     volumes:
       - backend-uploads:/app/uploads
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -58,20 +60,19 @@ services:
       - autotest-network
     restart: unless-stopped
 
-  mysql:
-    image: mysql:8.4
-    container_name: autotest-mysql
+  postgres:
+    image: postgres:16-alpine
+    container_name: autotest-postgres
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-password}
-      MYSQL_DATABASE: ${MYSQL_DB:-autotest}
-      MYSQL_ROOT_HOST: '%'
-    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+      POSTGRES_DB: ${POSTGRES_DB:-autotest}
+      POSTGRES_USER: ${POSTGRES_USER:-autotest}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
     ports:
-      - '${MYSQL_HOST_PORT:-3306}:3306'
+      - '${POSTGRES_HOST_PORT:-5432}:5432'
     volumes:
-      - mysql-data:/var/lib/mysql
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-autotest} -d ${POSTGRES_DB:-autotest}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -121,7 +122,7 @@ services:
 
 volumes:
   backend-uploads:
-  mysql-data:
+  postgres-data:
   redis-data:
   rabbitmq-data:
 

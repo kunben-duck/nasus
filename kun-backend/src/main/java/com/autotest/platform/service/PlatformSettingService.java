@@ -27,7 +27,7 @@ public class PlatformSettingService {
     private final PlatformSettingRepository platformSettingRepository;
     private final ObjectMapper objectMapper;
 
-    @Transactional(readOnly = true)
+    @Transactional
     public PlatformSettingsDTO getSettings() {
         PlatformSetting setting = getOrCreateGlobalSettings();
         Map<String, Object> merged = mergeWithDefaults(readSettings(setting.getSettingsJson()));
@@ -38,7 +38,7 @@ public class PlatformSettingService {
                 .build();
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public Map<String, Object> getRuntimeSettings() {
         PlatformSetting setting = getOrCreateGlobalSettings();
         return mergeWithDefaults(readSettings(setting.getSettingsJson()));

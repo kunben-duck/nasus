@@ -1,0 +1,114 @@
+services:
+  - type: keyvalue
+    name: autotest-redis
+    plan: starter
+    ipAllowList: []
+
+  - type: pserv
+    name: autotest-rabbitmq
+    runtime: image
+    plan: starter
+    image:
+      url: rabbitmq:3.13-management-alpine
+    disk:
+      name: rabbitmq-data
+      mountPath: /var/lib/rabbitmq
+      sizeGB: 10
+    envVars:
+      - key: RABBITMQ_DEFAULT_USER
+        value: autotest
+      - key: RABBITMQ_DEFAULT_PASS
+        generateValue: true
+      - key: RABBITMQ_ERLANG_COOKIE
+        generateValue: true
+
+  - type: web
+    name: autotest-backend
+    runtime: docker
+    plan: starter
+    dockerContext: ./kun-backend
+    dockerfilePath: ./kun-backend/Dockerfile
+    autoDeploy: true
+    healthCheckPath: /api/actuator/health
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: SPRING_PROFILES_ACTIVE
+        value: render
+      - key: DB_HOST
+        fromDatabase:
+          name: autotest-postgres
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: autotest-postgres
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: autotest-postgres
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: autotest-postgres
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: autotest-postgres
+          property: password
+      - key: REDIS_HOST
+        fromService:
+          type: keyvalue
+          name: autotest-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: keyvalue
+          name: autotest-redis
+          property: port
+      - key: PLATFORM_EXECUTION_LOCALHOST_REWRITE_BASE_URL
+        value: http://autotest-frontend:10000
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_TEMPERATURE
+        value: "0.7"
+      - key: RABBITMQ_HOST
+        fromService:
+          type: pserv
+          name: autotest-rabbitmq
+          property: host
+      - key: RABBITMQ_PORT
+        value: "5672"
+      - key: RABBITMQ_USER
+        fromService:
+          type: pserv
+          name: autotest-rabbitmq
+          envVarKey: RABBITMQ_DEFAULT_USER
+      - key: RABBITMQ_PASS
+        fromService:
+          type: pserv
+          name: autotest-rabbitmq
+          envVarKey: RABBITMQ_DEFAULT_PASS
+
+  - type: web
+    name: autotest-frontend
+    runtime: docker
+    plan: starter
+    dockerContext: ./kun-frontend
+    dockerfilePath: ./kun-frontend/Dockerfile
+    autoDeploy: true
+    healthCheckPath: /
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: API_PROXY_TARGET
+        value: http://autotest-backend:10000
+
+databases:
+  - name: autotest-postgres
+    databaseName: autotest
+    user: autotest
+    plan: starter
