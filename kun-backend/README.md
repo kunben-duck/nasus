@@ -132,7 +132,7 @@ US：
 ## 7. 环境变量
 
 - `SPRING_PROFILES_ACTIVE`：`prod`/`dev`
-- `PORT`：服务监听端口（Render 注入）
+- `PORT`：服务监听端口
 - `SPRING_DATASOURCE_URL` / `SPRING_DATASOURCE_USERNAME` / `SPRING_DATASOURCE_PASSWORD`
 - `SPRING_DATASOURCE_DRIVER_CLASS_NAME`：如 `org.postgresql.Driver`
 - `HIBERNATE_DIALECT`：如 `org.hibernate.dialect.PostgreSQLDialect`

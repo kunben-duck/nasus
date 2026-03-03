@@ -48,7 +48,6 @@ public class User {
     @Column(name = "active_tenant_id")
     private Long activeTenantId;
     
-    @Lob
     @Column(columnDefinition = "TEXT")
     private String avatar;
     

@@ -77,46 +77,6 @@ docker compose up -d --build
 - `developer / developer123`
 - `tester / tester123`
 
-## Render 部署
-
-项目已提供 Render Blueprint：`/Users/uben/project/project/test-auto/test-auto-pro/render.yaml`。
-
-### 1. 部署前准备
-
-1. 代码已推送到 GitHub 仓库默认分支。
-2. 准备模型配置：
-   - `OPENAI_API_KEY`
-   - `OPENAI_MODEL`（可选，默认 `gpt-4o-mini`）
-
-### 2. 一键创建（Blueprint）
-
-1. 登录 Render，选择 New + > Blueprint。
-2. 选择本仓库，Render 会自动读取 `render.yaml`。
-3. 确认创建资源：
-   - `autotest-frontend`（Web Service）
-   - `autotest-backend`（Web Service）
-   - `autotest-rabbitmq`（Private Service, Docker）
-   - `autotest-postgres`（PostgreSQL）
-   - `autotest-redis`（Redis）
-   - 说明：当前蓝图统一使用 `starter` 计划，避免 Free 计划不可用导致创建失败。
-4. 在 `autotest-backend` 环境变量中补齐：
-   - `OPENAI_API_KEY`
-5. 触发部署，待两个 Web 服务都为 `Live` 后访问前端 URL。
-
-### 3.1 蓝图已处理的关键点
-
-- 前后端改为 Render 私网直连，避免首发时 `RENDER_EXTERNAL_URL` 相互引用导致的循环依赖：
-  - 前端 `API_PROXY_TARGET=http://autotest-backend:10000`
-  - 后端 `PLATFORM_EXECUTION_LOCALHOST_REWRITE_BASE_URL=http://autotest-frontend:10000`
-- 后端在 Render 固定使用 `PORT=10000`，并通过 `/api/actuator/health` 做健康检查。
-- Redis 使用私网 `host/port` 注入，RabbitMQ 使用私网服务发现与凭据注入。
-
-### 3. 部署后校验
-
-1. 后端健康检查：`https://<backend-domain>/api/actuator/health`
-2. 前端登录页可访问并完成登录。
-3. 执行一次 US 分析 / 用例生成，确认异步任务可完成（验证内部 RabbitMQ 链路）。
-
 ## 验收与验证标准
 
 通过以下检查后视为“可用”：
