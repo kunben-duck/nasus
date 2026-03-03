@@ -146,6 +146,32 @@
       </div>
       
       <div class="flex items-center gap-3">
+        <div class="relative">
+          <button id="us-batch-actions-button" onclick="toggleUsBatchActionsMenu()" class="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+            <i data-lucide="list-checks" class="w-4 h-4"></i>
+            <span>批量操作</span>
+            <i data-lucide="chevron-down" class="w-4 h-4"></i>
+          </button>
+          <div id="us-batch-actions-menu" class="hidden absolute right-0 top-full mt-2 w-52 glass-card rounded-xl p-2 z-50">
+            <a href="#" data-action="analyze" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm">
+              <i data-lucide="brain" class="w-4 h-4"></i>
+              <span>批量分析</span>
+            </a>
+            <a href="#" data-action="generate" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm">
+              <i data-lucide="sparkles" class="w-4 h-4"></i>
+              <span>批量生成用例</span>
+            </a>
+            <a href="#" data-action="archive" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm">
+              <i data-lucide="archive" class="w-4 h-4"></i>
+              <span>批量归档</span>
+            </a>
+            <div class="my-1 border-t border-white/10"></div>
+            <a href="#" data-action="delete" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-[#ef4444]/10 transition-colors text-sm text-[#fca5a5]">
+              <i data-lucide="trash-2" class="w-4 h-4"></i>
+              <span>批量删除</span>
+            </a>
+          </div>
+        </div>
         <button onclick="openImportModal()" class="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-sm">
           <i data-lucide="upload" class="w-4 h-4"></i>
           <span>导入 US</span>
@@ -200,6 +226,9 @@
         <table class="w-full">
           <thead>
             <tr class="border-b border-white/5">
+              <th class="px-4 py-3 text-left text-sm font-medium text-[#a1a1aa]">
+                <input id="us-select-all" type="checkbox" class="rounded border-white/20 bg-white/5" title="全选当前页">
+              </th>
               <th class="px-4 py-3 text-left text-sm font-medium text-[#a1a1aa]">US 编号</th>
               <th class="px-4 py-3 text-left text-sm font-medium text-[#a1a1aa]">标题</th>
               <th class="px-4 py-3 text-left text-sm font-medium text-[#a1a1aa]">Sprint</th>
@@ -211,7 +240,7 @@
           </thead>
           <tbody>
             <tr class="border-b border-white/5">
-              <td colspan="7" class="px-4 py-10 text-center text-sm text-[#71717a]">加载中...</td>
+              <td colspan="8" class="px-4 py-10 text-center text-sm text-[#71717a]">加载中...</td>
             </tr>
           </tbody>
         </table>

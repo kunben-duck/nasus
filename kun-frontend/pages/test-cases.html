@@ -151,26 +151,48 @@
       </div>
       
       <div class="flex items-center gap-3">
-        <button class="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-sm disabled:opacity-50" disabled>
-          <i data-lucide="file-code" class="w-4 h-4"></i>
-          <span>批量生成脚本</span>
-        </button>
         <div class="relative">
-          <button onclick="toggleGenerateMenu()" class="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-[#00d4ff] to-[#7c3aed] hover:opacity-90 transition-opacity text-sm font-medium">
+          <button id="tc-batch-actions-button" onclick="toggleBatchActionsMenu()" class="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+            <i data-lucide="list-checks" class="w-4 h-4"></i>
+            <span>批量操作</span>
+            <i data-lucide="chevron-down" class="w-4 h-4"></i>
+          </button>
+          <div id="tc-batch-actions-menu" class="hidden absolute right-0 top-full mt-2 w-52 glass-card rounded-xl p-2 z-50">
+            <a href="#" data-action="approve" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm">
+              <i data-lucide="badge-check" class="w-4 h-4"></i>
+              <span>批量审批（就绪）</span>
+            </a>
+            <a href="#" data-action="archive" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm">
+              <i data-lucide="archive" class="w-4 h-4"></i>
+              <span>批量归档</span>
+            </a>
+            <a href="#" data-action="deprecate" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm">
+              <i data-lucide="ban" class="w-4 h-4"></i>
+              <span>批量废弃</span>
+            </a>
+            <a href="#" data-action="generate-script" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm">
+              <i data-lucide="file-code" class="w-4 h-4"></i>
+              <span>批量生成脚本</span>
+            </a>
+            <div class="my-1 border-t border-white/10"></div>
+            <a href="#" data-action="delete" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-[#ef4444]/10 transition-colors text-sm text-[#fca5a5]">
+              <i data-lucide="trash-2" class="w-4 h-4"></i>
+              <span>批量删除</span>
+            </a>
+          </div>
+        </div>
+        <div class="relative">
+          <button id="tc-generate-menu-button" onclick="toggleGenerateMenu()" class="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-[#00d4ff] to-[#7c3aed] hover:opacity-90 transition-opacity text-sm font-medium">
             <i data-lucide="plus" class="w-4 h-4"></i>
             <span>生成用例</span>
             <i data-lucide="chevron-down" class="w-4 h-4"></i>
           </button>
           <div id="generate-menu" class="hidden absolute right-0 top-full mt-2 w-48 glass-card rounded-xl p-2 z-50">
-            <a href="#" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm">
+            <a href="#" data-action="from-us" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm">
               <i data-lucide="file-text" class="w-4 h-4"></i>
               <span>从US生成</span>
             </a>
-            <a href="#" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm">
-              <i data-lucide="list-checks" class="w-4 h-4"></i>
-              <span>从验证点生成</span>
-            </a>
-            <a href="#" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm">
+            <a href="#" data-action="manual-create" class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm">
               <i data-lucide="edit" class="w-4 h-4"></i>
               <span>手动创建</span>
             </a>
@@ -189,19 +211,20 @@
               <input type="text" placeholder="搜索用例标题、步骤..." class="w-full pl-10 pr-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff] transition-colors">
             </div>
           </div>
-          <div class="flex items-center gap-2">
-            <button class="px-3 py-2 rounded-lg bg-[#ef4444]/20 text-[#ef4444] text-xs font-medium">L0</button>
-            <button class="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-xs text-[#a1a1aa]">L1</button>
-            <button class="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-xs text-[#a1a1aa]">L2</button>
-            <button class="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-xs text-[#a1a1aa]">L3</button>
-          </div>
-          <select class="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+          <select id="tc-priority-select" class="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+            <option>全部级别</option>
+            <option>L0</option>
+            <option>L1</option>
+            <option>L2</option>
+            <option>L3</option>
+          </select>
+          <select id="tc-status-select" class="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
             <option>全部状态</option>
             <option>草稿</option>
             <option>已评审</option>
             <option>已归档</option>
           </select>
-          <select class="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
+          <select id="tc-type-select" class="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
             <option>全部类型</option>
             <option>功能</option>
             <option>性能</option>

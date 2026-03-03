@@ -506,6 +506,9 @@
     const sprintSelect = filterSelects[1];
     const navCountBadge = $('#us-nav-count-badge');
     const headerCountBadge = $('#us-total-count-badge');
+    const selectAllStoriesCheckbox = $('#us-select-all', tableCard);
+    const batchStoryActionsButton = $('#us-batch-actions-button');
+    const batchStoryActionsMenu = $('#us-batch-actions-menu');
     if (!searchInput || !statusSelect || !sprintSelect) return;
 
     statusSelect.innerHTML = [
@@ -571,7 +574,8 @@
       analyzingStoryIds: new Set(),
       generatingStoryIds: new Set(),
       generationMetaByStory: new Map(),
-      trackingGenerationTasks: new Map()
+      trackingGenerationTasks: new Map(),
+      selectedStoryIds: new Set()
     };
 
     const pageSizeOptions = [10, 20, 50, 100];
@@ -617,6 +621,47 @@
       pageSizeSelect.value = String(state.size);
       prevPageButton.disabled = !hasData || pageNumber <= 0;
       nextPageButton.disabled = !hasData || pageNumber >= (totalPages - 1);
+    }
+
+    function getCurrentPageStoryIds() {
+      return state.items
+        .map((item) => Number(item?.id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+    }
+
+    function pruneStorySelectionToCurrentPage() {
+      const visibleIds = new Set(getCurrentPageStoryIds());
+      [...state.selectedStoryIds].forEach((id) => {
+        if (!visibleIds.has(id)) {
+          state.selectedStoryIds.delete(id);
+        }
+      });
+    }
+
+    function syncStorySelectionControls() {
+      const rowCheckboxes = $$('input[data-action="select-story"]', tableBody);
+      let checkedCount = 0;
+      rowCheckboxes.forEach((checkbox) => {
+        const id = Number(checkbox.dataset.id);
+        const checked = Number.isInteger(id) && state.selectedStoryIds.has(id);
+        checkbox.checked = checked;
+        if (checked) checkedCount += 1;
+      });
+
+      const totalCount = rowCheckboxes.length;
+      if (selectAllStoriesCheckbox) {
+        selectAllStoriesCheckbox.disabled = totalCount <= 0;
+        selectAllStoriesCheckbox.checked = totalCount > 0 && checkedCount === totalCount;
+        selectAllStoriesCheckbox.indeterminate = checkedCount > 0 && checkedCount < totalCount;
+      }
+
+      const hasSelection = checkedCount > 0;
+      if (batchStoryActionsButton) {
+        batchStoryActionsButton.disabled = !hasSelection;
+      }
+      if (!hasSelection && batchStoryActionsMenu) {
+        batchStoryActionsMenu.classList.add('hidden');
+      }
     }
 
     async function loadSprintOptions(force = false) {
@@ -709,7 +754,7 @@
 
       return `
         <tr class="border-b border-white/5 bg-white/[0.03]" data-detail-row="${us.id}">
-          <td colspan="7" class="px-4 py-4">
+          <td colspan="8" class="px-4 py-4">
             <div class="rounded-xl border border-white/10 bg-white/[0.02] p-4 space-y-4">
               <div class="flex items-center justify-between gap-3">
                 <h4 class="text-sm font-semibold text-[#e4e4e7]">US 详情与编辑</h4>
@@ -743,7 +788,8 @@
 
     function renderRows(items) {
       if (!items.length) {
-        tableBody.innerHTML = '<tr><td colspan="7" class="px-4 py-10 text-center text-sm text-[#71717a]">暂无 US 数据</td></tr>';
+        tableBody.innerHTML = '<tr><td colspan="8" class="px-4 py-10 text-center text-sm text-[#71717a]">暂无 US 数据</td></tr>';
+        syncStorySelectionControls();
         return;
       }
 
@@ -814,8 +860,12 @@
         const archiveButtonTitle = archiveCompleted
           ? '该 US 已归档'
           : (archiveEnabled ? '归档后将无法继续分析和生成用例' : '仅执行完毕后可归档');
+        const selected = state.selectedStoryIds.has(us.id);
         const baseRow = `
           <tr class="border-b border-white/5 hover:bg-white/5 transition-colors">
+            <td class="px-4 py-3 text-sm">
+              <input type="checkbox" data-action="select-story" data-id="${us.id}" class="rounded border-white/20 bg-white/5" ${selected ? 'checked' : ''}>
+            </td>
             <td class="px-4 py-3 text-sm font-mono">
               <button data-action="toggle-detail" data-id="${us.id}" class="text-[#00d4ff] hover:underline">${R.escapeHtml(us.usNumber || '-')}</button>
             </td>
@@ -844,6 +894,7 @@
         `;
         return `${baseRow}${buildDetailRow(us)}`;
       }).join('');
+      syncStorySelectionControls();
       if (window.lucide) window.lucide.createIcons();
     }
 
@@ -1454,6 +1505,7 @@
       const list = unwrapPage(page);
 
       state.items = list;
+      pruneStorySelectionToCurrentPage();
       state.totalElements = Number(page.totalElements ?? list.length) || 0;
       state.totalPages = Number(page.totalPages ?? (state.totalElements ? Math.ceil(state.totalElements / state.size) : 0)) || 0;
       state.page = Number(page.pageNumber ?? state.page) || 0;
@@ -3055,15 +3107,292 @@
       R.toast(`Sprint 已更新为${toLabel}`, 'success');
     }
 
-    async function deleteUserStory(id) {
-      const current = state.items.find((item) => item.id === id);
+    function resolveStoryBusyState(storyId, story) {
+      const id = Number(storyId);
+      const current = story || state.items.find((item) => item.id === id);
       const currentStatus = normalizeUsStatus(current?.status);
       const isAnalyzing = state.analyzingStoryIds.has(id) || currentStatus === 'ANALYZING';
       const generationMeta = state.generationMetaByStory.get(id) || {};
       const generationStatus = String(generationMeta.status || '').toUpperCase();
       const isGenerating = generationStatus === 'RUNNING' || generationStatus === 'QUEUED' || state.generatingStoryIds.has(id);
-      if (isAnalyzing || isGenerating) {
-        R.toast(isGenerating ? 'US 生成用例中，暂不允许删除' : 'US 分析中，暂不允许删除', 'warning');
+      return { isAnalyzing, isGenerating };
+    }
+
+    function getSelectedStoryIds() {
+      return [...state.selectedStoryIds]
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+    }
+
+    async function batchAnalyzeUserStories() {
+      const selectedIds = getSelectedStoryIds();
+      if (!selectedIds.length) {
+        R.toast('请先勾选要分析的 US', 'warning');
+        return;
+      }
+
+      const skippedIds = [];
+      const analyzableIds = [];
+      selectedIds.forEach((id) => {
+        const story = state.items.find((item) => item.id === id);
+        const status = normalizeUsStatus(story?.status);
+        const busy = resolveStoryBusyState(id, story);
+        if (status === 'ARCHIVED' || busy.isAnalyzing) {
+          skippedIds.push(id);
+        } else {
+          analyzableIds.push(id);
+        }
+      });
+
+      if (!analyzableIds.length) {
+        R.toast('所选 US 不可分析（已归档或分析中）', 'warning');
+        return;
+      }
+
+      const message = skippedIds.length
+        ? `已选 ${selectedIds.length} 条 US，其中 ${skippedIds.length} 条不可分析（已归档/分析中），确认提交其余 ${analyzableIds.length} 条分析任务？`
+        : `确认批量分析选中的 ${analyzableIds.length} 条 US？`;
+      const confirmed = await R.confirm({
+        title: '批量分析 US',
+        message,
+        confirmText: '确认提交',
+        tone: 'primary'
+      });
+      if (!confirmed) return;
+
+      let successCount = 0;
+      const failedIds = [];
+      for (const storyId of analyzableIds) {
+        try {
+          const cached = state.items.find((item) => item.id === storyId) || {};
+          const detail = (cached.description && cached.acceptanceCriteria)
+            ? cached
+            : await R.api(`/user-stories/${storyId}`);
+          await submitAnalyzeTask(storyId, detail);
+          setStoryAnalyzing(storyId, true);
+          successCount += 1;
+        } catch (_error) {
+          failedIds.push(storyId);
+        }
+      }
+
+      if (successCount > 0) {
+        R.toast(`批量分析任务已提交：${successCount}/${analyzableIds.length}，可在消息中心查看完成通知`, 'success');
+      }
+      if (skippedIds.length > 0) {
+        R.toast(`已跳过 ${skippedIds.length} 条不可分析 US`, 'info');
+      }
+      if (failedIds.length > 0) {
+        R.toast(`提交失败 ${failedIds.length} 条，请稍后重试`, 'warning');
+      }
+      await loadUserStories();
+    }
+
+    async function batchGenerateUserStories() {
+      const selectedIds = getSelectedStoryIds();
+      if (!selectedIds.length) {
+        R.toast('请先勾选要生成用例的 US', 'warning');
+        return;
+      }
+
+      const skippedIds = [];
+      const generatableIds = [];
+      selectedIds.forEach((id) => {
+        const story = state.items.find((item) => item.id === id);
+        const status = normalizeUsStatus(story?.status);
+        const busy = resolveStoryBusyState(id, story);
+        if (status === 'ARCHIVED' || busy.isGenerating) {
+          skippedIds.push(id);
+        } else {
+          generatableIds.push(id);
+        }
+      });
+
+      if (!generatableIds.length) {
+        R.toast('所选 US 不可生成（已归档或生成中）', 'warning');
+        return;
+      }
+
+      const message = skippedIds.length
+        ? `已选 ${selectedIds.length} 条 US，其中 ${skippedIds.length} 条不可生成（已归档/生成中），确认提交其余 ${generatableIds.length} 条生成任务？`
+        : `确认批量生成选中的 ${generatableIds.length} 条 US 用例？`;
+      const confirmed = await R.confirm({
+        title: '批量生成用例',
+        message,
+        confirmText: '确认提交',
+        tone: 'primary'
+      });
+      if (!confirmed) return;
+
+      let successCount = 0;
+      const failedIds = [];
+      for (const storyId of generatableIds) {
+        try {
+          const submitted = await submitCaseGenerationTask(storyId, { count: 3 });
+          setStoryGenerationSnapshot(storyId, submitted);
+          successCount += 1;
+        } catch (_error) {
+          failedIds.push(storyId);
+        }
+      }
+
+      if (successCount > 0) {
+        R.toast(`批量生成任务已提交：${successCount}/${generatableIds.length}，可在消息中心查看完成通知`, 'success');
+      }
+      if (skippedIds.length > 0) {
+        R.toast(`已跳过 ${skippedIds.length} 条不可生成 US`, 'info');
+      }
+      if (failedIds.length > 0) {
+        R.toast(`提交失败 ${failedIds.length} 条，请稍后重试`, 'warning');
+      }
+      await loadUserStories();
+    }
+
+    async function batchArchiveUserStories() {
+      const selectedIds = getSelectedStoryIds();
+      if (!selectedIds.length) {
+        R.toast('请先勾选要归档的 US', 'warning');
+        return;
+      }
+
+      const blockedIds = [];
+      const alreadyArchivedIds = [];
+      const notDoneIds = [];
+      const archivableIds = [];
+      selectedIds.forEach((id) => {
+        const story = state.items.find((item) => item.id === id);
+        const status = normalizeUsStatus(story?.status);
+        const busy = resolveStoryBusyState(id, story);
+        if (busy.isAnalyzing || busy.isGenerating) {
+          blockedIds.push(id);
+          return;
+        }
+        if (status === 'ARCHIVED') {
+          alreadyArchivedIds.push(id);
+          return;
+        }
+        if (status !== 'DONE') {
+          notDoneIds.push(id);
+          return;
+        }
+        archivableIds.push(id);
+      });
+
+      if (!archivableIds.length) {
+        R.toast('所选 US 中没有可归档项（仅执行完毕可归档）', 'warning');
+        return;
+      }
+
+      const skippedCount = blockedIds.length + alreadyArchivedIds.length + notDoneIds.length;
+      const message = skippedCount
+        ? `已选 ${selectedIds.length} 条 US，其中 ${skippedCount} 条将跳过（分析/生成中、已归档或未执行完毕），确认归档其余 ${archivableIds.length} 条？`
+        : `确认归档选中的 ${archivableIds.length} 条 US？归档后将无法继续分析和生成用例。`;
+      const confirmed = await R.confirm({
+        title: '批量归档 US',
+        message,
+        confirmText: '确认归档',
+        tone: 'danger'
+      });
+      if (!confirmed) return;
+
+      let successCount = 0;
+      const failedIds = [];
+      for (const storyId of archivableIds) {
+        try {
+          await R.api(`/user-stories/${storyId}`, {
+            method: 'PUT',
+            body: {
+              status: 'ARCHIVED'
+            }
+          });
+          successCount += 1;
+        } catch (_error) {
+          failedIds.push(storyId);
+        }
+      }
+
+      if (successCount > 0) {
+        R.toast(`批量归档完成：成功 ${successCount} 条`, 'success');
+      }
+      if (skippedCount > 0) {
+        R.toast(`已跳过 ${skippedCount} 条不满足归档条件的 US`, 'info');
+      }
+      if (failedIds.length > 0) {
+        R.toast(`归档失败 ${failedIds.length} 条，请稍后重试`, 'warning');
+      }
+      await loadUserStories();
+    }
+
+    async function batchDeleteUserStories() {
+      const selectedIds = getSelectedStoryIds();
+      if (!selectedIds.length) {
+        R.toast('请先勾选要删除的 US', 'warning');
+        return;
+      }
+
+      const blockedIds = [];
+      const deletableIds = [];
+      selectedIds.forEach((id) => {
+        const busy = resolveStoryBusyState(id);
+        if (busy.isAnalyzing || busy.isGenerating) {
+          blockedIds.push(id);
+        } else {
+          deletableIds.push(id);
+        }
+      });
+
+      if (!deletableIds.length) {
+        R.toast('所选 US 正在分析或生成中，暂不允许删除', 'warning');
+        return;
+      }
+
+      const message = blockedIds.length
+        ? `已选 ${selectedIds.length} 条 US，其中 ${blockedIds.length} 条分析/生成中将跳过，确认删除其余 ${deletableIds.length} 条？`
+        : `确认删除选中的 ${deletableIds.length} 条 US？删除后不可恢复。`;
+      const confirmed = await R.confirm({
+        title: '批量删除 US',
+        message,
+        confirmText: '确认删除',
+        tone: 'danger'
+      });
+      if (!confirmed) return;
+
+      let successCount = 0;
+      const failedIds = [];
+      for (const storyId of deletableIds) {
+        try {
+          await R.api(`/user-stories/${storyId}`, { method: 'DELETE' });
+          successCount += 1;
+          state.selectedStoryIds.delete(storyId);
+          if (state.expandedStoryId === storyId) {
+            state.expandedStoryId = null;
+            state.expandedStoryDetail = null;
+          }
+        } catch (_error) {
+          failedIds.push(storyId);
+        }
+      }
+
+      if (successCount > 0) {
+        R.toast(`批量删除完成：成功 ${successCount} 条`, 'success');
+      }
+      if (blockedIds.length > 0) {
+        R.toast(`已跳过 ${blockedIds.length} 条分析/生成中的 US`, 'info');
+      }
+      if (failedIds.length > 0) {
+        R.toast(`删除失败 ${failedIds.length} 条，请稍后重试`, 'warning');
+      }
+
+      if (state.page > 0 && successCount >= state.items.length) {
+        state.page -= 1;
+      }
+      await loadUserStories();
+    }
+
+    async function deleteUserStory(id) {
+      const busy = resolveStoryBusyState(id);
+      if (busy.isAnalyzing || busy.isGenerating) {
+        R.toast(busy.isGenerating ? 'US 生成用例中，暂不允许删除' : 'US 分析中，暂不允许删除', 'warning');
         return;
       }
       const confirmed = await R.confirm({
@@ -3075,6 +3404,7 @@
       if (!confirmed) return;
       await R.api(`/user-stories/${id}`, { method: 'DELETE' });
       R.toast('US 已删除', 'success');
+      state.selectedStoryIds.delete(id);
       if (state.expandedStoryId === id) {
         state.expandedStoryId = null;
         state.expandedStoryDetail = null;
@@ -3109,6 +3439,19 @@
     });
 
     tableBody.addEventListener('change', async (event) => {
+      const rowCheckbox = event.target.closest('input[data-action="select-story"]');
+      if (rowCheckbox) {
+        const id = Number(rowCheckbox.dataset.id);
+        if (!id) return;
+        if (rowCheckbox.checked) {
+          state.selectedStoryIds.add(id);
+        } else {
+          state.selectedStoryIds.delete(id);
+        }
+        syncStorySelectionControls();
+        return;
+      }
+
       const select = event.target.closest('select[data-action]');
       if (!select) return;
       const id = Number(select.dataset.id);
@@ -3125,6 +3468,58 @@
         R.toast(message, 'error');
       } finally {
         select.disabled = false;
+      }
+    });
+
+    selectAllStoriesCheckbox?.addEventListener('change', () => {
+      const visibleIds = getCurrentPageStoryIds();
+      if (selectAllStoriesCheckbox.checked) {
+        visibleIds.forEach((id) => state.selectedStoryIds.add(id));
+      } else {
+        visibleIds.forEach((id) => state.selectedStoryIds.delete(id));
+      }
+      syncStorySelectionControls();
+    });
+
+    function closeUsBatchActionsMenu() {
+      batchStoryActionsMenu?.classList.add('hidden');
+    }
+
+    batchStoryActionsMenu?.addEventListener('click', async (event) => {
+      const item = event.target.closest('a[data-action]');
+      if (!item) return;
+      event.preventDefault();
+      closeUsBatchActionsMenu();
+      const action = String(item.dataset.action || '').trim();
+      try {
+        if (action === 'analyze') {
+          await batchAnalyzeUserStories();
+          return;
+        }
+        if (action === 'generate') {
+          await batchGenerateUserStories();
+          return;
+        }
+        if (action === 'archive') {
+          await batchArchiveUserStories();
+          return;
+        }
+        if (action === 'delete') {
+          await batchDeleteUserStories();
+        }
+      } catch (error) {
+        R.toast(error.message || '批量操作失败', 'error');
+      }
+    });
+
+    window.toggleUsBatchActionsMenu = () => {
+      if (!batchStoryActionsMenu || !batchStoryActionsButton || batchStoryActionsButton.disabled) return;
+      batchStoryActionsMenu.classList.toggle('hidden');
+    };
+
+    document.addEventListener('click', (event) => {
+      if (!event.target.closest('#us-batch-actions-menu') && !event.target.closest('#us-batch-actions-button')) {
+        closeUsBatchActionsMenu();
       }
     });
 
@@ -3303,22 +3698,17 @@
     const cardsContainer = $('main .p-6 > .space-y-4');
     const generateModal = $('#generate-modal');
     const generateMenu = $('#generate-menu');
+    const batchActionsButton = $('#tc-batch-actions-button');
+    const batchActionsMenu = $('#tc-batch-actions-menu');
 
     if (!filterCard || !cardsContainer || !generateModal || !generateMenu) return;
 
     const searchInput = $('input[placeholder*="搜索用例"]', filterCard);
-    const priorityButtons = $$('button', filterCard)
-      .filter((btn) => ['P0', 'P1', 'P2', 'P3', 'L0', 'L1', 'L2', 'L3'].includes((btn.textContent || '').trim()))
-      .slice(0, 4);
-    const statusSelect = $$('select', filterCard)[0];
-    const typeSelect = $$('select', filterCard)[1];
+    const prioritySelect = $('#tc-priority-select', filterCard);
+    const statusSelect = $('#tc-status-select', filterCard);
+    const typeSelect = $('#tc-type-select', filterCard);
 
-    if (!searchInput || !statusSelect || !typeSelect || priorityButtons.length < 4) return;
-
-    const priorityLabels = ['L0', 'L1', 'L2', 'L3'];
-    priorityButtons.forEach((button, index) => {
-      button.textContent = priorityLabels[index] || button.textContent;
-    });
+    if (!searchInput || !prioritySelect || !statusSelect || !typeSelect) return;
 
     let paginationBar = $('#tc-pagination-bar');
     if (paginationBar) paginationBar.remove();
@@ -3349,6 +3739,14 @@
     const prevPageButton = $('#tc-page-prev', paginationBar);
     const nextPageButton = $('#tc-page-next', paginationBar);
     const pageInfo = $('#tc-page-info', paginationBar);
+
+    prioritySelect.innerHTML = [
+      '<option value="">全部级别</option>',
+      '<option value="CRITICAL">L0</option>',
+      '<option value="HIGH">L1</option>',
+      '<option value="MEDIUM">L2</option>',
+      '<option value="LOW">L3</option>'
+    ].join('');
 
     statusSelect.innerHTML = [
       '<option value="">全部状态</option>',
@@ -3387,7 +3785,6 @@
       generatingCaseIds: new Set()
     };
 
-    const priorityValueMap = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
     const pageSizeOptions = [10, 20, 50, 100];
 
     function setCaseScriptGenerationSnapshot(caseId, snapshot) {
@@ -3454,12 +3851,21 @@
       });
     }
 
-    function updatePriorityButtons() {
-      priorityButtons.forEach((button, index) => {
-        const active = state.priority === priorityValueMap[index];
-        button.style.background = active ? 'rgba(239,68,68,0.2)' : 'rgba(255,255,255,0.08)';
-        button.style.color = active ? '#ef4444' : '#a1a1aa';
-      });
+    function getSelectedCaseIds() {
+      return $$('input[data-case-id]:checked', cardsContainer)
+        .map((node) => Number(node.dataset.caseId))
+        .filter((id) => Number.isInteger(id) && id > 0);
+    }
+
+    function syncBatchActionControls() {
+      const selectedCount = getSelectedCaseIds().length;
+      const hasSelection = selectedCount > 0;
+      if (batchActionsButton) {
+        batchActionsButton.disabled = !hasSelection;
+      }
+      if (!hasSelection && batchActionsMenu) {
+        batchActionsMenu.classList.add('hidden');
+      }
     }
 
     function renderPagination() {
@@ -3484,6 +3890,7 @@
     function renderCards(list) {
       if (!list.length) {
         cardsContainer.innerHTML = '<div class="glass-card p-8 text-center text-sm text-[#71717a]">暂无测试用例</div>';
+        syncBatchActionControls();
         return;
       }
 
@@ -3540,6 +3947,7 @@
           </div>
         `;
       }).join('');
+      syncBatchActionControls();
       if (window.lucide) window.lucide.createIcons();
     }
 
@@ -4788,6 +5196,143 @@
       await loadTestCases();
     }
 
+    async function removeTestCasesBatch() {
+      const ids = getSelectedCaseIds();
+      if (!ids.length) {
+        R.toast('请先勾选要删除的测试用例', 'warning');
+        return;
+      }
+
+      const confirmed = await R.confirm({
+        title: '批量删除测试用例',
+        message: `确认删除选中的 ${ids.length} 条测试用例？删除后不可恢复。`,
+        confirmText: '确认删除',
+        tone: 'danger'
+      });
+      if (!confirmed) return;
+
+      let successCount = 0;
+      const failedIds = [];
+      for (const id of ids) {
+        try {
+          await R.api(`/test-cases/${id}`, { method: 'DELETE' });
+          successCount += 1;
+        } catch (_error) {
+          failedIds.push(id);
+        }
+      }
+
+      if (successCount > 0) {
+        R.toast(`批量删除完成：成功 ${successCount} 条`, 'success');
+      }
+      if (failedIds.length > 0) {
+        R.toast(`删除失败 ${failedIds.length} 条，请稍后重试`, 'warning');
+      }
+
+      if (state.page > 0 && successCount >= state.items.length) {
+        state.page -= 1;
+      }
+      await loadTestCases();
+    }
+
+    async function updateTestCasesStatusBatch(nextStatus, actionLabel) {
+      const ids = getSelectedCaseIds();
+      if (!ids.length) {
+        R.toast('请先勾选要批量处理的测试用例', 'warning');
+        return;
+      }
+
+      const statusLabel = CASE_STATUS_LABEL[nextStatus] || nextStatus;
+      const confirmed = await R.confirm({
+        title: actionLabel,
+        message: `确认将选中的 ${ids.length} 条测试用例状态更新为“${statusLabel}”？`,
+        confirmText: '确认执行',
+        tone: nextStatus === 'ARCHIVED' || nextStatus === 'DEPRECATED' ? 'danger' : 'primary'
+      });
+      if (!confirmed) return;
+
+      let successCount = 0;
+      const failedIds = [];
+      for (const id of ids) {
+        try {
+          await R.api(`/test-cases/${id}`, {
+            method: 'PUT',
+            body: {
+              status: nextStatus
+            }
+          });
+          successCount += 1;
+        } catch (_error) {
+          failedIds.push(id);
+        }
+      }
+
+      if (successCount > 0) {
+        R.toast(`${actionLabel}完成：成功 ${successCount} 条`, 'success');
+      }
+      if (failedIds.length > 0) {
+        R.toast(`处理失败 ${failedIds.length} 条，请稍后重试`, 'warning');
+      }
+      await loadTestCases();
+    }
+
+    async function batchGenerateScripts() {
+      const ids = getSelectedCaseIds();
+      if (!ids.length) {
+        R.toast('请先勾选要批量生成脚本的用例', 'warning');
+        return;
+      }
+
+      const runningIds = ids.filter((id) => {
+        const snapshot = state.scriptGenerationMetaByCase.get(id);
+        const status = String(snapshot?.status || '').toUpperCase();
+        return status === 'RUNNING' || status === 'QUEUED' || state.generatingCaseIds.has(id);
+      });
+      const executableIds = ids.filter((id) => !runningIds.includes(id));
+      if (!executableIds.length) {
+        R.toast('选中的用例都在脚本生成中，请稍后再试', 'warning');
+        return;
+      }
+
+      const skipHint = runningIds.length ? `（${runningIds.length} 条已在生成中，将自动跳过）` : '';
+      const confirmed = await R.confirm({
+        title: '批量生成脚本',
+        message: `确认为选中的 ${executableIds.length} 条测试用例生成脚本？${skipHint}`,
+        confirmText: '确认生成',
+        tone: 'primary'
+      });
+      if (!confirmed) return;
+
+      const settings = R.getSettings();
+      const targetUrl = settings.defaultTargetUrl || 'https://example.com';
+      const selectedScriptType = state.selectedScriptType || 'PLAYWRIGHT';
+      const selectedLanguage = resolveScriptLanguages(selectedScriptType)[0] || 'JAVASCRIPT';
+      let successCount = 0;
+      const failedIds = [];
+      for (const id of executableIds) {
+        try {
+          const submitted = await submitScriptGenerationTask(id, {
+            scriptType: selectedScriptType,
+            language: selectedLanguage,
+            targetUrl,
+            additionalInstructions: '由测试用例页面触发批量脚本生成'
+          });
+          setCaseScriptGenerationSnapshot(id, submitted);
+          syncScriptGenerateButtonState(id);
+          successCount += 1;
+        } catch (_error) {
+          failedIds.push(id);
+        }
+      }
+
+      if (successCount > 0) {
+        R.toast(`批量脚本生成任务已提交：${successCount}/${executableIds.length}，可在消息中心查看完成通知`, 'success');
+      }
+      if (failedIds.length > 0) {
+        R.toast(`脚本生成提交失败 ${failedIds.length} 条，请稍后重试`, 'warning');
+      }
+    }
+
     async function generateScript(caseId) {
       const id = Number(caseId || state.selectedCaseId);
       if (!id) {
@@ -4828,18 +5373,20 @@
       }
     });
 
-    priorityButtons.forEach((button, index) => {
-      const value = priorityValueMap[index];
-      button.addEventListener('click', async () => {
-        state.priority = state.priority === value ? '' : value;
-        state.page = 0;
-        updatePriorityButtons();
-        try {
-          await loadTestCases();
-        } catch (error) {
-          R.toast(error.message || '筛选失败', 'error');
-        }
-      });
+    cardsContainer.addEventListener('change', (event) => {
+      if (event.target.matches('input[data-case-id]')) {
+        syncBatchActionControls();
+      }
+    });
+
+    prioritySelect.addEventListener('change', async () => {
+      state.priority = prioritySelect.value;
+      state.page = 0;
+      try {
+        await loadTestCases();
+      } catch (error) {
+        R.toast(error.message || '筛选失败', 'error');
+      }
     });
 
     searchInput.addEventListener('input', debounce(async (event) => {
@@ -4903,38 +5450,337 @@
       }
     });
 
-    const batchButton = $$('header button').find((btn) => (btn.textContent || '').includes('批量生成脚本'));
-    if (batchButton) {
-      batchButton.disabled = false;
-      batchButton.classList.remove('disabled:opacity-50');
-      batchButton.addEventListener('click', async () => {
-        const ids = $$('input[data-case-id]:checked', cardsContainer).map((node) => Number(node.dataset.caseId)).filter(Boolean);
-        if (!ids.length) {
-          R.toast('请先勾选要批量生成的用例', 'warning');
+    function closeBatchActionsMenu() {
+      if (batchActionsMenu) batchActionsMenu.classList.add('hidden');
+    }
+
+    batchActionsMenu?.addEventListener('click', async (event) => {
+      const item = event.target.closest('a[data-action]');
+      if (!item) return;
+      event.preventDefault();
+      closeBatchActionsMenu();
+      const action = String(item.dataset.action || '').trim();
+      try {
+        if (action === 'delete') {
+          await removeTestCasesBatch();
           return;
         }
-        const settings = R.getSettings();
-        const targetUrl = settings.defaultTargetUrl || 'https://example.com';
-        const selectedScriptType = state.selectedScriptType || 'PLAYWRIGHT';
-        const selectedLanguage = resolveScriptLanguages(selectedScriptType)[0] || 'JAVASCRIPT';
-        let count = 0;
-        for (const id of ids) {
+        if (action === 'approve') {
+          await updateTestCasesStatusBatch('READY', '批量审批');
+          return;
+        }
+        if (action === 'archive') {
+          await updateTestCasesStatusBatch('ARCHIVED', '批量归档');
+          return;
+        }
+        if (action === 'deprecate') {
+          await updateTestCasesStatusBatch('DEPRECATED', '批量废弃');
+          return;
+        }
+        if (action === 'generate-script') {
+          await batchGenerateScripts();
+        }
+      } catch (error) {
+        R.toast(error.message || '批量操作失败', 'error');
+      }
+    });
+    syncBatchActionControls();
+
+    const usGenerateState = {
+      modal: null,
+      listNode: null,
+      searchNode: null,
+      countNode: null,
+      selectedNode: null,
+      submitNode: null,
+      stories: [],
+      filteredStories: [],
+      selectedIds: new Set(),
+      loading: false,
+      submitting: false
+    };
+
+    function isUsGeneratable(story) {
+      const status = String(story?.status || '').toUpperCase();
+      return status !== 'ARCHIVED';
+    }
+
+    function getUsGenerateSelectedIds() {
+      return [...usGenerateState.selectedIds].filter((id) => Number.isInteger(id) && id > 0);
+    }
+
+    function syncUsGenerateSummary() {
+      const selectedCount = getUsGenerateSelectedIds().length;
+      const totalGeneratable = usGenerateState.stories.filter((story) => isUsGeneratable(story)).length;
+      if (usGenerateState.selectedNode) {
+        usGenerateState.selectedNode.textContent = usGenerateState.loading
+          ? '正在加载 US...'
+          : `已选 ${selectedCount} / ${totalGeneratable}`;
+      }
+      if (usGenerateState.submitNode) {
+        usGenerateState.submitNode.disabled = usGenerateState.loading || usGenerateState.submitting || selectedCount <= 0;
+        usGenerateState.submitNode.classList.toggle('opacity-50', usGenerateState.submitNode.disabled);
+        usGenerateState.submitNode.classList.toggle('cursor-not-allowed', usGenerateState.submitNode.disabled);
+        usGenerateState.submitNode.textContent = usGenerateState.submitting ? '生成中...' : '开始生成';
+      }
+    }
+
+    function renderUsGenerateList() {
+      if (!usGenerateState.listNode) return;
+      if (usGenerateState.loading) {
+        usGenerateState.listNode.innerHTML = '<div class="py-10 text-center text-sm text-[#71717a]">正在加载 US 列表...</div>';
+        syncUsGenerateSummary();
+        return;
+      }
+      if (!usGenerateState.filteredStories.length) {
+        usGenerateState.listNode.innerHTML = '<div class="py-10 text-center text-sm text-[#71717a]">未找到可选 US</div>';
+        syncUsGenerateSummary();
+        return;
+      }
+
+      usGenerateState.listNode.innerHTML = usGenerateState.filteredStories.map((story) => {
+        const usId = Number(story?.id) || 0;
+        const usNumber = story?.usNumber || `US-${usId}`;
+        const title = story?.title || '未命名 US';
+        const status = String(story?.status || '').toUpperCase();
+        const statusLabel = US_STATUS_LABEL[status] || status || '-';
+        const disabled = !isUsGeneratable(story);
+        const checked = usGenerateState.selectedIds.has(usId);
+        const statusColor = disabled
+          ? 'bg-white/10 text-[#a1a1aa]'
+          : 'bg-[#00d4ff]/20 text-[#67e8f9]';
+        return `
+          <label class="flex items-start gap-3 p-3 rounded-lg border border-white/10 bg-white/5 ${disabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-white/10'}">
+            <input type="checkbox" data-us-checkbox data-us-id="${usId}" class="mt-1 rounded border-white/20 bg-white/5" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-xs text-[#67e8f9] font-medium">${R.escapeHtml(usNumber)}</span>
+                <span class="px-2 py-0.5 text-[11px] rounded ${statusColor}">${R.escapeHtml(statusLabel)}</span>
+              </div>
+              <p class="mt-1 text-sm text-[#e4e4e7] break-words">${R.escapeHtml(title)}</p>
+            </div>
+          </label>
+        `;
+      }).join('');
+      syncUsGenerateSummary();
+    }
+
+    function filterUsGenerateStories() {
+      const keyword = String(usGenerateState.searchNode?.value || '').trim().toLowerCase();
+      usGenerateState.filteredStories = usGenerateState.stories.filter((story) => {
+        if (!keyword) return true;
+        const usNumber = String(story?.usNumber || '').toLowerCase();
+        const title = String(story?.title || '').toLowerCase();
+        return usNumber.includes(keyword) || title.includes(keyword);
+      });
+      renderUsGenerateList();
+    }
+
+    async function fetchAllUserStoriesForGenerate() {
+      const size = 100;
+      const maxPages = 30;
+      const allStories = [];
+      for (let page = 0; page < maxPages; page += 1) {
+        const response = await R.api(`/user-stories?page=${page}&size=${size}`);
+        const list = unwrapPage(response);
+        if (Array.isArray(list) && list.length) allStories.push(...list);
+        const totalPages = Number(response?.totalPages) || 0;
+        const isLastPage = Boolean(response?.last ?? (totalPages > 0 ? page >= totalPages - 1 : list.length < size));
+        if (isLastPage) break;
+      }
+      return allStories;
+    }
+
+    async function loadUsGenerateStories() {
+      usGenerateState.loading = true;
+      renderUsGenerateList();
+      try {
+        const stories = await fetchAllUserStoriesForGenerate();
+        usGenerateState.stories = stories
+          .filter((story) => Number.isInteger(Number(story?.id)) && Number(story?.id) > 0)
+          .sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0));
+        const validIdSet = new Set(usGenerateState.stories.map((story) => Number(story.id)));
+        [...usGenerateState.selectedIds].forEach((id) => {
+          if (!validIdSet.has(id)) usGenerateState.selectedIds.delete(id);
+        });
+        filterUsGenerateStories();
+      } finally {
+        usGenerateState.loading = false;
+        renderUsGenerateList();
+      }
+    }
+
+    function closeUsGenerateModal() {
+      if (usGenerateState.modal) usGenerateState.modal.classList.add('hidden');
+    }
+
+    async function submitUsCaseGeneration() {
+      if (usGenerateState.submitting || usGenerateState.loading) return;
+      const selectedIds = getUsGenerateSelectedIds().filter((id) => {
+        const story = usGenerateState.stories.find((item) => Number(item?.id) === id);
+        return story && isUsGeneratable(story);
+      });
+      if (!selectedIds.length) {
+        R.toast('请至少选择一个可生成的 US', 'warning');
+        return;
+      }
+
+      const count = Math.max(1, Math.min(20, Number(usGenerateState.countNode?.value) || 3));
+      if (usGenerateState.countNode) usGenerateState.countNode.value = String(count);
+      usGenerateState.submitting = true;
+      syncUsGenerateSummary();
+
+      let success = 0;
+      let failed = 0;
+      let createdTotal = 0;
+
+      try {
+        for (const usId of selectedIds) {
           try {
-            const submitted = await submitScriptGenerationTask(id, {
-              scriptType: selectedScriptType,
-              language: selectedLanguage,
-              targetUrl,
-              additionalInstructions: '由测试用例页面触发批量脚本生成'
+            const created = await R.api(`/user-stories/${usId}/generate-test-cases`, {
+              method: 'POST',
+              body: { count }
             });
-            setCaseScriptGenerationSnapshot(id, submitted);
-            syncScriptGenerateButtonState(id);
-            count += 1;
+            success += 1;
+            if (Array.isArray(created)) createdTotal += created.length;
           } catch (_error) {
-            // Continue processing other items
+            failed += 1;
           }
         }
-        R.toast(`批量任务已提交: ${count}/${ids.length}，可在消息中心查看完成通知`, 'success');
+
+        if (success > 0) {
+          await loadTestCases();
+        }
+
+        const summary = failed > 0
+          ? `已完成：成功 ${success} 个 US，失败 ${failed} 个 US`
+          : `已完成：${success} 个 US，共生成 ${createdTotal} 条用例`;
+        R.toast(summary, failed > 0 ? 'warning' : 'success');
+        if (failed === 0) closeUsGenerateModal();
+      } finally {
+        usGenerateState.submitting = false;
+        syncUsGenerateSummary();
+      }
+    }
+
+    function ensureUsGenerateModal() {
+      if (usGenerateState.modal) return usGenerateState.modal;
+
+      const modal = document.createElement('div');
+      modal.className = 'hidden fixed inset-0 z-[11120] bg-black/70 backdrop-blur-sm';
+      modal.innerHTML = `
+        <div class="absolute inset-0 flex items-center justify-center p-4">
+          <div class="w-full max-w-3xl rounded-2xl border border-white/10 bg-[#18181f] shadow-2xl overflow-hidden">
+            <div class="px-5 py-4 border-b border-white/10 flex items-center justify-between gap-3">
+              <div>
+                <h3 class="text-base font-semibold text-white">从 US 生成测试用例</h3>
+                <p class="text-xs text-[#71717a] mt-1">支持多选 US，数据来源于 US 需求管理</p>
+              </div>
+              <button data-action="us-generate-close" class="px-2 py-1 text-sm rounded bg-white/10 hover:bg-white/20">关闭</button>
+            </div>
+            <div class="px-5 py-4 space-y-4">
+              <div class="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-3 items-center">
+                <div class="relative">
+                  <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#71717a]"></i>
+                  <input id="tc-us-generate-search" type="text" placeholder="搜索 US 编号或标题..." class="w-full pl-9 pr-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm focus:outline-none focus:border-[#00d4ff]">
+                </div>
+                <label class="flex items-center gap-2 text-xs text-[#a1a1aa]">
+                  <span>每个US生成</span>
+                  <input id="tc-us-generate-count" type="number" min="1" max="20" value="3" class="w-16 px-2 py-1 rounded bg-white/5 border border-white/10 text-sm focus:outline-none focus:border-[#00d4ff]">
+                  <span>条</span>
+                </label>
+                <div class="flex items-center justify-end gap-2">
+                  <button data-action="us-generate-select-all" class="px-2 py-1 text-xs rounded bg-white/10 hover:bg-white/20">全选可生成</button>
+                  <button data-action="us-generate-clear" class="px-2 py-1 text-xs rounded bg-white/10 hover:bg-white/20">清空</button>
+                </div>
+              </div>
+              <div id="tc-us-generate-list" class="max-h-[420px] overflow-y-auto space-y-2 pr-1"></div>
+            </div>
+            <div class="px-5 py-4 border-t border-white/10 flex items-center justify-between gap-3">
+              <span id="tc-us-generate-selected" class="text-xs text-[#a1a1aa]">已选 0 / 0</span>
+              <div class="flex items-center gap-2">
+                <button data-action="us-generate-cancel" class="px-3 py-1.5 text-sm rounded bg-white/10 text-[#d4d4d8] hover:bg-white/20">取消</button>
+                <button data-action="us-generate-submit" class="px-3 py-1.5 text-sm rounded bg-[#0ea5e9]/25 text-[#7dd3fc] hover:bg-[#0ea5e9]/35">开始生成</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      if (window.lucide) window.lucide.createIcons();
+
+      usGenerateState.modal = modal;
+      usGenerateState.listNode = $('#tc-us-generate-list', modal);
+      usGenerateState.searchNode = $('#tc-us-generate-search', modal);
+      usGenerateState.countNode = $('#tc-us-generate-count', modal);
+      usGenerateState.selectedNode = $('#tc-us-generate-selected', modal);
+      usGenerateState.submitNode = $('[data-action="us-generate-submit"]', modal);
+
+      const searchHandler = debounce(() => filterUsGenerateStories(), 180);
+      usGenerateState.searchNode?.addEventListener('input', searchHandler);
+
+      usGenerateState.listNode?.addEventListener('change', (event) => {
+        const checkbox = event.target.closest('input[data-us-checkbox]');
+        if (!checkbox) return;
+        const usId = Number(checkbox.dataset.usId);
+        if (!usId) return;
+        if (checkbox.checked) {
+          usGenerateState.selectedIds.add(usId);
+        } else {
+          usGenerateState.selectedIds.delete(usId);
+        }
+        syncUsGenerateSummary();
       });
+
+      modal.addEventListener('click', (event) => {
+        if (event.target === modal) closeUsGenerateModal();
+      });
+
+      modal.addEventListener('click', async (event) => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) return;
+        const action = button.dataset.action;
+        if (action === 'us-generate-close' || action === 'us-generate-cancel') {
+          closeUsGenerateModal();
+          return;
+        }
+        if (action === 'us-generate-clear') {
+          usGenerateState.selectedIds.clear();
+          renderUsGenerateList();
+          return;
+        }
+        if (action === 'us-generate-select-all') {
+          usGenerateState.filteredStories.forEach((story) => {
+            const usId = Number(story?.id);
+            if (usId && isUsGeneratable(story)) usGenerateState.selectedIds.add(usId);
+          });
+          renderUsGenerateList();
+          return;
+        }
+        if (action === 'us-generate-submit') {
+          await submitUsCaseGeneration();
+        }
+      });
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape' || !usGenerateState.modal) return;
+        if (!usGenerateState.modal.classList.contains('hidden')) {
+          closeUsGenerateModal();
+        }
+      });
+
+      return modal;
+    }
+
+    async function openUsGenerateModal() {
+      ensureUsGenerateModal();
+      usGenerateState.selectedIds.clear();
+      if (usGenerateState.searchNode) usGenerateState.searchNode.value = '';
+      if (usGenerateState.countNode) usGenerateState.countNode.value = '3';
+      usGenerateState.filteredStories = usGenerateState.stories.slice();
+      usGenerateState.modal?.classList.remove('hidden');
+      await loadUsGenerateStories();
+      usGenerateState.searchNode?.focus();
     }
 
     const menuItems = $$('a', generateMenu);
@@ -4942,29 +5788,13 @@
       item.addEventListener('click', async (event) => {
         event.preventDefault();
         generateMenu.classList.add('hidden');
-        const text = (item.textContent || '').trim();
+        const action = String(item.dataset.action || '').trim();
         try {
-          if (text.includes('从US')) {
-            const usId = Number(window.prompt('请输入 US ID')); 
-            if (!usId) return;
-            const count = Number(window.prompt('生成数量（默认 3）', '3')) || 3;
-            const created = await R.api(`/user-stories/${usId}/generate-test-cases`, {
-              method: 'POST',
-              body: { count }
-            });
-            R.toast(`已生成 ${Array.isArray(created) ? created.length : 0} 条用例`, 'success');
-            await loadTestCases();
+          if (action === 'from-us') {
+            await openUsGenerateModal();
             return;
           }
-          if (text.includes('验证点')) {
-            const usId = Number(window.prompt('请输入 US ID（通过该 US 生成）'));
-            if (!usId) return;
-            await R.api(`/user-stories/${usId}/generate-test-cases`, { method: 'POST', body: { count: 2 } });
-            R.toast('验证点衍生用例已生成', 'success');
-            await loadTestCases();
-            return;
-          }
-          if (text.includes('手动创建')) {
+          if (action === 'manual-create') {
             await upsertTestCase(null);
           }
         } catch (error) {
@@ -4974,6 +5804,10 @@
     });
 
     window.toggleGenerateMenu = () => generateMenu.classList.toggle('hidden');
+    window.toggleBatchActionsMenu = () => {
+      if (!batchActionsMenu || !batchActionsButton || batchActionsButton.disabled) return;
+      batchActionsMenu.classList.toggle('hidden');
+    };
     window.openGenerateModal = () => generateModal.classList.remove('hidden');
     window.closeGenerateModal = () => generateModal.classList.add('hidden');
     window.generateScript = () => generateScript().catch((error) => R.toast(error.message || '生成失败', 'error'));
@@ -4983,8 +5817,11 @@
     };
 
     document.addEventListener('click', (event) => {
-      if (!event.target.closest('#generate-menu') && !event.target.closest('button[onclick*="toggleGenerateMenu"]')) {
+      if (!event.target.closest('#generate-menu') && !event.target.closest('#tc-generate-menu-button')) {
         generateMenu.classList.add('hidden');
+      }
+      if (!event.target.closest('#tc-batch-actions-menu') && !event.target.closest('#tc-batch-actions-button')) {
+        batchActionsMenu?.classList.add('hidden');
       }
     });
 
@@ -5004,7 +5841,6 @@
       });
     });
 
-    updatePriorityButtons();
     await loadTestCases();
   }
 
@@ -6514,6 +7350,12 @@
     const screenshotLink = $('#execution-screenshots-view-all');
     const screenshotGrid = $('#execution-screenshot-grid');
     const timelineList = $('#execution-timeline-list');
+    const videoPanel = $('#execution-video-panel');
+    const videoEmpty = $('#execution-video-empty');
+    const videoPlayer = $('#execution-video-player');
+    const videoMeta = $('#execution-video-meta');
+    const videoOpenBtn = $('#execution-video-open');
+    const videoDownloadBtn = $('#execution-video-download');
 
     if (!caseSelect || !envSelect || !browserSelect || !startButton || !stopButton) return;
 
@@ -6729,6 +7571,43 @@
       }).join('');
     }
 
+    function resetExecutionVideo() {
+      if (!videoPanel || !videoPlayer || !videoEmpty || !videoMeta) return;
+      videoPlayer.pause();
+      videoPlayer.removeAttribute('src');
+      videoPlayer.classList.add('hidden');
+      videoEmpty.classList.remove('hidden');
+      videoMeta.textContent = '暂无录屏文件';
+      videoPanel.dataset.videoPath = '';
+      videoPanel.dataset.videoUrl = '';
+    }
+
+    async function renderExecutionVideo(execution) {
+      if (!videoPanel || !videoPlayer || !videoEmpty || !videoMeta) return;
+      const videoPath = String(execution?.videoPath || '').trim();
+      if (!videoPath) {
+        resetExecutionVideo();
+        return;
+      }
+      try {
+        const resolvedUrl = await resolveExecutionAssetUrl(videoPath);
+        if (!resolvedUrl) {
+          resetExecutionVideo();
+          return;
+        }
+        videoPlayer.src = resolvedUrl;
+        videoPlayer.classList.remove('hidden');
+        videoEmpty.classList.add('hidden');
+        videoPanel.dataset.videoPath = videoPath;
+        videoPanel.dataset.videoUrl = resolvedUrl;
+        const fileName = videoPath.split('/').filter(Boolean).pop() || 'execution-video.webm';
+        videoMeta.textContent = `录屏文件: ${fileName}`;
+      } catch (_error) {
+        resetExecutionVideo();
+        videoMeta.textContent = '录屏加载失败';
+      }
+    }
+
     function renderWaterfall(executions) {
       if (!executions.length) {
         waterfallContainer.innerHTML = '<div class="text-sm text-[#71717a]">暂无执行记录</div>';
@@ -6834,6 +7713,7 @@
 
       renderScreenshots(execution);
       renderTimeline(execution);
+      void renderExecutionVideo(execution);
     }
 
     async function loadCasesAndExecutions() {
@@ -6866,6 +7746,7 @@
         renderLogs();
         renderScreenshots(null);
         renderTimeline(null);
+        void renderExecutionVideo(null);
       }
     }
 
@@ -7017,6 +7898,52 @@
       });
     }
 
+    if (videoOpenBtn) {
+      videoOpenBtn.addEventListener('click', async () => {
+        const path = String(videoPanel?.dataset.videoPath || '').trim();
+        if (!path) {
+          R.toast('当前执行暂无录屏', 'warning');
+          return;
+        }
+        try {
+          const resolvedUrl = await resolveExecutionAssetUrl(path);
+          if (!resolvedUrl) {
+            R.toast('录屏地址不可用', 'warning');
+            return;
+          }
+          window.open(resolvedUrl, '_blank', 'noopener');
+        } catch (_error) {
+          R.toast('录屏加载失败', 'error');
+        }
+      });
+    }
+
+    if (videoDownloadBtn) {
+      videoDownloadBtn.addEventListener('click', async () => {
+        const path = String(videoPanel?.dataset.videoPath || '').trim();
+        if (!path) {
+          R.toast('当前执行暂无录屏', 'warning');
+          return;
+        }
+        try {
+          const resolvedUrl = await resolveExecutionAssetUrl(path);
+          if (!resolvedUrl) {
+            R.toast('录屏地址不可用', 'warning');
+            return;
+          }
+          const fileName = path.split('/').filter(Boolean).pop() || 'execution-video.webm';
+          const anchor = document.createElement('a');
+          anchor.href = resolvedUrl;
+          anchor.download = fileName;
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+        } catch (_error) {
+          R.toast('录屏下载失败', 'error');
+        }
+      });
+    }
+
     window.startExecution = () => startExecution().catch((error) => R.toast(error.message || '启动失败', 'error'));
     window.stopExecution = () => stopExecution().catch((error) => R.toast(error.message || '停止失败', 'error'));
     window.toggleAutoScroll = () => toggleAutoScroll();
@@ -7090,6 +8017,36 @@
       filtered: [],
       selected: null
     };
+    const assetObjectUrlByPath = new Map();
+
+    function revokeReportAssetUrls() {
+      assetObjectUrlByPath.forEach((url) => {
+        if (typeof url === 'string' && url.startsWith('blob:')) {
+          URL.revokeObjectURL(url);
+        }
+      });
+      assetObjectUrlByPath.clear();
+    }
+
+    async function resolveReportAssetUrl(path) {
+      const normalized = String(path || '').trim();
+      if (!normalized) return '';
+      if (!normalized.startsWith('/api/')) return normalized;
+      if (assetObjectUrlByPath.has(normalized)) {
+        return assetObjectUrlByPath.get(normalized) || '';
+      }
+      const token = R.getAccessToken();
+      const response = await fetch(normalized, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      if (!response.ok) {
+        throw new Error(`资源加载失败(${response.status})`);
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      assetObjectUrlByPath.set(normalized, objectUrl);
+      return objectUrl;
+    }
 
     function inRange(dateString, days) {
       if (!dateString) return false;
@@ -7175,11 +8132,18 @@
 
     function closeReport() {
       modal.classList.add('hidden');
+      revokeReportAssetUrls();
     }
 
-    function openReport(executionId) {
-      const item = state.executions.find((execution) => execution.id === executionId);
-      if (!item) return;
+    async function openReport(executionId) {
+      const listItem = state.executions.find((execution) => execution.id === executionId);
+      if (!listItem) return;
+      let item = listItem;
+      try {
+        item = await R.api(`/executions/${executionId}`);
+      } catch (_error) {
+        item = listItem;
+      }
       state.selected = item;
 
       const pass = item.result === 'PASS' ? 1 : 0;
@@ -7223,6 +8187,7 @@
           `;
         }).join('')
         : '<p class="text-sm text-[#71717a]">暂无截图数据</p>';
+      const hasVideo = String(item.videoPath || '').trim().length > 0;
       const detailHtml = `
         <div class="sticky top-0 bg-[#12121a] p-6 border-b border-white/5 flex items-center justify-between">
           <div>
@@ -7248,6 +8213,20 @@
               <p class="text-sm mt-2"><span class="text-[#a1a1aa]">结果:</span> ${statusBadge(item.result)} ${R.escapeHtml(EXEC_RESULT_LABEL[item.result] || item.result || '-')}</p>
               <p class="text-sm mt-2"><span class="text-[#a1a1aa]">日志:</span></p>
               <pre class="text-xs text-[#d1d5db] mt-1 whitespace-pre-wrap">${R.escapeHtml(item.logs || item.errorMessage || '暂无日志')}</pre>
+            </div>
+          </div>
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-lg font-semibold">执行录屏</h3>
+              <div class="flex items-center gap-2">
+                <button id="report-video-open" type="button" class="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-sm ${hasVideo ? '' : 'opacity-50 cursor-not-allowed'}" ${hasVideo ? '' : 'disabled'}>打开录屏</button>
+                <button id="report-video-download" type="button" class="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-sm ${hasVideo ? '' : 'opacity-50 cursor-not-allowed'}" ${hasVideo ? '' : 'disabled'}>下载录屏</button>
+              </div>
+            </div>
+            <div class="rounded-lg border border-white/10 bg-white/5 p-3">
+              <div id="report-video-empty" class="aspect-video rounded bg-black/30 border border-white/10 flex items-center justify-center text-sm text-[#71717a]">${hasVideo ? '录屏加载中...' : '暂无录屏文件'}</div>
+              <video id="report-video-player" class="hidden w-full aspect-video rounded border border-white/10 bg-black/40" controls preload="metadata"></video>
+              <p id="report-video-meta" class="mt-2 text-[11px] text-[#71717a] truncate">${hasVideo ? R.escapeHtml(String(item.videoPath || '').split('/').filter(Boolean).pop() || 'execution-video.webm') : ''}</p>
             </div>
           </div>
           <div>
@@ -7287,6 +8266,76 @@
         }
       });
 
+      const videoPath = String(item.videoPath || '').trim();
+      const reportVideoPlayer = $('#report-video-player', card);
+      const reportVideoEmpty = $('#report-video-empty', card);
+      const reportVideoMeta = $('#report-video-meta', card);
+      const reportVideoOpen = $('#report-video-open', card);
+      const reportVideoDownload = $('#report-video-download', card);
+
+      if (videoPath && reportVideoPlayer && reportVideoEmpty) {
+        try {
+          const videoUrl = await resolveReportAssetUrl(videoPath);
+          if (videoUrl) {
+            reportVideoPlayer.src = videoUrl;
+            reportVideoPlayer.classList.remove('hidden');
+            reportVideoEmpty.classList.add('hidden');
+            if (reportVideoMeta) {
+              const fileName = videoPath.split('/').filter(Boolean).pop() || 'execution-video.webm';
+              reportVideoMeta.textContent = `录屏文件: ${fileName}`;
+            }
+          } else {
+            reportVideoEmpty.textContent = '录屏地址不可用';
+          }
+        } catch (_error) {
+          reportVideoEmpty.textContent = '录屏加载失败';
+        }
+      }
+
+      if (reportVideoOpen) {
+        reportVideoOpen.addEventListener('click', async () => {
+          if (!videoPath) {
+            R.toast('该执行暂无录屏', 'warning');
+            return;
+          }
+          try {
+            const videoUrl = await resolveReportAssetUrl(videoPath);
+            if (!videoUrl) {
+              R.toast('录屏地址不可用', 'warning');
+              return;
+            }
+            window.open(videoUrl, '_blank', 'noopener');
+          } catch (_error) {
+            R.toast('录屏加载失败', 'error');
+          }
+        });
+      }
+
+      if (reportVideoDownload) {
+        reportVideoDownload.addEventListener('click', async () => {
+          if (!videoPath) {
+            R.toast('该执行暂无录屏', 'warning');
+            return;
+          }
+          try {
+            const videoUrl = await resolveReportAssetUrl(videoPath);
+            if (!videoUrl) {
+              R.toast('录屏地址不可用', 'warning');
+              return;
+            }
+            const fileName = videoPath.split('/').filter(Boolean).pop() || 'execution-video.webm';
+            const anchor = document.createElement('a');
+            anchor.href = videoUrl;
+            anchor.download = fileName;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+          } catch (_error) {
+            R.toast('录屏下载失败', 'error');
+          }
+        });
+      }
+
       modal.classList.remove('hidden');
     }
 
@@ -7301,7 +8350,9 @@
       const row = event.target.closest('tr[data-report-id]');
       const id = Number((button && button.dataset.openReport) || (row && row.dataset.reportId));
       if (!id) return;
-      openReport(id);
+      openReport(id).catch((error) => {
+        R.toast(error?.message || '报告加载失败', 'error');
+      });
     });
 
     modal.addEventListener('click', (event) => {
@@ -7309,7 +8360,11 @@
     });
 
     window.openReportDetail = () => {
-      if (state.filtered[0]) openReport(state.filtered[0].id);
+      if (state.filtered[0]) {
+        openReport(state.filtered[0].id).catch((error) => {
+          R.toast(error?.message || '报告加载失败', 'error');
+        });
+      }
     };
     window.closeReportDetail = closeReport;
 

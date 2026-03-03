@@ -100,6 +100,79 @@ function toRelative(baseDir, absolutePath) {
   return rel.split(path.sep).join('/');
 }
 
+async function listFilesByExtensions(rootDir, extensions) {
+  if (!rootDir) return [];
+  const resolvedRoot = path.resolve(rootDir);
+  try {
+    const stat = await fsp.stat(resolvedRoot);
+    if (!stat.isDirectory()) return [];
+  } catch (_err) {
+    return [];
+  }
+  const output = [];
+  async function walk(currentDir) {
+    const entries = await fsp.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const filePath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(filePath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (extensions.has(ext)) {
+        try {
+          const stat = await fsp.stat(filePath);
+          output.push({
+            path: filePath,
+            mtimeMs: stat.mtimeMs || 0
+          });
+        } catch (_ignored) {
+          // ignore races caused by file cleanup
+        }
+      }
+    }
+  }
+  await walk(resolvedRoot);
+  output.sort((a, b) => {
+    if (a.mtimeMs !== b.mtimeMs) return a.mtimeMs - b.mtimeMs;
+    return a.path.localeCompare(b.path);
+  });
+  return output.map((item) => item.path);
+}
+
+async function readActionCaptureMetadata(metaFile, baseDir) {
+  if (!metaFile || !fileExists(metaFile)) return [];
+  const raw = await fsp.readFile(metaFile, 'utf8');
+  const lines = splitLines(raw);
+  const captures = [];
+  let index = 0;
+  for (const line of lines) {
+    index += 1;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(line);
+    } catch (_err) {
+      continue;
+    }
+    if (!parsed || typeof parsed !== 'object') continue;
+    const filePath = safeResolve(path.dirname(metaFile), parsed.file || parsed.path);
+    if (!filePath || !fileExists(filePath)) continue;
+    captures.push({
+      stepNumber: Number.isFinite(Number(parsed.stepNumber)) ? Number(parsed.stepNumber) : index,
+      action: String(parsed.action || '').trim(),
+      target: String(parsed.target || '').trim(),
+      phase: String(parsed.phase || '').trim(),
+      file: toRelative(baseDir, filePath)
+    });
+  }
+  captures.sort((a, b) => {
+    if (a.stepNumber !== b.stepNumber) return a.stepNumber - b.stepNumber;
+    return a.file.localeCompare(b.file);
+  });
+  return captures;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const scriptPath = args.script ? path.resolve(args.script) : '';
@@ -124,8 +197,11 @@ async function main() {
   const testOutputDir = path.join(outputDir, 'test-output');
   const configFile = path.join(outputDir, 'playwright.config.cjs');
   const screenshotsDir = path.join(outputDir, 'screenshots');
+  const actionScreenshotsDir = path.join(screenshotsDir, 'actions');
+  const actionCaptureMetadataFile = path.join(outputDir, 'action-captures.jsonl');
   const videosDir = path.join(outputDir, 'videos');
   const tracesDir = path.join(outputDir, 'traces');
+  const captureHookFile = path.join(__dirname, 'auto-capture.cjs');
 
   const config = `
 module.exports = {
@@ -137,9 +213,9 @@ module.exports = {
   use: {
     browserName: ${JSON.stringify(browser)},
     headless: true,
-    viewport: { width: 1440, height: 900 },
-    video: 'on',
-    screenshot: 'on',
+    viewport: { width: 1280, height: 720 },
+    video: { mode: 'on', size: { width: 1280, height: 720 } },
+    screenshot: 'only-on-failure',
     trace: 'retain-on-failure'
   }
 };
@@ -154,12 +230,27 @@ module.exports = {
     configFile,
     '--workers=1'
   ];
+  const nodeOptions = [
+    process.env.NODE_OPTIONS,
+    fileExists(captureHookFile) ? `--require=${captureHookFile}` : ''
+  ]
+    .filter(Boolean)
+    .join(' ');
   const env = {
     ...process.env,
     CI: '1',
+    NODE_OPTIONS: nodeOptions,
     NODE_PATH: [runnerNodeModules, process.env.NODE_PATH]
       .filter(Boolean)
-      .join(path.delimiter)
+      .join(path.delimiter),
+    KUN_CAPTURE_SCREENSHOT_DIR: actionScreenshotsDir,
+    KUN_CAPTURE_VIDEO_DIR: videosDir,
+    KUN_CAPTURE_META_FILE: actionCaptureMetadataFile,
+    KUN_CAPTURE_VIDEO_WIDTH: '1280',
+    KUN_CAPTURE_VIDEO_HEIGHT: '720',
+    KUN_CAPTURE_IMAGE_TYPE: 'jpeg',
+    KUN_CAPTURE_IMAGE_QUALITY: '68',
+    KUN_CAPTURE_FULLPAGE: 'false'
   };
 
   const child = spawn('node', command, {
@@ -246,9 +337,18 @@ module.exports = {
     }
   }
 
-  const screenshotFiles = await copyAttachments(screenshotSource, screenshotsDir, 'shot');
-  const videoFiles = await copyAttachments(videoSource, videosDir, 'video');
+  await copyAttachments(screenshotSource, screenshotsDir, 'shot');
+  await copyAttachments(videoSource, videosDir, 'video');
   const traceFiles = await copyAttachments(traceSource, tracesDir, 'trace');
+  const actionScreenshots = await readActionCaptureMetadata(actionCaptureMetadataFile, outputDir);
+  const screenshotFiles = await listFilesByExtensions(
+    screenshotsDir,
+    new Set(['.png', '.jpg', '.jpeg'])
+  );
+  const videoFiles = await listFilesByExtensions(
+    videosDir,
+    new Set(['.webm', '.mp4'])
+  );
 
   const passedCount = tests.filter((item) => String(item.status).toLowerCase() === 'passed').length;
   const failedCount = tests.filter((item) => {
@@ -275,6 +375,7 @@ module.exports = {
     reportFile: fileExists(reportFile) ? toRelative(outputDir, reportFile) : '',
     videoFiles: videoFiles.map((item) => toRelative(outputDir, item)),
     screenshotFiles: screenshotFiles.map((item) => toRelative(outputDir, item)),
+    actionScreenshots,
     traceFiles: traceFiles.map((item) => toRelative(outputDir, item)),
     tests,
     passedCount,
@@ -297,6 +398,7 @@ main().catch(async (error) => {
     reportFile: '',
     videoFiles: [],
     screenshotFiles: [],
+    actionScreenshots: [],
     traceFiles: [],
     tests: [],
     passedCount: 0,

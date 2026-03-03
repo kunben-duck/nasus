@@ -27,8 +27,10 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -189,19 +191,31 @@ public class TestExecutionListener {
             }
         }
 
+        Map<String, ActionScreenshotCapture> actionScreenshotMap = indexActionScreenshots(runResult.getActionScreenshots());
         List<Path> screenshotFiles = resolveArtifactFiles(artifactsDir, runResult.getScreenshotFiles());
         int screenshotIndex = 1;
         for (Path screenshot : screenshotFiles) {
+            String screenshotRelative = toRelativePath(artifactsDir, screenshot);
+            ActionScreenshotCapture capture = actionScreenshotMap.getOrDefault(screenshotRelative, null);
             String screenshotUrl = toArtifactUrl(executionId, executionRoot, screenshot);
+            String stepName = capture != null
+                    ? "Action: " + defaultIfBlank(capture.getAction(), "step")
+                    : "Playwright Artifact";
+            String details = capture != null
+                    ? buildScreenshotDescription(capture)
+                    : "真实浏览器执行截图";
             TestExecutionDTO.ExecutionScreenshotDTO screenshotDTO = testExecutionService.appendScreenshot(
                     executionId,
                     screenshotUrl,
-                    "Playwright Artifact",
-                    screenshotIndex++,
-                    "真实浏览器执行截图",
+                    stepName,
+                    capture != null && capture.getStepNumber() != null ? capture.getStepNumber() : screenshotIndex++,
+                    details,
                     ExecutionScreenshot.ScreenshotType.SUCCESS
             );
             webSocketController.sendScreenshotUpdate(executionCode, screenshotDTO);
+            if (capture != null && capture.getStepNumber() != null) {
+                screenshotIndex = Math.max(screenshotIndex, capture.getStepNumber() + 1);
+            }
         }
 
         Path reportFile = resolveSingleArtifactFile(artifactsDir, runResult.getReportFile());
@@ -369,6 +383,38 @@ public class TestExecutionListener {
         return StringUtils.hasText(value) ? value.trim() : fallback;
     }
 
+    private String toRelativePath(Path baseDir, Path targetFile) {
+        Path normalizedBase = baseDir.toAbsolutePath().normalize();
+        Path normalizedFile = targetFile.toAbsolutePath().normalize();
+        if (!normalizedFile.startsWith(normalizedBase)) {
+            return "";
+        }
+        return normalizedBase.relativize(normalizedFile).toString().replace('\\', '/');
+    }
+
+    private Map<String, ActionScreenshotCapture> indexActionScreenshots(List<ActionScreenshotCapture> captures) {
+        if (captures == null || captures.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, ActionScreenshotCapture> map = new HashMap<>();
+        for (ActionScreenshotCapture capture : captures) {
+            if (capture == null || !StringUtils.hasText(capture.getFile())) continue;
+            String normalized = capture.getFile().replace('\\', '/').replaceAll("^/+", "");
+            map.put(normalized, capture);
+        }
+        return map;
+    }
+
+    private String buildScreenshotDescription(ActionScreenshotCapture capture) {
+        String target = StringUtils.hasText(capture.getTarget())
+                ? capture.getTarget().trim()
+                : "关键动作完成";
+        if (target.length() > 120) {
+            target = target.substring(0, 120) + "...";
+        }
+        return "动作截图: " + target;
+    }
+
     @RabbitListener(queues = RabbitMQConfig.AI_GENERATION_QUEUE)
     public void handleAIGeneration(String task) {
         log.info("Received AI generation task: {}", task);
@@ -391,8 +437,21 @@ public class TestExecutionListener {
         private String reportFile;
         private List<String> videoFiles;
         private List<String> screenshotFiles;
+        private List<ActionScreenshotCapture> actionScreenshots;
         private List<String> traceFiles;
         private List<PlaywrightTestResult> tests;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private static class ActionScreenshotCapture {
+        private Integer stepNumber;
+        private String action;
+        private String target;
+        private String phase;
+        private String file;
     }
 
     @Data

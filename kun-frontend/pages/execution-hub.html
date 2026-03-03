@@ -324,6 +324,20 @@
               </div>
             </div>
           </div>
+          <div id="execution-video-panel" class="mt-4 rounded-lg border border-white/10 bg-white/5 p-3">
+            <div class="flex items-center justify-between gap-2 mb-2">
+              <h4 class="text-sm font-medium">执行录屏</h4>
+              <div class="flex items-center gap-2">
+                <button id="execution-video-open" type="button" class="px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-xs text-[#d1d5db] transition-colors">打开</button>
+                <button id="execution-video-download" type="button" class="px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-xs text-[#d1d5db] transition-colors">下载</button>
+              </div>
+            </div>
+            <div id="execution-video-empty" class="aspect-video rounded bg-black/30 border border-white/10 flex items-center justify-center text-xs text-[#71717a]">
+              暂无录屏文件
+            </div>
+            <video id="execution-video-player" class="hidden w-full aspect-video rounded border border-white/10 bg-black/40" controls preload="metadata"></video>
+            <p id="execution-video-meta" class="mt-2 text-[11px] text-[#71717a] truncate"></p>
+          </div>
           <div class="mt-4">
             <h4 class="text-sm font-medium mb-2">步骤时间线</h4>
             <div id="execution-timeline-list" class="space-y-2 text-xs text-[#a1a1aa]">
