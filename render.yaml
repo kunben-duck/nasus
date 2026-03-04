@@ -76,10 +76,7 @@ services:
       - key: PORT
         value: "10000"
       - key: API_PROXY_TARGET
-        fromService:
-          type: web
-          name: autotest-backend
-          envVarKey: RENDER_EXTERNAL_URL
+        value: http://autotest-backend:10000
 
 databases:
   - name: autotest-postgres
