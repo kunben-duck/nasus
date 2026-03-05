@@ -235,7 +235,7 @@ public class DashboardService {
     private DashboardDTO.SystemStatus getSystemStatus(Long tenantId) {
         return DashboardDTO.SystemStatus.builder()
                 .databaseStatus("Connected")
-                .redisStatus("Connected")
+                .redisStatus("Disabled")
                 .rabbitmqStatus("ReplacedByAsync")
                 .aiServiceStatus("Available")
                 .activeExecutors(testExecutionRepository.countByStatus(tenantId, TestExecution.ExecutionStatus.RUNNING))

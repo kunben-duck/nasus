@@ -32,18 +32,6 @@ services:
         fromDatabase:
           name: nasus-postgres
           property: password
-      - key: REDIS_HOST
-        fromDatabase:
-          name: nasus-redis
-          property: host
-      - key: REDIS_PORT
-        fromDatabase:
-          name: nasus-redis
-          property: port
-      - key: REDIS_PASSWORD
-        fromDatabase:
-          name: nasus-redis
-          property: password
       - key: JWT_SECRET
         generateValue: true
       - key: OPENAI_API_KEY
@@ -74,8 +62,4 @@ databases:
     user: autotest
     plan: free
     postgresMajorVersion: "16"
-    ipAllowList: []
-
-  - name: nasus-redis
-    plan: free
     ipAllowList: []
