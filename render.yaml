@@ -1,0 +1,106 @@
+services:
+  - type: web
+    name: nasus-backend-api
+    runtime: docker
+    plan: free
+    branch: codex/render-deploy
+    autoDeploy: true
+    dockerContext: ./kun-backend
+    dockerfilePath: ./kun-backend/Dockerfile
+    healthCheckPath: /api/actuator/health
+    envVars:
+      - key: SPRING_PROFILES_ACTIVE
+        value: prod
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: nasus-postgres
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: nasus-postgres
+          property: port
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: nasus-postgres
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: nasus-postgres
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: nasus-postgres
+          property: password
+      - key: REDIS_HOST
+        fromDatabase:
+          name: nasus-redis
+          property: host
+      - key: REDIS_PORT
+        fromDatabase:
+          name: nasus-redis
+          property: port
+      - key: REDIS_PASSWORD
+        fromDatabase:
+          name: nasus-redis
+          property: password
+      - key: RABBITMQ_HOST
+        fromService:
+          type: pserv
+          name: nasus-rabbitmq-internal
+          property: host
+      - key: RABBITMQ_PORT
+        fromService:
+          type: pserv
+          name: nasus-rabbitmq-internal
+          property: port
+      - key: RABBITMQ_USER
+        value: guest
+      - key: RABBITMQ_PASS
+        value: guest
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_TEMPERATURE
+        value: "0.7"
+      - key: PLATFORM_EXECUTION_LOCALHOST_REWRITE_BASE_URL
+        value: https://nasus-frontend-web.onrender.com
+
+  - type: web
+    name: nasus-frontend-web
+    runtime: docker
+    plan: free
+    branch: codex/render-deploy
+    autoDeploy: true
+    dockerContext: ./kun-frontend
+    dockerfilePath: ./kun-frontend/Dockerfile
+    envVars:
+      - key: API_PROXY_TARGET
+        value: https://nasus-backend-api.onrender.com
+
+  - type: pserv
+    name: nasus-rabbitmq-internal
+    runtime: image
+    plan: free
+    branch: codex/render-deploy
+    autoDeploy: true
+    image: rabbitmq:3.13-management-alpine
+    envVars:
+      - key: RABBITMQ_DEFAULT_USER
+        value: guest
+      - key: RABBITMQ_DEFAULT_PASS
+        value: guest
+
+databases:
+  - name: nasus-postgres
+    databaseName: autotest
+    user: autotest
+    plan: free
+    postgresMajorVersion: "16"
+    ipAllowList: []
+
+  - name: nasus-redis
+    plan: free
+    ipAllowList: []
