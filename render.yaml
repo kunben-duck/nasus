@@ -2,6 +2,7 @@ services:
   - type: web
     name: nasus-backend-api
     runtime: docker
+    repo: https://github.com/kunben-duck/nasus
     plan: free
     branch: codex/render-deploy
     autoDeploy: true
@@ -57,6 +58,7 @@ services:
   - type: web
     name: nasus-frontend-web
     runtime: docker
+    repo: https://github.com/kunben-duck/nasus
     plan: free
     branch: codex/render-deploy
     autoDeploy: true
