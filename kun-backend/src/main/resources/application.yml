@@ -45,22 +45,6 @@ spring:
 
   cache:
     type: simple
-  
-  rabbitmq:
-    host: ${RABBITMQ_HOST:localhost}
-    port: ${RABBITMQ_PORT:5672}
-    username: ${RABBITMQ_USER:guest}
-    password: ${RABBITMQ_PASS:guest}
-    virtual-host: /
-    listener:
-      simple:
-        concurrency: 5
-        max-concurrency: 10
-        acknowledge-mode: auto
-        retry:
-          enabled: true
-          initial-interval: 1000
-          max-attempts: 3
 
   ai:
     openai:

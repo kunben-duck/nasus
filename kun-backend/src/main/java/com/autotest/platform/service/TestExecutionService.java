@@ -8,12 +8,13 @@ import com.autotest.platform.entity.TestCase;
 import com.autotest.platform.entity.TestExecution;
 import com.autotest.platform.entity.TestScript;
 import com.autotest.platform.entity.UserStory;
+import com.autotest.platform.event.TestExecutionRequestedEvent;
 import com.autotest.platform.repository.TestCaseRepository;
 import com.autotest.platform.repository.TestExecutionRepository;
 import com.autotest.platform.repository.TestScriptRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
@@ -46,7 +47,7 @@ public class TestExecutionService {
     private final TestCaseRepository testCaseRepository;
     private final TestScriptRepository testScriptRepository;
     private final TenantContextService tenantContextService;
-    private final RabbitTemplate rabbitTemplate;
+    private final ApplicationEventPublisher applicationEventPublisher;
     private final UserStoryService userStoryService;
     @Value("${platform.file-storage.local-path:./uploads}")
     private String fileStoragePath;
@@ -160,13 +161,13 @@ public class TestExecutionService {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    rabbitTemplate.convertAndSend("test.execution.queue", executionDbId);
-                    log.debug("Published execution task after commit. executionId={}", executionDbId);
+                    applicationEventPublisher.publishEvent(new TestExecutionRequestedEvent(executionDbId));
+                    log.debug("Published execution event after commit. executionId={}", executionDbId);
                 }
             });
         } else {
-            rabbitTemplate.convertAndSend("test.execution.queue", executionDbId);
-            log.debug("Published execution task immediately (no active tx). executionId={}", executionDbId);
+            applicationEventPublisher.publishEvent(new TestExecutionRequestedEvent(executionDbId));
+            log.debug("Published execution event immediately (no active tx). executionId={}", executionDbId);
         }
 
         return mapToDTO(savedExecution);

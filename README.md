@@ -18,7 +18,7 @@ Browser Pages (kun-frontend/index + kun-frontend/pages/*)
 Java Backend (Spring Boot + Spring Security + Spring Data JPA + Spring AI)
   -> PostgreSQL (domain data)
   -> Redis (cache/runtime state)
-  -> RabbitMQ (execution async queue)
+  -> Spring Async Worker (execution async queue)
   -> OpenAI Model Provider (via Spring AI)
 ```
 
@@ -53,7 +53,7 @@ Java Backend (Spring Boot + Spring Security + Spring Data JPA + Spring AI)
   - Spring Security + JWT
   - Spring Data JPA (Hibernate)
   - Spring AI（OpenAI Provider）
-  - RabbitMQ + Redis + PostgreSQL
+  - Spring Async + Redis + PostgreSQL
 - AI 框架
   - Spring AI 使用 GA 版本线（当前工程基线：`1.1.2`）。
 - 编排
@@ -68,7 +68,6 @@ docker compose up -d --build
 
 - 前端：`http://localhost:3000`
 - 后端 API：`http://localhost:8080/api`
-- RabbitMQ 管理台：`http://localhost:15672`
 
 默认账号：
 

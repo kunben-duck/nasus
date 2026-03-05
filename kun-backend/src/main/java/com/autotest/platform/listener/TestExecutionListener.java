@@ -1,10 +1,10 @@
 package com.autotest.platform.listener;
 
-import com.autotest.platform.config.RabbitMQConfig;
 import com.autotest.platform.dto.TestExecutionDTO;
 import com.autotest.platform.entity.ExecutionScreenshot;
 import com.autotest.platform.entity.ExecutionTimeline;
 import com.autotest.platform.entity.TestExecution;
+import com.autotest.platform.event.TestExecutionRequestedEvent;
 import com.autotest.platform.service.TestExecutionService;
 import com.autotest.platform.websocket.ExecutionWebSocketController;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -14,8 +14,9 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -52,8 +53,16 @@ public class TestExecutionListener {
     @Value("${platform.execution.localhost-rewrite-base-url:}")
     private String localhostRewriteBaseUrl;
 
-    @RabbitListener(queues = RabbitMQConfig.TEST_EXECUTION_QUEUE)
-    public void handleTestExecution(Long executionId) {
+    @Async
+    @EventListener
+    public void handleTestExecutionRequested(TestExecutionRequestedEvent event) {
+        if (event == null || event.executionId() == null) {
+            return;
+        }
+        handleTestExecution(event.executionId());
+    }
+
+    private void handleTestExecution(Long executionId) {
         log.info("Received test execution task: {}", executionId);
         TestExecutionDTO initial = null;
         try {
@@ -413,16 +422,6 @@ public class TestExecutionListener {
             target = target.substring(0, 120) + "...";
         }
         return "动作截图: " + target;
-    }
-
-    @RabbitListener(queues = RabbitMQConfig.AI_GENERATION_QUEUE)
-    public void handleAIGeneration(String task) {
-        log.info("Received AI generation task: {}", task);
-    }
-
-    @RabbitListener(queues = RabbitMQConfig.NOTIFICATION_QUEUE)
-    public void handleNotification(String notification) {
-        log.info("Received notification: {}", notification);
     }
 
     @Data
