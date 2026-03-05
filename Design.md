@@ -1,9 +1,9 @@
-# AutoTest AI - 智能自动化测试平台 Design Specification
+# Nasus - 智能自动化测试平台 Design Specification
 
 ## 1. Overview
 
 ### 1.1 Project Summary
-AutoTest AI 是一个智能自动化测试平台，通过 AI 技术实现从用户故事到自动化测试脚本的完整链路。平台支持 US 需求管理、AI 智能解析、测试用例自动生成、自动化脚本创建、执行监控和报告分析等全流程功能。
+Nasus 是一个智能自动化测试平台，通过 AI 技术实现从用户故事到自动化测试脚本的完整链路。平台支持 US 需求管理、AI 智能解析、测试用例自动生成、自动化脚本创建、执行监控和报告分析等全流程功能。
 
 ### 1.2 Target Audience
 - 软件测试工程师
@@ -1179,4 +1179,4 @@ Animation: fade in 0.15s
 
 *Document Version: 1.0*
 *Last Updated: 2024*
-*Platform: AutoTest AI - 智能自动化测试平台*
+*Platform: Nasus - 智能自动化测试平台*

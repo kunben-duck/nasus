@@ -1,5 +1,5 @@
 /**
- * Settings Page - AutoTest AI
+ * Settings Page - Nasus
  * System settings with tabs for general, integrations, users, API keys, notifications, and execution config
  */
 
@@ -174,7 +174,7 @@ const Sidebar = ({ activePage }) => {
   return (
     <aside className="sidebar">
       <div className="sidebar-logo">
-        <span className="sidebar-logo-text">AutoTest AI</span>
+        <span className="sidebar-logo-text">Nasus</span>
       </div>
       <nav className="sidebar-nav">
         <ul className="sidebar-nav-list">
@@ -259,7 +259,7 @@ const FormSelect = ({ label, value, onChange, options, disabled = false }) => (
 // ============================================
 const GeneralSettingsTab = () => {
   const [settings, setSettings] = useState({
-    platformName: 'AutoTest AI',
+    platformName: 'Nasus',
     theme: 'dark',
     language: 'zh-CN',
     timezone: 'Asia/Shanghai',

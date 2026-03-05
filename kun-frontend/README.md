@@ -1,4 +1,4 @@
-# AutoTest Platform Frontend (kun-frontend)
+# Nasus Frontend (kun-frontend)
 
 本目录是前端主工程目录，采用 MPA（多页面）+ 原生 JavaScript，统一运行时在 `shared/` 中。
 
@@ -6,19 +6,19 @@
 
 页面入口：
 
-- `/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/index.html`
-- `/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/pages/login.html`
-- `/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/pages/us-management.html`
-- `/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/pages/test-cases.html`
-- `/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/pages/script-studio.html`
-- `/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/pages/execution-hub.html`
-- `/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/pages/reports.html`
-- `/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/pages/settings.html`
+- `/Users/uben/project/project/test-auto/Nasus/kun-frontend/index.html`
+- `/Users/uben/project/project/test-auto/Nasus/kun-frontend/pages/login.html`
+- `/Users/uben/project/project/test-auto/Nasus/kun-frontend/pages/us-management.html`
+- `/Users/uben/project/project/test-auto/Nasus/kun-frontend/pages/test-cases.html`
+- `/Users/uben/project/project/test-auto/Nasus/kun-frontend/pages/script-studio.html`
+- `/Users/uben/project/project/test-auto/Nasus/kun-frontend/pages/execution-hub.html`
+- `/Users/uben/project/project/test-auto/Nasus/kun-frontend/pages/reports.html`
+- `/Users/uben/project/project/test-auto/Nasus/kun-frontend/pages/settings.html`
 
 共享运行时：
 
-- `/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/shared/app-runtime.js`
-- `/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/shared/app-pages.js`
+- `/Users/uben/project/project/test-auto/Nasus/kun-frontend/shared/app-runtime.js`
+- `/Users/uben/project/project/test-auto/Nasus/kun-frontend/shared/app-pages.js`
 
 ## 2. 页面能力矩阵
 
@@ -43,25 +43,25 @@
 
 ## 4. 构建与运行
 
-- Dockerfile：`/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/Dockerfile`
-- Nginx 配置：`/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/nginx.conf`
+- Dockerfile：`/Users/uben/project/project/test-auto/Nasus/kun-frontend/Dockerfile`
+- Nginx 配置：`/Users/uben/project/project/test-auto/Nasus/kun-frontend/nginx.conf`
 - 关键环境变量：
   - `API_PROXY_TARGET`：后端根地址（例如 `http://backend-java:8080`）
   - `PORT`：容器监听端口（默认 `80`）
 
 ```bash
-cd /Users/uben/project/project/test-auto/test-auto-pro
+cd /Users/uben/project/project/test-auto/Nasus
 docker compose up -d --build frontend
 ```
 
 ## 5. 验证
 
 ```bash
-cd /Users/uben/project/project/test-auto/test-auto-pro/kun-frontend
+cd /Users/uben/project/project/test-auto/Nasus/kun-frontend
 npm test
 ```
 
 ```bash
-cd /Users/uben/project/project/test-auto/test-auto-pro
+cd /Users/uben/project/project/test-auto/Nasus
 ./scripts/health-check.sh --skip-up
 ```

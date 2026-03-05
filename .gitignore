@@ -10,3 +10,7 @@ kun-backend/target/
 
 # Local env
 .env
+
+# Local assistant artifacts
+CLAUDE.md
+backups/

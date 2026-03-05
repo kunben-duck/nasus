@@ -1,4 +1,4 @@
-# AutoTest Platform Backend (kun-backend, Java)
+# Nasus Backend (kun-backend, Java)
 
 本目录是测试平台后端实现，负责认证授权、业务数据管理、AI 生成能力、执行调度和报告数据提供。
 
@@ -17,8 +17,8 @@
 
 - AI 框架：Spring AI
 - 当前 GA 版本基线：`1.1.2`
-- 依赖位置：`/Users/uben/project/project/test-auto/test-auto-pro/kun-backend/pom.xml`
-- 核心服务：`/Users/uben/project/project/test-auto/test-auto-pro/kun-backend/src/main/java/com/autotest/platform/ai/OpenAIService.java`
+- 依赖位置：`/Users/uben/project/project/test-auto/Nasus/kun-backend/pom.xml`
+- 核心服务：`/Users/uben/project/project/test-auto/Nasus/kun-backend/src/main/java/com/autotest/platform/ai/OpenAIService.java`
 - 主要能力：
   - US 分析（结构化 JSON 输出）
   - 测试用例生成（数组 JSON 输出）
@@ -149,21 +149,21 @@ US：
 推荐在项目根目录统一启动：
 
 ```bash
-cd /Users/uben/project/project/test-auto/test-auto-pro
+cd /Users/uben/project/project/test-auto/Nasus
 docker compose up -d --build
 ```
 
 仅后端本地调试：
 
 ```bash
-cd /Users/uben/project/project/test-auto/test-auto-pro/kun-backend
+cd /Users/uben/project/project/test-auto/Nasus/kun-backend
 mvn spring-boot:run
 ```
 
 ## 9. 验证命令
 
 ```bash
-cd /Users/uben/project/project/test-auto/test-auto-pro
+cd /Users/uben/project/project/test-auto/Nasus
 ./scripts/health-check.sh --skip-up
 ```
 

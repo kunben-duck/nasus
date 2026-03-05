@@ -1,5 +1,5 @@
 /**
- * AutoTest AI - Shared JavaScript Utilities
+ * Nasus - Shared JavaScript Utilities
  * Global functions and classes for all pages
  */
 

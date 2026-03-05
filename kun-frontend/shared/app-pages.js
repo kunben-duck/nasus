@@ -8511,7 +8511,7 @@
     const state = {
       settings: {
         general: {
-          appName: 'AutoTest AI',
+          appName: 'Nasus',
           theme: legacySettings.theme || 'dark',
           language: legacySettings.language || 'zh-CN',
           timezone: legacySettings.timezone || 'Asia/Shanghai',
@@ -9307,7 +9307,7 @@
             <h3 class="text-lg font-semibold mb-4">通用设置</h3>
             <div class="space-y-3">
               <label class="block text-sm text-[#a1a1aa]">系统名称</label>
-              <input id="settings-app-name" type="text" value="${R.escapeHtml(state.settings.general?.appName || 'AutoTest AI')}" class="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]" />
+              <input id="settings-app-name" type="text" value="${R.escapeHtml(state.settings.general?.appName || 'Nasus')}" class="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]" />
 
               <label class="block text-sm text-[#a1a1aa]">主题</label>
               <select id="settings-theme" class="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-[#00d4ff]">
@@ -9356,7 +9356,7 @@
       $('#settings-save').addEventListener('click', async () => {
         await persistSettingsPatch({
           general: {
-            appName: $('#settings-app-name').value.trim() || 'AutoTest AI',
+            appName: $('#settings-app-name').value.trim() || 'Nasus',
             theme: $('#settings-theme').value,
             language: $('#settings-language').value,
             timezone: $('#settings-timezone').value,
@@ -9370,7 +9370,7 @@
       $('#settings-reset').addEventListener('click', async () => {
         await persistSettingsPatch({
           general: {
-            appName: 'AutoTest AI',
+            appName: 'Nasus',
             theme: 'dark',
             language: 'zh-CN',
             timezone: 'Asia/Shanghai',
@@ -9905,7 +9905,7 @@
     const path = window.location.pathname;
     await refreshGlobalUsCounters();
 
-    if (path.endsWith('/index.html') || path === '/' || /\/test-auto-pro\/?$/.test(path)) {
+    if (path.endsWith('/index.html') || path === '/' || /\/(?:test-auto-pro|Nasus|nasus)\/?$/.test(path)) {
       await initializeDashboardPage();
       return;
     }

@@ -1,12 +1,12 @@
-# AutoTest Platform
+# Nasus
 
 企业级自动化测试平台，覆盖从需求分析到用例生成、脚本生成、执行监控、结果报告和系统管理的完整链路。
 
 ## 文档导航
 
-- 总体架构（本文件）：`/Users/uben/project/project/test-auto/test-auto-pro/README.md`
-- 后端技术文档：`/Users/uben/project/project/test-auto/test-auto-pro/kun-backend/README.md`
-- 前端技术文档：`/Users/uben/project/project/test-auto/test-auto-pro/kun-frontend/README.md`
+- 总体架构（本文件）：`/Users/uben/project/project/test-auto/Nasus/README.md`
+- 后端技术文档：`/Users/uben/project/project/test-auto/Nasus/kun-backend/README.md`
+- 前端技术文档：`/Users/uben/project/project/test-auto/Nasus/kun-frontend/README.md`
 
 ## 总体架构
 
@@ -82,8 +82,8 @@ docker compose up -d --build
 通过以下检查后视为“可用”：
 
 1. 后端健康检查为 `UP`：`/api/actuator/health`
-2. 全链路接口联调脚本通过：`/Users/uben/project/project/test-auto/test-auto-pro/scripts/health-check.sh`
-3. UI 自动化冒烟通过：`cd /Users/uben/project/project/test-auto/test-auto-pro/kun-frontend && npm test`
+2. 全链路接口联调脚本通过：`/Users/uben/project/project/test-auto/Nasus/scripts/health-check.sh`
+3. UI 自动化冒烟通过：`cd /Users/uben/project/project/test-auto/Nasus/kun-frontend && npm test`
 4. 真实浏览器逐页关键按钮验证通过（登录、US、用例、脚本、执行、报告、设置）
 
 ## 常用命令

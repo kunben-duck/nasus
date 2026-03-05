@@ -148,7 +148,7 @@ public class PlatformSettingService {
         Map<String, Object> root = new LinkedHashMap<>();
 
         Map<String, Object> general = new LinkedHashMap<>();
-        general.put("appName", "AutoTest AI");
+        general.put("appName", "Nasus");
         general.put("theme", "dark");
         general.put("language", "zh-CN");
         general.put("timezone", "Asia/Shanghai");

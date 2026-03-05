@@ -1892,7 +1892,7 @@
 
     wrapper.innerHTML = `
       <div style="width:min(420px,100%);background:#111722;border:1px solid rgba(255,255,255,0.14);border-radius:14px;padding:18px;color:#fff;">
-        <h3 style="margin:0 0 6px;font-size:20px;">登录 AutoTest</h3>
+        <h3 style="margin:0 0 6px;font-size:20px;">登录 Nasus</h3>
         <p style="margin:0 0 14px;color:#9ca3af;font-size:13px;">需要登录后才能访问当前功能</p>
         <form id="app-auth-form" style="display:grid;gap:10px;">
           <label style="display:grid;gap:5px;font-size:13px;">
