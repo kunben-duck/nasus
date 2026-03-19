@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nasus - AI Quality Platform</title>
+    <meta name="description" content="Nasus AI-native quality assurance platform for iterative system development">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Custom Styles (inline for reliability) -->
+    <style>
+        :root {
+            --bg-base: #131314;
+            --bg-surface: #1e1f20;
+            --bg-elevated: #282a2c;
+            --bg-hover: #323437;
+            --border-subtle: #232425;
+            --border-default: #2c2d2f;
+            --text-primary: #e3e3e3;
+            --text-secondary: #9aa0a6;
+            --text-tertiary: #6e7681;
+            --accent-blue: #8ab4f8;
+            --accent-purple: #c58af9;
+            --accent-green: #81c995;
+            --accent-amber: #fdd663;
+            --accent-red: #f28b82;
+            --gradient-start: #4285f4;
+            --gradient-mid: #a855f7;
+            --gradient-end: #f472b6;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; background-color: var(--bg-base); color: var(--text-primary);
+            font-family: 'Inter', 'Google Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            -webkit-font-smoothing: antialiased; height: 100vh; display: flex; overflow: hidden;
+        }
+        ::selection { background: rgba(138,180,248,0.25); color: #fff; }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: var(--border-default); }
+        @keyframes slideInUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+        .message-in { animation: slideInUp 0.3s cubic-bezier(0.16,1,0.3,1) forwards; }
+        .typing-dots { display:flex; gap:4px; padding:6px 4px; }
+        .typing-dot { width:5px; height:5px; background:var(--text-secondary); border-radius:50%; animation:typing 1.4s infinite ease-in-out both; }
+        .typing-dot:nth-child(1) { animation-delay:-0.32s; }
+        .typing-dot:nth-child(2) { animation-delay:-0.16s; }
+        @keyframes typing { 0%,80%,100% { transform:scale(0); opacity:0.5; } 40% { transform:scale(1); opacity:1; } }
+
+        /* Sidebar */
+        .sidebar { width:220px; background:var(--bg-base); border-right:1px solid var(--border-subtle); display:flex; flex-direction:column; flex-shrink:0; z-index:20; }
+        .sidebar-header { height:56px; display:flex; align-items:center; padding:0 16px; gap:8px; flex-shrink:0; }
+        .sidebar-logo { font-size:16px; font-weight:600; color:var(--text-primary); display:flex; align-items:center; gap:8px; letter-spacing:-0.3px; }
+        .sidebar-logo i { font-size:18px; color:var(--accent-blue); }
+        .sidebar-version { font-size:10px; color:var(--text-tertiary); background:var(--bg-elevated); padding:2px 6px; border-radius:4px; }
+        .sidebar-nav { flex:1; overflow-y:auto; padding:8px 0; }
+        .sidebar-section-label { font-size:10px; font-weight:600; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:1.2px; padding:16px 16px 6px; }
+        .sidebar-nav-item { display:flex; align-items:center; gap:10px; padding:8px 16px; font-size:13px; color:var(--text-secondary); cursor:pointer; transition:all 0.15s; border:none; background:none; width:100%; text-align:left; }
+        .sidebar-nav-item:hover { color:var(--text-primary); background:var(--bg-surface); }
+        .sidebar-nav-item.active { color:var(--text-primary); background:var(--bg-surface); font-weight:500; }
+        .sidebar-nav-item i { width:16px; font-size:12px; text-align:center; color:var(--text-tertiary); }
+        .sidebar-nav-item.active i { color:var(--accent-blue); }
+        .us-item { display:flex; align-items:center; gap:10px; padding:7px 16px 7px 20px; font-size:13px; color:var(--text-secondary); cursor:pointer; transition:all 0.15s; border:none; background:none; width:100%; text-align:left; }
+        .us-item:hover { color:var(--text-primary); background:var(--bg-surface); }
+        .us-item.active { color:var(--text-primary); background:var(--bg-surface); }
+        .us-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
+        .us-dot.amber { background:var(--accent-amber); }
+        .us-dot.gray { background:var(--text-tertiary); }
+        .us-dot.green { background:var(--accent-green); }
+        .sidebar-footer { padding:8px 12px; flex-shrink:0; }
+        .sidebar-footer-link { display:flex; align-items:center; gap:8px; padding:6px 4px; font-size:12px; color:var(--text-tertiary); cursor:pointer; transition:color 0.15s; border:none; background:none; width:100%; text-align:left; }
+        .sidebar-footer-link:hover { color:var(--text-secondary); }
+        .sidebar-footer-link i { width:14px; text-align:center; font-size:11px; }
+        .sidebar-user { display:flex; align-items:center; gap:8px; padding:6px 4px; margin-top:2px; }
+        .sidebar-user-avatar { width:24px; height:24px; border-radius:50%; }
+        .sidebar-user-name { font-size:12px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+        /* Main */
+        .main-content { flex:1; display:flex; flex-direction:column; min-width:0; position:relative; background:var(--bg-base); }
+        .main-header { height:56px; display:flex; align-items:center; justify-content:space-between; padding:0 20px; flex-shrink:0; background:var(--bg-base); z-index:10; }
+        .main-header-title { font-size:15px; font-weight:500; color:var(--text-primary); display:flex; align-items:center; gap:10px; }
+        .status-badge { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.8px; padding:3px 8px; border-radius:4px; }
+        .status-badge.in-progress { background:rgba(253,214,99,0.1); color:var(--accent-amber); border:1px solid rgba(253,214,99,0.2); }
+        .header-actions { display:flex; align-items:center; gap:2px; }
+        .header-action-btn { width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:8px; color:var(--text-tertiary); border:none; background:none; cursor:pointer; transition:all 0.15s; font-size:13px; }
+        .header-action-btn:hover { color:var(--text-primary); background:var(--bg-elevated); }
+        .header-divider { width:1px; height:16px; background:var(--border-subtle); margin:0 4px; }
+
+        /* Chat */
+        .chat-area { flex:1; overflow-y:auto; padding:32px 24px; position:relative; }
+        .chat-messages { max-width:720px; margin:0 auto; }
+        .time-separator { display:flex; align-items:center; justify-content:center; margin:24px 0; }
+        .time-separator span { font-size:11px; color:var(--text-tertiary); padding:4px 12px; background:var(--bg-surface); border-radius:100px; }
+        .message { display:flex; gap:12px; margin-bottom:24px; }
+        .message.user { flex-direction:row-reverse; }
+        .message-avatar { width:28px; height:28px; border-radius:50%; flex-shrink:0; }
+        .agent-avatar { width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0; color:var(--accent-blue); font-size:16px; }
+        .message-body { max-width:80%; }
+        .message.user .message-body { display:flex; flex-direction:column; align-items:flex-end; }
+        .message-meta { display:flex; align-items:baseline; gap:8px; margin-bottom:4px; font-size:12px; }
+        .message-meta .name { font-weight:500; color:var(--text-primary); }
+        .message-meta .time { color:var(--text-tertiary); font-size:11px; }
+        .message-bubble { padding:12px 16px; border-radius:18px; font-size:14px; line-height:1.6; }
+        .message.user .message-bubble { background:var(--bg-surface); color:var(--text-primary); border-radius:20px; padding:10px 18px; }
+        .message.agent .message-bubble { background:transparent; color:var(--text-primary); border:none; padding:4px 0; }
+
+        /* Impact Card */
+        .impact-card { background:var(--bg-base); border:1px solid var(--border-subtle); border-radius:10px; padding:12px; margin:12px 0; }
+        .impact-card-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+        .impact-card-title { font-size:12px; font-weight:600; color:var(--text-primary); display:flex; align-items:center; gap:6px; }
+        .impact-card-title i { color:var(--accent-blue); }
+        .impact-card-badge { font-size:10px; padding:2px 8px; border-radius:4px; background:var(--bg-elevated); color:var(--text-tertiary); border:1px solid var(--border-subtle); }
+        .impact-list { list-style:none; padding:0; margin:0; }
+        .impact-list li { display:flex; align-items:flex-start; gap:8px; font-size:12px; color:var(--text-secondary); padding:4px 0; }
+        .impact-list li i.check { color:var(--accent-green); margin-top:2px; }
+        .impact-list li i.warning { color:var(--accent-amber); margin-top:2px; }
+
+        /* Pill Chips */
+        .pill-chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+        .pill-chip { display:inline-flex; align-items:center; gap:6px; padding:8px 16px; border-radius:100px; font-size:13px; font-weight:400; color:var(--text-secondary); background:var(--bg-elevated); border:1px solid var(--border-subtle); cursor:pointer; transition:all 0.2s; white-space:nowrap; }
+        .pill-chip:hover { background:var(--bg-hover); color:var(--text-primary); border-color:var(--border-default); }
+        .pill-chip i { font-size:11px; color:var(--text-tertiary); }
+        .pill-chip.primary { border-color:rgba(138,180,248,0.3); color:var(--accent-blue); }
+        .pill-chip.primary:hover { background:rgba(138,180,248,0.08); border-color:rgba(138,180,248,0.5); }
+        .pill-chip.primary i { color:var(--accent-blue); }
+
+        /* Input */
+        .input-area { padding:16px 24px 20px; flex-shrink:0; background:var(--bg-base); }
+        .input-wrapper { max-width:720px; margin:0 auto; position:relative; }
+        .input-container { position:relative; border-radius:24px; padding:1px; background:var(--border-subtle); transition:all 0.3s; }
+        .input-container.focused { background:linear-gradient(135deg,var(--gradient-start),var(--gradient-mid),var(--gradient-end)); box-shadow:0 0 20px rgba(138,180,248,0.08); }
+        .input-inner { background:var(--bg-surface); border-radius:23px; display:flex; flex-direction:column; overflow:hidden; }
+        .input-textarea { width:100%; background:transparent; color:var(--text-primary); border:none; outline:none; resize:none; padding:14px 18px 6px; font-size:14px; font-family:inherit; line-height:1.5; min-height:44px; max-height:180px; }
+        .input-textarea::placeholder { color:var(--text-tertiary); }
+        .input-tools { display:flex; align-items:center; justify-content:space-between; padding:4px 8px 8px; }
+        .input-tools-left { display:flex; align-items:center; gap:2px; }
+        .input-tool-btn { width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:50%; color:var(--text-tertiary); border:none; background:none; cursor:pointer; transition:all 0.15s; font-size:13px; }
+        .input-tool-btn:hover { color:var(--text-secondary); background:var(--bg-elevated); }
+        .send-btn { width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:50%; background:var(--accent-blue); color:var(--bg-base); border:none; cursor:pointer; transition:all 0.2s; font-size:12px; }
+        .send-btn:hover { opacity:0.9; transform:scale(1.05); }
+        .send-btn:disabled { background:var(--bg-elevated); color:var(--text-tertiary); cursor:not-allowed; transform:none; }
+        .input-footer { display:flex; align-items:center; justify-content:space-between; padding:8px 12px 0; font-size:11px; color:var(--text-tertiary); }
+        .input-footer kbd { font-size:9px; font-family:inherit; background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:3px; padding:1px 5px; color:var(--text-tertiary); }
+        .status-indicator { display:flex; align-items:center; gap:6px; font-size:10px; font-family:'SF Mono','Fira Code',monospace; color:var(--text-tertiary); letter-spacing:0.3px; }
+        .status-dot { width:5px; height:5px; border-radius:50%; background:var(--accent-green); box-shadow:0 0 6px rgba(129,201,149,0.6); }
+
+        /* Right Panel */
+        .right-panel { width:300px; background:var(--bg-base); border-left:1px solid var(--border-subtle); display:flex; flex-direction:column; flex-shrink:0; z-index:20; }
+        .panel-header { height:56px; display:flex; align-items:center; justify-content:space-between; padding:0 16px; flex-shrink:0; }
+        .panel-header h2 { font-size:14px; font-weight:500; color:var(--text-primary); margin:0; }
+        .panel-header button { color:var(--text-tertiary); background:none; border:none; cursor:pointer; padding:4px; font-size:11px; transition:color 0.15s; }
+        .panel-header button:hover { color:var(--text-primary); }
+        .panel-tabs { display:flex; padding:10px 16px; gap:0; background:var(--bg-base); }
+        .panel-tab-group { display:flex; background:var(--bg-surface); border-radius:8px; padding:2px; width:100%; border:1px solid var(--border-subtle); }
+        .panel-tab { flex:1; padding:6px 0; text-align:center; font-size:12px; font-weight:500; color:var(--text-tertiary); background:none; border:none; border-radius:6px; cursor:pointer; transition:all 0.15s; }
+        .panel-tab.active { background:var(--bg-elevated); color:var(--text-primary); }
+        .panel-tab:hover:not(.active) { color:var(--text-secondary); }
+        .panel-content { flex:1; overflow-y:auto; padding:16px; }
+        .panel-section-label { font-size:10px; font-weight:600; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:1px; margin-bottom:10px; display:flex; align-items:center; justify-content:space-between; }
+        .panel-section-badge { font-size:10px; font-family:monospace; padding:2px 6px; border-radius:4px; }
+        .panel-section-badge.drafting { background:rgba(253,214,99,0.08); color:var(--accent-amber); border:1px solid rgba(253,214,99,0.15); }
+
+        /* Asset Cards */
+        .asset-card { padding:14px; background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:12px; margin-bottom:10px; cursor:pointer; transition:all 0.2s; }
+        .asset-card:hover { border-color:var(--border-default); background:var(--bg-elevated); }
+        .asset-card-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+        .asset-card-title { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:500; color:var(--text-primary); }
+        .asset-icon { width:22px; height:22px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:10px; }
+        .asset-icon.indigo { background:rgba(99,102,241,0.1); color:#818cf8; }
+        .asset-icon.green { background:rgba(129,201,149,0.1); color:var(--accent-green); }
+        .asset-card-status { font-size:10px; font-family:monospace; padding:2px 6px; border-radius:4px; background:var(--bg-base); color:var(--text-tertiary); border:1px solid var(--border-subtle); }
+        .asset-card-desc { font-size:12px; color:var(--text-tertiary); line-height:1.5; margin-bottom:10px; }
+        .asset-progress-bar { width:100%; height:3px; background:var(--bg-base); border-radius:100px; overflow:hidden; }
+        .asset-progress-fill { height:100%; border-radius:100px; background:#818cf8; transition:width 1s ease; }
+        .asset-card.muted { opacity:0.5; }
+
+        /* Governance */
+        .governance-card { padding:14px; background:var(--bg-surface); border:1px solid var(--border-subtle); border-style:dashed; border-radius:12px; cursor:pointer; transition:all 0.2s; display:flex; align-items:center; gap:12px; }
+        .governance-card:hover { border-color:var(--border-default); }
+        .governance-icon { width:32px; height:32px; border-radius:50%; background:var(--bg-base); border:1px solid var(--border-subtle); display:flex; align-items:center; justify-content:center; flex-shrink:0; color:var(--text-tertiary); font-size:13px; }
+        .governance-text h4 { font-size:13px; font-weight:500; color:var(--text-secondary); margin:0 0 2px; }
+        .governance-text span { font-size:10px; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.5px; }
+
+        /* Markdown */
+        .markdown-content { font-size:14px; line-height:1.6; }
+        .markdown-content p { margin-bottom:8px; }
+        .markdown-content p:last-child { margin-bottom:0; }
+        .markdown-content code { background:var(--bg-elevated); padding:2px 6px; border-radius:4px; font-family:'SF Mono','Fira Code',monospace; font-size:12px; color:var(--accent-blue); border:1px solid var(--border-subtle); }
+        .markdown-content strong { color:var(--text-primary); font-weight:600; }
+
+        /* System Tab */
+        .system-baseline { padding:14px; background:rgba(138,180,248,0.04); border:1px solid rgba(138,180,248,0.12); border-radius:12px; position:relative; overflow:hidden; margin-bottom:16px; }
+        .system-baseline-bg { position:absolute; right:-8px; top:-8px; font-size:52px; color:rgba(138,180,248,0.05); }
+        .system-baseline-label { font-size:10px; font-weight:600; color:var(--accent-blue); text-transform:uppercase; letter-spacing:1px; margin-bottom:4px; position:relative; }
+        .system-baseline-name { font-size:13px; font-weight:500; color:var(--text-primary); position:relative; }
+        .system-baseline-sync { font-size:11px; color:rgba(138,180,248,0.6); margin-top:8px; display:flex; align-items:center; gap:6px; position:relative; }
+        .pulse-dot { width:5px; height:5px; border-radius:50%; background:var(--accent-blue); animation:pulse 2s infinite; }
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+        .module-item { display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:8px; font-size:12px; cursor:pointer; transition:all 0.15s; margin-bottom:6px; }
+        .module-item:hover { border-color:var(--border-default); }
+        .module-item-name { display:flex; align-items:center; gap:8px; color:var(--text-secondary); }
+        .risk-badge { font-size:9px; font-family:monospace; padding:2px 6px; border-radius:4px; }
+        .risk-badge.high { background:rgba(242,139,130,0.1); color:var(--accent-red); border:1px solid rgba(242,139,130,0.2); }
+        .risk-badge.medium { background:rgba(253,214,99,0.1); color:var(--accent-amber); border:1px solid rgba(253,214,99,0.2); }
+
+        /* Empty State */
+        .empty-state { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; text-align:center; padding:40px 20px; }
+        .empty-state-icon { width:44px; height:44px; border-radius:50%; background:var(--bg-surface); border:1px solid var(--border-subtle); display:flex; align-items:center; justify-content:center; margin-bottom:12px; color:var(--text-tertiary); font-size:16px; }
+        .empty-state h3 { font-size:13px; font-weight:500; color:var(--text-secondary); margin:0 0 4px; }
+        .empty-state p { font-size:12px; color:var(--text-tertiary); max-width:200px; line-height:1.5; margin:0; }
+
+        /* Tooltip */
+        .tooltip { position:relative; }
+        .tooltip::after { content:attr(data-tip); position:absolute; bottom:-120%; left:50%; transform:translateX(-50%) translateY(4px); background:var(--bg-elevated); color:var(--text-secondary); padding:4px 8px; border-radius:6px; font-size:11px; font-weight:500; white-space:nowrap; opacity:0; visibility:hidden; transition:all 0.15s; border:1px solid var(--border-subtle); z-index:50; pointer-events:none; }
+        .tooltip:hover::after { opacity:1; visibility:visible; transform:translateX(-50%) translateY(0); }
+        .panel-spacer { height:24px; }
+    </style>
+    <link rel="stylesheet" href="styles.css?v=fresh3">
+</head>
+<body style="margin: 0; height: 100vh; display: flex; overflow: hidden;">
+
+    <!-- App Container -->
+    <div style="display: flex; width: 100%; height: 100%;">
+        
+        <!-- 1. Left Sidebar -->
+        <aside class="sidebar">
+            <!-- Logo -->
+            <div class="sidebar-header">
+                <div class="sidebar-logo">
+                    Nasus Studio
+                    <span class="sidebar-version">v</span>
+                </div>
+            </div>
+
+            <!-- Navigation -->
+            <nav class="sidebar-nav custom-scrollbar">
+                <!-- Build section -->
+                <div class="sidebar-section-label" style="padding-top: 8px; font-size: 11px; color: var(--text-tertiary); letter-spacing: 0;">‹ Build</div>
+
+                <button class="sidebar-nav-item active" id="nav-personal">
+                    <i class="fa-regular fa-user"></i>
+                    Personal
+                </button>
+                <button class="sidebar-nav-item" id="nav-project">
+                    <i class="fa-solid fa-layer-group"></i>
+                    Project Space
+                </button>
+                <button class="sidebar-nav-item" id="nav-version">
+                    <i class="fa-solid fa-code-branch"></i>
+                    Version Space
+                </button>
+                <button class="sidebar-nav-item" id="nav-gallery">
+                    <i class="fa-regular fa-images"></i>
+                    Gallery
+                </button>
+
+                <!-- Active US -->
+                <div class="sidebar-section-label">
+                    Active US
+                    <button style="background:none;border:none;color:var(--text-tertiary);cursor:pointer;font-size:11px;" class="tooltip" data-tip="Add US">
+                        <i class="fa-solid fa-plus"></i>
+                    </button>
+                </div>
+
+                <button class="us-item active" id="us-123-btn">
+                    <span class="us-dot amber"></span>
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">US-123: Payment flow u...</span>
+                </button>
+                <button class="us-item">
+                    <span class="us-dot gray"></span>
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">US-128: OAuth Resiliency</span>
+                </button>
+                <button class="us-item">
+                    <span class="us-dot green"></span>
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">US-115: PDF Export</span>
+                </button>
+            </nav>
+
+            <!-- Footer -->
+            <div class="sidebar-footer">
+                <button class="sidebar-footer-link">
+                    <i class="fa-regular fa-lightbulb"></i>
+                    What's new
+                </button>
+                <button class="sidebar-footer-link">
+                    <i class="fa-solid fa-key"></i>
+                    Get API key
+                </button>
+                <button class="sidebar-footer-link">
+                    <i class="fa-solid fa-gear"></i>
+                    Settings
+                </button>
+                <div class="sidebar-user">
+                    <img src="https://ui-avatars.com/api/?name=US&background=8ab4f8&color=131314&size=24" alt="User" class="sidebar-user-avatar">
+                    <span class="sidebar-user-name">kunben7777@gmai...</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- 2. Center: Chat Canvas -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="main-header">
+                <div class="main-header-title">
+                    <h1 style="margin:0;font-size:15px;font-weight:500;">US-123 Quality Analysis</h1>
+                    <span class="status-badge in-progress">In Progress</span>
+                </div>
+                <div class="header-actions">
+                    <button class="header-action-btn tooltip" data-tip="Search History">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                    </button>
+                    <button class="header-action-btn tooltip" data-tip="Export Assets">
+                        <i class="fa-solid fa-download"></i>
+                    </button>
+                    <div class="header-divider"></div>
+                    <button class="header-action-btn tooltip" data-tip="More actions">
+                        <i class="fa-solid fa-ellipsis"></i>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Chat Area -->
+            <div class="chat-area custom-scrollbar" id="chat-container">
+                <div class="chat-messages" id="chat-messages">
+                    
+                    <!-- Time Separator -->
+                    <div class="time-separator">
+                        <span>Today, 10:41 AM</span>
+                    </div>
+
+                    <!-- User Message -->
+                    <div class="message user message-in">
+                        <img src="https://ui-avatars.com/api/?name=US&background=8ab4f8&color=131314&size=28" alt="User" class="message-avatar">
+                        <div class="message-body">
+                            <div class="message-meta">
+                                <span class="time">10:41 AM</span>
+                                <span class="name">You</span>
+                            </div>
+                            <div class="message-bubble">
+                                Start processing US-123. Let's analyze its quality impact.
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Agent Message -->
+                    <div class="message agent message-in">
+                        <div class="agent-avatar">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L14.4 9.6L22 12L14.4 14.4L12 22L9.6 14.4L2 12L9.6 9.6L12 2Z" fill="currentColor"/></svg>
+                        </div>
+                        <div class="message-body" style="flex:1;max-width:85%;">
+                            <div class="message-meta">
+                                <span class="name">Nasus Agent</span>
+                                <span class="time">10:42 AM</span>
+                            </div>
+                            <div class="message-bubble">
+                                <p style="margin:0 0 12px;">I've loaded the context for <strong style="color:var(--text-primary)">US-123: Payment flow update</strong> and linked it with our <code style="background:var(--bg-elevated);padding:2px 6px;border-radius:4px;font-size:12px;color:var(--accent-blue);border:1px solid var(--border-subtle);font-family:monospace;">Official System Image Branch</code>.</p>
+                                
+                                <!-- Impact Analysis Card -->
+                                <div class="impact-card">
+                                    <div class="impact-card-header">
+                                        <div class="impact-card-title">
+                                            <i class="fa-solid fa-network-wired"></i>
+                                            Code Impact Analysis
+                                        </div>
+                                        <span class="impact-card-badge">Computed</span>
+                                    </div>
+                                    <ul class="impact-list">
+                                        <li><i class="fa-solid fa-check check"></i> Identifies changes in <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-size:11px;color:var(--text-primary);font-family:monospace;border:1px solid var(--border-subtle);">Checkout Module</code> core logic.</li>
+                                        <li><i class="fa-solid fa-check check"></i> Detected interface modifications in <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-size:11px;color:var(--text-primary);font-family:monospace;border:1px solid var(--border-subtle);">Payment Gateway App</code>.</li>
+                                        <li><i class="fa-solid fa-triangle-exclamation warning"></i> Warning: Associated legacy tests need updating.</li>
+                                    </ul>
+                                </div>
+
+                                <p style="margin:12px 0 0;">What would you like to do next for this US? We should generate the initial test scenarios.</p>
+                                
+                                <!-- Pill Chip Actions -->
+                                <div class="pill-chips" id="action-buttons">
+                                    <button class="pill-chip primary action-btn" data-action="generate_scenarios">
+                                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                                        Generate Scenarios
+                                    </button>
+                                    <button class="pill-chip">
+                                        <i class="fa-solid fa-code-pull-request"></i>
+                                        Review Linked PRs
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="input-area">
+                <div class="input-wrapper">
+                    <div class="input-container" id="input-container">
+                        <div class="input-inner">
+                            <textarea id="chat-input" rows="1" class="input-textarea custom-scrollbar" placeholder="Type a message to instruct Nasus... (e.g., 'Generate test scenarios')"></textarea>
+                            <div class="input-tools">
+                                <div class="input-tools-left">
+                                    <button class="input-tool-btn tooltip" data-tip="Attach Context">
+                                        <i class="fa-solid fa-at"></i>
+                                    </button>
+                                    <button class="input-tool-btn tooltip" data-tip="Upload File">
+                                        <i class="fa-regular fa-face-smile"></i>
+                                    </button>
+                                </div>
+                                <button id="send-btn" class="send-btn" disabled>
+                                    <i class="fa-solid fa-arrow-up"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="input-footer">
+                        <div style="display:flex;align-items:center;gap:12px;">
+                            <span><kbd>⌘</kbd> + <kbd>K</kbd> Commands</span>
+                            <span><kbd>↵</kbd> Send</span>
+                        </div>
+                        <div class="status-indicator">
+                            <span class="status-dot"></span>
+                            Connected to Core v1.2.4
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- 3. Right Panel: Context Overview -->
+        <aside class="right-panel" id="context-panel">
+            <!-- Header -->
+            <div class="panel-header">
+                <h2>Context Overview</h2>
+                <button id="toggle-panel">
+                    <i class="fa-solid fa-chevron-right"></i>
+                </button>
+            </div>
+
+            <!-- Tabs -->
+            <div class="panel-tabs">
+                <div class="panel-tab-group">
+                    <button class="panel-tab active context-tab" data-tab="assets">Assets</button>
+                    <button class="panel-tab context-tab" data-tab="system">System</button>
+                    <button class="panel-tab context-tab" data-tab="runs">Runs</button>
+                </div>
+            </div>
+
+            <!-- Panel Content -->
+            <div class="panel-content custom-scrollbar" id="panel-content">
+                <!-- Assets Tab -->
+                <div id="tab-assets">
+                    <div class="panel-section-label">
+                        Quality Asset Pack
+                        <span class="panel-section-badge drafting">Drafting</span>
+                    </div>
+                    
+                    <!-- Test Scenarios Card -->
+                    <div class="asset-card">
+                        <div class="asset-card-header">
+                            <div class="asset-card-title">
+                                <div class="asset-icon indigo">
+                                    <i class="fa-solid fa-list-check"></i>
+                                </div>
+                                Test Scenarios
+                            </div>
+                            <span class="asset-card-status" id="scenario-status">0/5 Done</span>
+                        </div>
+                        <div class="asset-card-desc">Checkout validation, promotion application, and edge cases.</div>
+                        <div class="asset-progress-bar">
+                            <div class="asset-progress-fill" id="scenario-progress" style="width: 0%"></div>
+                        </div>
+                    </div>
+
+                    <!-- Automation Scripts Card -->
+                    <div class="asset-card muted">
+                        <div class="asset-card-header">
+                            <div class="asset-card-title">
+                                <div class="asset-icon green">
+                                    <i class="fa-solid fa-vial"></i>
+                                </div>
+                                Automation Scripts
+                            </div>
+                            <span class="asset-card-status">Pending</span>
+                        </div>
+                        <div class="asset-card-desc">Awaiting scenarios completion. Playwright target.</div>
+                    </div>
+
+                    <!-- Governance Section -->
+                    <div class="panel-spacer"></div>
+                    <div class="panel-section-label">Governance</div>
+                    <div class="governance-card">
+                        <div class="governance-icon">
+                            <i class="fa-solid fa-stamp"></i>
+                        </div>
+                        <div class="governance-text">
+                            <h4>Release Decision</h4>
+                            <span>Requires Execution</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System Tab (Hidden) -->
+                <div id="tab-system" style="display:none;">
+                    <div class="system-baseline">
+                        <i class="fa-solid fa-code-merge system-baseline-bg"></i>
+                        <div class="system-baseline-label">Active Baseline</div>
+                        <div class="system-baseline-name">Official System Image Branch</div>
+                        <div class="system-baseline-sync">
+                            <span class="pulse-dot"></span>
+                            Synced 2 mins ago
+                        </div>
+                    </div>
+
+                    <div class="panel-section-label">Affected Modules</div>
+                    <div class="module-item">
+                        <div class="module-item-name">
+                            <i class="fa-regular fa-folder" style="color:var(--accent-blue)"></i>
+                            Checkout Module
+                        </div>
+                        <span class="risk-badge high">HIGH RISK</span>
+                    </div>
+                    <div class="module-item">
+                        <div class="module-item-name">
+                            <i class="fa-brands fa-react" style="color:var(--accent-blue)"></i>
+                            Payment Gateway UI
+                        </div>
+                        <span class="risk-badge medium">MED RISK</span>
+                    </div>
+                </div>
+
+                <!-- Runs Tab (Hidden) -->
+                <div id="tab-runs" style="display:none;">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">
+                            <i class="fa-solid fa-play"></i>
+                        </div>
+                        <h3>No Active Runs</h3>
+                        <p>Generate automation scripts and trigger execution to see results here.</p>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Scripts -->
+    <script src="app.js?v=fresh3"></script>
+</body>
+</html>
