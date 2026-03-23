@@ -7,13 +7,14 @@
 - 本文用于定义当前推荐的工程实现方案和模块边界。
 - 若本文与 [docs/final-feature-spec.md](/Users/uben/project/project/Nasus/docs/final-feature-spec.md) 存在冲突，以最终特性说明书定义的产品能力和默认规则为准。
 - 尤其在 Agent 能力边界上，本文保留当前工程视角下的实现建议；最终产品能力以“Agent 可原生触发检索与执行，但必须经过策略、审计与回放约束”为准。
+- 更细的前端目录结构、路由、状态管理分层、构建部署与测试策略以 [docs/frontend-application-architecture.md](/Users/uben/project/project/Nasus/docs/frontend-application-architecture.md) 为准。
 
 ## 1 目标与范围
 - 目标：把《实施计划书》中定义的“质量保障与上线防护工作台”做实成一套前后台协作明确、角色职责清晰、执行可落地的实施方案。
 - 范围：涵盖集中式 Web Portal、个人 Desktop Client、后端编排/领域服务、执行层 runner、存储/索引/解析底座以及它们之间的接口。确保 Web 前端聚焦“任务与审阅”“上下文可追踪”“组织级协作”，Desktop Client 聚焦“本地权限执行”“本地产物产出”“个人环境上下文感知”，后端聚焦“上下文产出+决策闭环”，执行层负责确定性资产运行，底层存储支持对象/原料/证据。
 
 ## 2 技术栈选型与理由
-- **中心后端**：`Python + FastAPI + durable workflow（默认 Temporal） + LangGraph`。FastAPI 提供命令入口、对象查询和 SSE 事件输出；durable workflow 负责长生命周期任务、审批等待、重试和恢复；LangGraph 负责单任务内部的 Agent 图编排、Skill 路由、Worker 并行与人机节点。
+- **中心后端**：`Python + FastAPI + durable workflow（默认 Temporal） + LangGraph`。FastAPI 提供会话入口、工具调用入口、对象查询和 SSE 事件输出；durable workflow 负责长生命周期任务、审批等待、重试和恢复；LangGraph 负责单任务内部的 Agent 图编排、Tool 选择后的 Skill 路由、Worker 并行与人机节点。
 - **Web 前端**：`React + TypeScript + Tailwind + Zustand/Redux Toolkit + TanStack Query`（§14.1、§13）。这个组合支持 Prompt-first、Workspace-oriented 的复杂工作台，Tailwind 负责快速构建三列工作台与结构化侧栏，样式实现必须以 `ux/` 目录中的原型为基线抽象出 design tokens 和共享组件，而不是回退到通用后台模板。
 - **Desktop Client**：`Electron + React + TypeScript + local-agent-runtime`。Electron 作为桌面壳层承接本地 UI、权限弹窗、系统托盘、自动更新和 IPC；`local-agent-runtime` 作为完整 Edge Agent 的运行时，负责本地推理、本地 Skill 编排、本地队列与本地证据汇总。若后续对体积和安全边界要求进一步提高，可在保持本地执行层独立的前提下迁移壳层到 Tauri。
 - **本地执行层**：`local-agent-runtime` 建议独立于 UI 壳，首版默认使用 `Node.js/TypeScript` 作为本地能力协调进程，负责文件系统、桌面应用、浏览器、剪贴板、下载目录、凭证注入、离线缓存与边缘 Agent 编排；只有在特定本地自动化、OCR 或系统适配器确实需要时，再通过 sidecar 引入 Python，不把这些职责塞回前端壳层。
@@ -21,18 +22,18 @@
 - **存储**：`PostgreSQL` 存对象模型、版本/会话/审批状态、设备与会话元数据；`MinIO` 存 Raw Assets、UX/文档/执行产物、本地同步产物等大文件（§4.1、§7.3、§14.1）。
 - **索引/解析**：`OpenGrok`（代码导航）+ `Tree-sitter`（AST/增量解析）支撑 Code Intelligence，Knowledge Intelligence 通过文档切块+元数据索引完成（§7.3）。首轮建设不把向量层作为核心依赖，后续只在召回质量出现明确瓶颈时再引入语义检索增强层。
 
-前端视觉与交互实现以 [ux/index.html](/Users/uben/project/project/Nasus/ux/index.html)、[ux/styles.css](/Users/uben/project/project/Nasus/ux/styles.css)、[ux/app.js](/Users/uben/project/project/Nasus/ux/app.js) 为直接实现基线，[docs/frontend-visual-style.md](/Users/uben/project/project/Nasus/docs/frontend-visual-style.md) 作为高层视觉说明补充。后续正式前端必须保留 `ux/` 原型确立的三列壳层、深色 token、对话优先和结构化右侧面板语言，并将其工程化为 React 组件、主题变量和状态模型。
+前端视觉与交互实现以 [ux/index.html](/Users/uben/project/project/Nasus/ux/index.html)、[ux/styles.css](/Users/uben/project/project/Nasus/ux/styles.css)、[ux/app.js](/Users/uben/project/project/Nasus/ux/app.js) 为直接实现基线，[docs/frontend-visual-style.md](/Users/uben/project/project/Nasus/docs/frontend-visual-style.md) 作为高层视觉说明补充。后续正式前端必须保留 `ux/` 原型确立的三列壳层、深色 token、对话优先和结构化右侧面板语言，并将其工程化为 React 组件、主题变量和状态模型。与此同时，前后端交互必须采用 `agent-first + tool-first` 模式：主会话是第一入口，页面按钮、快捷 chip、右侧卡片动作和 Desktop 动作都只是同一套 `ToolInvocation` 的不同触发方式。
 
 ## 3 前端信息架构与页面职责
 - **导航**：五个一级导航 Home/Tasks/Knowledge/Runs/Settings，Desktop Client 复用相同的信息架构但增加本地能力入口、设备状态入口和离线队列入口（§13.2）。
 - **Home**：任务入口与版本选择，复用 `Experience Layer` 的入口能力，帮助用户快速进入当前版本与会话。它不是传统 dashboard，而是沿用 `ux/` 原型的 conversation-first 空态工作台：Hero、能力卡片、建议动作和底部输入框共同构成首次操作入口。
-- **Tasks**：核心工作区，承接 `Task Context Workspace` + `Quality Assurance Profile` 的可视化。界面要支撑 `impact.analyze`、`verification.plan`、`scenario.generate`、`case.generate` 等 Skill 的输出展示、`Skill Palette`、`Skill Invocation Timeline`、`Conflict Panel`、审批状态、重生成按钮与上下文回溯，并保留底部主操作输入框作为“继续分析/补证/触发下一步”的统一入口。任务结果必须允许以“消息流中的结构化卡片”出现，而不是只落在独立表单区。
+- **Tasks**：核心工作区，承接 `Task Context Workspace` + `Quality Assurance Profile` 的可视化。界面要支撑分析、场景生成、执行、总结等工具的输出展示、`Tool Palette`、`Tool Invocation Timeline`、`Conflict Panel`、审批状态、重生成按钮与上下文回溯，并保留底部主操作输入框作为“继续分析/补证/触发下一步”的统一入口。任务结果必须允许以“消息流中的结构化卡片”出现，而不是只落在独立表单区。
 - **Knowledge**：展示 `Historical System Baseline`、Feature Graph、Change Graph、相关证据，防腐层的数据都要在这里可追溯；右侧控制面板展示相关文档/组件/依赖，并复用 `ux/` 原型中的 tabbed inspector 模式。
 - **Runs**：展示 `automation.generate` 生成的 Playwright 资产、执行结果、Failure Analysis 归因、Healing/patch 审核记录，必要时提供回放入口，并支持按 `execution_channel=web_runner|desktop_local` 过滤。运行详情仍放在同一工作台壳层中，通过右侧 tab 切换 `Assets / System / Runs` 上下文。
 - **Settings**：管理员面板，支持项目初始化、Provider 接入、版本权限、主题与策略，直接映射治理对象（Project/Version/Baseline）与 Approval Control。
-- **Desktop Client**：桌面工作台与 Web 共用任务模型，但把本地 Skill 面板、设备状态、本地权限申请、本地产物、远程任务确认和离线队列作为一等界面对象；它不替代 Web 的组织级协作面，而是承接本地执行与本地感知。
-- **Skill 可见性**：Web 与 Desktop 默认都展示统一 Skill 列表，但是否可执行必须由 `RBAC + policy + capability grant` 联合决定；高风险 Skill 在 UI 上需要明确展示确认要求与限制条件。
-- **状态同步**：Web 与 Desktop 都通过 TanStack Query 或等价状态层同步后端 Skill/Worker/Device 状态，前者偏组织级协作状态，后者偏本地执行状态。两端都要保留 `taskContext` 的主键语义，但 Desktop 允许额外缓存本地队列和离线产物。
+- **Desktop Client**：桌面工作台与 Web 共用任务模型，但把本地 Tool 面板、设备状态、本地权限申请、本地产物、远程任务确认和离线队列作为一等界面对象；它不替代 Web 的组织级协作面，而是承接本地执行与本地感知。
+- **Tool 可见性**：Web 与 Desktop 默认都展示统一工具列表；Skill 可作为高级视图中的内部能力标签展示，但产品级动作必须以 `ToolDefinition` 为准。是否可执行由 `RBAC + policy + capability grant` 联合决定；高风险工具在 UI 上需要明确展示确认要求与限制条件。
+- **状态同步**：Web 与 Desktop 都通过 TanStack Query 或等价状态层同步后端 `Conversation / ToolInvocation / Task / Run / Device` 状态，前者偏组织级协作状态，后者偏本地执行状态。两端都要保留 `conversationId` 和 `taskContextId` 的主键语义，但 Desktop 允许额外缓存本地队列和离线产物。
 
 ### 3.1 门户壳层与路由布局
 
@@ -58,37 +59,37 @@
 
 | 前端职责 | 后端接口 | 数据契约 |
 | --- | --- | --- |
-| `Home` / `Tasks` 发起任务、显示上下文、展示 Skill 输出和冲突状态 | `POST /v1/tasks`、`GET /v1/features/{featureId}/context`、`GET /v1/skills/catalog`、`POST /v1/skills/{skillId}/invoke`、`GET /v1/tasks/{id}/conflicts` | `TaskContext`、`QualityProfile`、`FeatureContext`、`SkillDefinition[]`、`AgentDecision[]` |
+| `Home` / `Tasks` 发起会话、触发工具、显示上下文和冲突状态 | `POST /v1/conversations/{id}/messages`、`GET /v1/conversations/{id}/events`、`GET /v1/tools/catalog`、`POST /v1/tool-invocations`、`GET /v1/tasks/{id}`、`GET /v1/tasks/{id}/conflicts`、`GET /v1/features/{featureId}/context` | `ConversationSession`、`ToolDefinition[]`、`ToolInvocation[]`、`TaskContext`、`QualityProfile`、`FeatureContext`、`AgentDecision[]` |
 | `Knowledge` 展示对象图谱、证据，支持 Candidate 审批请求与合并结论查看 | `GET /v1/objects/{id}`、`POST /v1/approvals` | `ContextObject` 关系结构、`ApprovalRequest`、`MergedResolution` |
 | `Runs` 展示执行、回放、失败归因、patch 建议和通道过滤 | `POST /v1/runs`、`GET /v1/runs/{id}`、`POST /v1/failure` | `Run`、`ExecutionEvidence`、`FailureReport` |
 | `Settings` 管理项目、Provider、策略和权限 | `GET/POST /v1/projects`、`GET /v1/policies`、`POST /v1/policies` | `ProjectConfig`、`PolicyDefinition` |
-| `Desktop Client` 发起本地权限申请、触发本地 Skill、同步本地执行状态、上传本地产物 | `POST /v1/devices/register`、`POST /v1/device-sessions`、`POST /v1/sync`、`POST /v1/runs`、`POST /v1/capabilities/negotiate` | `DeviceProfile`、`DeviceSession`、`SyncEvent`、`LocalRunArtifact`、`CapabilityGrant`、`AgentDecision` |
+| `Desktop Client` 发起本地权限申请、触发本地工具、同步本地执行状态、上传本地产物 | `GET /v1/tools/catalog`、`POST /v1/tool-invocations`、`POST /v1/devices/register`、`POST /v1/device-sessions`、`POST /v1/sync`、`POST /v1/runs`、`POST /v1/capabilities/negotiate` | `ToolDefinition[]`、`ToolInvocation[]`、`DeviceProfile`、`DeviceSession`、`SyncEvent`、`LocalRunArtifact`、`CapabilityGrant`、`AgentDecision` |
 
 ### 3.4 组件与状态
 
-- `Tasks` 中的状态控件：`草稿`、`分析中`、`待审阅`、`已收敛`，按钮依赖状态启用重生成/执行准备动作。
+- `Tasks` 中的状态控件：`草稿`、`分析中`、`待审阅`、`已收敛`，按钮依赖状态启用重生成/执行准备动作；所有写动作都必须能回溯到 `toolInvocationId`。
 - `Knowledge` 的对象详情侧栏保持两个层级：`对象元数据` + `证据轨迹`；证据链由 Evidence Card 列表 + control panel 过滤。
 - `Runs` 提供执行时间线、环境快照标签、失败归因标签、patch 建议卡片，并支持按 `已完成/失败/待放行` 和 `execution_channel` 过滤。
 - `Settings` 以策略/权限/Provider 三个分区展示，常规表单与审批表结合，所有编辑操作走审批流程。
 - `Desktop Client` 的状态分为 `设备在线`、`等待授权`、`执行中`、`pending_merge`、`离线待补传`、`受限模式`，界面必须显式显示本地能力可用性、当前权限范围、同步滞后和远程任务确认状态。
-- `ChatTimeline` 需要显式支持 `user`、`agent`、`typing`、`structured-result` 四类消息节点，并保留阶段推进能力，例如“先输出场景卡，再输出生成脚本过程说明”。消息节点应由 `phase`、`messageType` 和 `relatedSkillInvocationId` 驱动，而不是只靠 markdown 文本渲染。
+- `ChatTimeline` 需要显式支持 `user`、`agent`、`typing`、`structured-result` 四类消息节点，并保留阶段推进能力，例如“先输出场景卡，再输出生成脚本过程说明”。消息节点应由 `phase`、`messageType` 和 `relatedToolInvocationId` 驱动，而不是只靠 markdown 文本渲染。
 - 右侧上下文面板必须有独立状态片：`activeContextTab`、`scenarioProgress`、`scenarioStatusLabel`、`selectedAssetId`、`selectedRunId`。这些状态由 store 管理，并允许被 Agent 响应或运行事件流增量更新。
 - `ActionComposer` 必须管理 `inputValue`、`isFocused`、`autoHeight`、`isWaitingForAgent`、`sendEnabled` 五类本地状态；`Enter` 发送、`Shift+Enter` 换行、发送时锁定输入和快捷动作、响应返回后恢复输入是硬约束。
-- 建议动作 chip 不只是装饰元素，而是前端 action registry 的可视化入口。每个 chip 至少绑定 `actionId`、`label`、`icon`、`targetSkillId`、`disabledReason`，执行时要能统一进入 Skill 调用链，并在执行期间锁定其他互斥动作。
+- 建议动作 chip 不只是装饰元素，而是前端 action registry 的可视化入口。每个 chip 至少绑定 `actionId`、`label`、`icon`、`targetToolId`、`disabledReason`，执行时要能统一进入 `ToolInvocation` 调用链，并在执行期间锁定其他互斥动作。
 
 ### 3.5 页面组件组成
 
 | 页面 | 主要组件 | 前端数据源 | 关键交互 |
 | --- | --- | --- | --- |
 | `Home` | Hero 标题、能力卡片网格、项目切换器、版本卡片、最近会话列表、底部 `ActionComposer` | `Project` `Version` `SessionSummary` | 进入版本、恢复会话、创建任务 |
-| `Tasks` | 任务头部、状态条、任务上下文卡片、质量画像卡片、`Skill Palette`、`Skill Invocation Timeline`、`Conflict Panel`、审阅动作区、右侧控制面板、底部 `ActionComposer` | `TaskContext` `QualityProfile` `SkillResult[]` `AgentDecision[]` | 发起分析、触发 Skill、局部重生成、确认收敛、处理冲突、跳转执行 |
+| `Tasks` | 任务头部、状态条、任务上下文卡片、质量画像卡片、`Tool Palette`、`Tool Invocation Timeline`、`Conflict Panel`、审阅动作区、右侧控制面板、底部 `ActionComposer` | `ConversationSession` `ToolInvocation[]` `TaskContext` `QualityProfile` `ToolResult[]` `AgentDecision[]` | 发起分析、触发工具、局部重生成、确认收敛、处理冲突、跳转执行 |
 | `Knowledge` | 图谱视图、对象列表、对象详情抽屉、证据时间线、知识晋级面板 | `ContextObject` `FeatureContext` `EvidenceRef[]` | 搜索对象、查看证据、发起审批 |
 | `Runs` | 执行列表、运行详情、回放卡片、失败归因卡片、放行建议面板、冲突摘要、右侧过滤器、底部 `ActionComposer` | `Run` `ExecutionEvidence` `FailureReport` `ReleaseAdvice` `MergedResolution` | 发起执行、过滤运行、复核失败、处理冲突、提交放行 |
 | `Settings` | Provider 配置表单、策略面板、权限矩阵、项目接入向导 | `ProjectConfig` `PolicyDefinition` `RoleMatrix` | 配置接入、修改策略、管理角色 |
-| `Desktop Client` | 设备状态卡、权限申请卡、本地 `Skill Palette`、本地任务队列、本地执行面板、远程任务确认面板、同步状态条、离线补传面板 | `DeviceSession` `CapabilityGrant` `LocalTask` `LocalRunArtifact` `AgentDecision[]` | 申请权限、执行本地任务、确认远程动作、查看同步状态、补传产物 |
+| `Desktop Client` | 设备状态卡、权限申请卡、本地 `Tool Palette`、本地任务队列、本地执行面板、远程任务确认面板、同步状态条、离线补传面板 | `ConversationSession` `ToolDefinition[]` `ToolInvocation[]` `DeviceSession` `CapabilityGrant` `LocalTask` `LocalRunArtifact` `AgentDecision[]` | 申请权限、执行本地任务、确认远程动作、查看同步状态、补传产物 |
 
 ## 4 后端分层与服务边界
-- **Intelligence Orchestration Layer**：`Central Orchestrator Agent` + `Durable Workflow Runtime` + `Agent Graph Runtime` + `Skill Registry` + `Worker Scheduler` + `Merge/Score` + `Approval Control`。这层接收用户发起的任务，规划阶段，路由对应的 skill，调度 worker，收敛结果并推进审批。
+- **Tool-first Orchestration Layer**：`Conversation Orchestrator` + `Tool Registry` + `Tool Invocation Runtime` + `Central Orchestrator Agent` + `Durable Workflow Runtime` + `Agent Graph Runtime` + `Skill Registry` + `Worker Scheduler` + `Merge/Score` + `Approval Control`。这层接收用户发起的会话、按钮、桌面动作或外部 API 请求，先转成工具调用，再规划阶段、路由 skill、调度 worker，收敛结果并推进审批。
 - **Domain Intelligence Layer**：Baseline/Change Impact/Verification Planning/Scenario/Case/Automation/Failure Analysis/Healing/Release Advice（§9）。每个服务清楚边界：Baseline 生成 `Official/Version Working Baseline`，Impact 产出变更影响，Verification 产出验证计划，Automation 负责 Playwright 资产，Failure/Healing 负责执行证据归因与 patch 建议，Release Advice 输出上线准备度。
 - **Unified Context Engine**：负责 Source Connectors、Code/Knowledge Intelligence、Anchor Extraction、Entity Resolution、Context Assembler、Context Object Store（§7）。当前工程建议对工作台不直接暴露底层 `search_code/search_docs`，而是通过统一能力封装；若后续按最终特性说明书支持 Agent 原生检索与执行，也必须通过策略网关、审计事件和证据落点统一收口。
 - **Integration Fabric**：Asset ingestion、Execution、Storage、Review/Policy、Provider Contracts、Adapter Registry（§8.2）。所有外部系统接入（Git、Docs、OpenAPI、执行器、存储）必须通过防腐层进到统一上下文引擎/域服务。
@@ -100,8 +101,9 @@
 | 服务 | 主要职责 | 接口示例 | 状态/事件 |
 | --- | --- | --- | --- |
 | `Baseline Service` | 管理 Official/Version Working/Version Shared 基线，Candidate 晋级 | `POST /v1/baselines`、`PATCH /v1/baselines/{id}` | `baseline_created`、`baseline_promoted` |
-| `Skill Catalog Service` | 维护 `SkillDefinition`、展示范围、风险和确认要求 | `GET /v1/skills/catalog` | `skill_catalog_published` |
-| `Skill Invocation Service` | 统一处理 `Skill` 调用，请求中心或边缘执行 | `POST /v1/skills/{skillId}/invoke` | `skill_invoked`、`skill_completed` |
+| `Conversation Service` | 管理主会话、消息流和会话级事件输出 | `POST /v1/conversations/{id}/messages`、`GET /v1/conversations/{id}/events` | `conversation_message_created`、`conversation_summary_updated` |
+| `Tool Registry Service` | 维护 `ToolDefinition`，暴露工具目录、风险和确认要求，并映射内部 Skill | `GET /v1/tools/catalog` | `tool_catalog_published` |
+| `Tool Invocation Service` | 统一处理 `ToolInvocation`，请求中心或边缘执行，并驱动 gate 与 workflow | `POST /v1/tool-invocations`、`GET /v1/tool-invocations/{id}` | `tool_invoked`、`tool_waiting_confirmation`、`tool_completed` |
 | `Agent Decision Service` | 存储中心端与桌面端的 `AgentDecision`，推进 provisional 流 | `POST /v1/agent-decisions`、`GET /v1/tasks/{id}/decisions` | `decision_created`、`decision_superseded` |
 | `Conflict Resolution / Merge Service` | 检测冲突、生成 `MergedResolution`、驱动 `pending_merge` 生命周期 | `GET /v1/tasks/{id}/conflicts`、`POST /v1/conflicts/{id}/merge` | `conflict_detected`、`resolution_merged` |
 | `Change Impact Service` | 分析变更、构建 Change Set、输出回归范围 | `POST /v1/impacts`、`GET /v1/impacts/{id}` | `impact_analyzed` |
@@ -117,9 +119,12 @@
 
 ### 4.2 接口语义与契约
 
-- `POST /v1/tasks`：返回 `taskContextId`、`qualityProfileId`，为后续 skill/execution 提供统一输入。
-- `GET /v1/skills/catalog`：返回 `SkillDefinition[]`，必须包括 `scope`、`risk`、`visibility`、`requiresConfirmation`。
-- `POST /v1/skills/{skillId}/invoke`：正式公共入口，Web 与 Desktop 都可调用；需携带 `taskContextId`、`triggerReason`、`initiatorSurface`、`targetScope`、`inputEvidenceRefs`，Worker 返回 `partialResult` + `confidence` + `trace`。
+- `POST /v1/conversations/{id}/messages`：主会话的 canonical 入口，请求体包含自然语言输入、显式上下文引用和可选的目标工具提示；系统返回消息接收确认，并通过事件流回传 `ToolInvocationPlan`、工具执行过程和结构化结果。
+- `GET /v1/conversations/{id}/events`：返回主会话消息、工具调用计划、工具执行状态和推荐后续动作。
+- `GET /v1/tools/catalog`：返回 `ToolDefinition[]`，必须包括 `tool_kind`、`scope`、`risk_level`、`confirmation_mode`、`required_context`。
+- `POST /v1/tool-invocations`：写操作的 canonical command surface，Web、Desktop 和外部 API 都可调用；需携带 `conversationId`、`toolId`、`initiatorSurface`、`targetScope`、`inputPayload`、`inputEvidenceRefs`，系统返回 `toolInvocationId` 并按需要进入 `waiting_confirmation` 或 `waiting_approval`。
+- `GET /v1/tool-invocations/{id}`：返回工具调用状态、结构化结果、对象引用和后续推荐工具。
+- `POST /v1/tasks`：保留为领域对象写入边界，用于少量需要显式创建任务对象的系统流程；其写路径仍应由会话或工具调用驱动。
 - `GET /v1/tasks/{id}/conflicts`：返回当前任务的冲突列表、双端 `AgentDecision` 和推荐合并方案。
 - `POST /v1/runs`：提交 `automationId`、`environmentId`、`retryPolicy`、`execution_channel`，Runner 或 Desktop 通道输出 `runId`、`status`、`evidenceRefs`。
 - `POST /v1/approvals`：包含 `candidateId`、`baselineTarget`、`approvalNotes`、`overrideFlag`；审批完成后触发 `baseline_promoted`.
@@ -127,14 +132,55 @@
 - `POST /v1/device-sessions`：打开一次桌面设备会话，绑定用户、设备、组织和权限范围。
 - `POST /v1/sync`：桌面端提交本地状态、离线事件、同步检查点和待补传产物索引。
 - `POST /v1/capabilities/negotiate`：设备与服务端协商可用本地能力，返回允许执行的能力集合与限制条件。
+- 所有 UI 写动作都必须能回溯到 `toolInvocationId`；对象查询类接口作为 read model 存在，但不再是主业务动作入口。
 
 ### 4.3 长任务与实时事件通道
 
-- Web Portal 到 Orchestrator 的命令链路使用 REST；任务分析、执行进度、审批状态更新使用 SSE 作为默认实时通道，避免在首版引入过重的双向状态同步。
+- Web Portal 到 Orchestrator 的命令链路采用“`Conversation + ToolInvocation` 写入口 + Read API 查询”模式；任务分析、工具执行进度、审批状态更新使用 SSE 作为默认实时通道，避免在首版引入过重的双向状态同步。
 - Desktop Client 与 Orchestrator 之间需要双通道：控制命令走 REST，设备心跳、同步事件、队列进度和补传状态走 SSE 或轻量 WebSocket 事件流。若首版不做 WebSocket，也要保留事件流抽象。
 - 建议提供 `GET /v1/tasks/{taskId}/events`、`GET /v1/runs/{runId}/events`、`GET /v1/approvals/{approvalId}/events`、`GET /v1/device-sessions/{id}/events`、`GET /v1/sync/events` 三类以上事件流接口，前端通过 TanStack Query + Event reducer 合并实时状态；Desktop 端保持“REST + 事件流抽象，SSE 为基线，WebSocket 作为后续扩展”。
 - 文件上传采用 MinIO 预签名上传，前端只向后端申请上传凭据和对象元数据；Runner、Worker、Web Portal、Desktop Client 都通过 `evidenceRef` 关联二进制产物。本地私有文件默认不上传，上传必须显式由策略或用户动作触发。
 - 只有在后续确实出现多人协同编辑、共享游标、交互式回放控制等需求时，再引入 WebSocket；当前开发基线不依赖 WebSocket，但桌面端本地动作状态必须保留事件化模型。
+
+### 4.4 前端 SSE 消费与状态合并规范
+
+- 前端不得把 SSE 当作“提示刷新”的弱通知流；SSE 必须作为 `Conversation`、`ToolInvocation`、`Task`、`Run`、`Approval`、`DeviceSession` 六类对象的增量状态来源。
+- 每条 SSE 事件除通用信封外，还必须携带：
+  - `entity_type`
+  - `entity_id`
+  - `entity_version`
+  - `mutation_kind=replace|patch|append|invalidate`
+  - `patch`
+  - `snapshot_hint`
+  - `query_keys`
+- TanStack Query 只负责 read model cache；真正的事件消费逻辑由前端统一 `EventReducer` 承担。`EventReducer` 负责：
+  - 基于 `event_id` 去重
+  - 基于 `entity_version` 丢弃乱序旧事件
+  - 把 `patch` 合并到本地对象快照
+  - 在 `mutation_kind=invalidate` 时触发精确 query 失效，而不是全量 refetch
+- 查询键必须固定为：
+  - `["conversation", conversationId]`
+  - `["task", taskId]`
+  - `["task-conflicts", taskId]`
+  - `["run", runId]`
+  - `["approval", approvalId]`
+  - `["device-session", deviceSessionId]`
+- 乐观更新只允许用于本地可立即确认的 UI 行为：
+  - 会话输入框发送中态
+  - 本地 chip/button 的 loading 态
+  - 本地队列中待上传 artifact 的占位状态
+- 以下对象禁止纯前端乐观写最终状态，必须等待 SSE 或 read model 回写：
+  - `Task.status`
+  - `Run.status`
+  - `MergedResolution`
+  - `ApprovalRecord`
+  - `CapabilityGrant`
+- 查询失效策略固定为：
+  - `patch/append` 事件：优先走 reducer 增量合并，不主动 refetch
+  - `invalidate` 事件：仅失效事件里显式给出的 `query_keys`
+  - `snapshot_hint=true`：触发单对象 refetch，用于合并结果过大、补丁不可逆或版本跳跃
+- `Task -> AgentDecision -> Run -> MergedResolution` 这类嵌套对象不得依赖“父对象全量替换”更新，必须按实体维度分别缓存与合并；前端视图层再做组合选择，避免一次 `Task` 事件把 `Run` 和 `MergedResolution` 的局部状态冲掉。
+- `ChatTimeline`、`Tool Invocation Timeline`、`Conflict Panel` 都必须订阅同一 reducer 输出，禁止各自独立维护“局部真相”。
 
 ## 5 执行层设计
 - **Web Runner**：独立 Job/容器，使用 Node.js/TypeScript + Playwright Test（§14.1、§9.6）。它与 `worker-runtime` 解耦，仅接收 `automation.generate` 的执行配置和资产，执行完成后将日志、断言、截图、环境快照回写 MinIO/PostgreSQL。
@@ -143,7 +189,7 @@
 - **调度**：`Workflow Runtime` 将执行任务投递到 Queue/Scheduler，Runner 订阅特定任务类型（比如 Playwright automation.run），桌面客户端订阅 `device-scope` 任务类型并在本地执行后回传事件，确保并行但可追踪，符合 “Deterministic Core” 的要求（§2.2、§10.1）。
 
 ## 6 存储/索引/解析方案
-- **PostgreSQL**：存 Raw Assets 元数据、Context Objects、Baseline Snapshots、Version/Session 状态、Candidate/Approval 记录、Run Result、Patch/Healing 记录、Device/Device Session/Sync 状态，满足结构化查询与审批逻辑（§4.2、§6.1、§14.2）。
+- **PostgreSQL**：存 Raw Assets 元数据、Context Objects、Baseline Snapshots、Version/Session 状态、Conversation/ToolInvocation、Candidate/Approval 记录、Run Result、Patch/Healing 记录、Device/Device Session/Sync 状态，满足结构化查询与审批逻辑（§4.2、§6.1、§14.2）。
 - **MinIO**：存 Raw Assets（代码仓、文档、UX、OpenAPI、历史验证资产、临时材料）和执行产物（Playwright 日志、截图、trace、patch 附件、本地补传 artifact），保证 append-only（§4.1、§12.1）。
 - **OpenGrok + Tree-sitter**：OpenGrok 负责代码搜索与跨文件引用，Tree-sitter 负责 AST、符号提取与增量解析，组成 Code Intelligence Backend（§7.3）。Knowledge Intelligence Backend 则通过文档切块 + 元数据索引（可基于 PostgreSQL）支撑文档理解与检索索引（§7.3）。
 - **上下文对象存储**：Context Object Store 保存 Candidate/Trusted Objects、Baseline Snapshots、Version Working Baselines（§7.3）；API 调用 `Context Assembler` 时，总是附带证据/置信度/状态，便于前端审计。桌面端的本地产物元数据与同步检查点也应落在此层的索引表里。
@@ -151,12 +197,15 @@
 ### 6.1 数据模型建议
 
 - `TaskContext`：包含 `taskId`, `versionId`, `sessionId`, `relatedFeatures`, `evidenceRefs`, `status`, `lastUpdated`.
+- `ConversationSession`：包含 `conversationId`, `spaceType`, `spaceId`, `initiatorId`, `status`, `lastMessageAt`.
+- `ToolDefinition`：包含 `toolId`, `toolKind`, `scope`, `riskLevel`, `confirmationMode`, `requiredContext`, `inputSchemaRef`, `outputSchemaRef`.
+- `ToolInvocation`：包含 `invocationId`, `conversationId`, `toolId`, `initiatorSurface`, `initiatorActor`, `targetScope`, `status`, `objectRefs`, `evidenceRefs`.
 - `QualityProfile`：记录验证范围、impact summary、risk rating、auto/hand-off strategy、linked `taskContextId`.
 - `ContextObject`：包含 `id`, `type`, `relationships`, `confidence`, `sourceRefs`, `status` (candidate/trusted), `evidenceSnapshot`.
 - `Run`：包含 `runId`, `automationId`, `environment`, `execution_channel`, `status`, `startTime`, `endTime`, `results`, `evidenceRefs`.
 - `AgentDecision`：包含 `decisionId`, `taskId`, `source=center|edge`, `decisionKind`, `status=provisional|merged|approved|rejected`, `confidence`, `evidenceRefs`.
 - `MergedResolution`：包含 `resolutionId`, `taskId`, `resolutionKind`, `status`, `mergedFromDecisionIds`, `approvalState`.
-- `SkillDefinition`：包含 `skillId`, `scope=central|edge|either`, `riskLevel`, `visibility`, `requiresConfirmation`.
+- `SkillDefinition`：包含 `skillId`, `scope=central|edge|either`, `mappedToolIds`, `internalOnly`.
 - `ApprovalRecord`：包含 `candidateId`, `baselineTarget`, `decision`, `approver`, `timestamp`, `notes`.
 
 这些模型必须对齐 `PostgreSQL` schema，且 `MinIO` 仅存其 `evidenceRefs` 指向的大文件。
@@ -170,10 +219,10 @@
 - `CapabilityGrant`：允许设备执行的本地能力集合，例如文件创建、目录管理、浏览器控制、桌面应用控制。
 
 ## 7 关键接口与模块边界建议
-- `POST /v1/tasks`：由 `Central Orchestrator Agent` 接收任务输入（需求说明、版本、会话、材料），负责 `build_task_context` 与 `build_quality_profile`；返回 `taskContextId` + `qualityProfileId`。
-- `GET /v1/skills/catalog`：返回 Skill 列表、scope、risk、visibility、requires_confirmation，供 Web 与 Desktop 渲染统一 Skill 面板。
+- `POST /v1/conversations/{id}/messages`：由 `Conversation Orchestrator` 接收自然语言输入，负责理解意图、补足上下文、生成 `ToolInvocationPlan`；返回消息接收确认，并通过事件流回传执行过程。
+- `GET /v1/tools/catalog`：返回工具列表、tool_kind、scope、risk、confirmation_mode、required_context，供 Web 与 Desktop 渲染统一工具面板。
+- `POST /v1/tool-invocations`：正式公共写入口，由 `Tool Invocation Runtime` 统一执行工具；工具内部再通过 Tool Registry 映射 Skill 和 Worker。
 - `GET /v1/features/{featureId}/context`：封装 `get_feature_context`，前端 `Knowledge` 页面用它展示 Feature Graph、Change Graph、相关证据。这是当前工程实现基线，不限制最终产品在 Agent 侧提供更高阶的原生检索能力。
-- `POST /v1/skills/{skillId}/invoke`：正式公共入口，Agent 通过 Skill Registry 调用对应 worker（impact.analyze、verification.plan、scenario.generate、automation.generate 等），接口携带 `taskContextId`、`initiatorSurface`、`targetScope`，Worker 返回 partial results，由 Merge/Score Engine 汇总。
 - `GET /v1/tasks/{id}/conflicts`：返回双端 `AgentDecision`、冲突原因和推荐 `MergedResolution`，供 `Tasks`、`Runs` 与 `Desktop Client` 统一展示。
 - `POST /v1/runs`：由 Automation Service 或 Desktop 端触发执行，统一创建 canonical `Run`；完成后 evidence 回写 `runs/{runId}`，Failure Worker 订阅同一 run，得出归因并触发 Healing/Release Advice。
 - `POST /v1/approvals`：Approval Control 用于处理 `Candidate Knowledge` 的晋级和基线回写。默认路径为 `Candidate -> Version Shared -> Official`，任何晋级或回写动作都必须经过审批，审批结果驱动 Baseline Service 更新。
@@ -181,7 +230,7 @@
 - `POST /v1/device-sessions`：打开桌面设备会话，绑定用户、设备、组织、策略快照和权限范围。
 - `POST /v1/sync`：提交桌面端的增量状态、本地任务结果、离线队列和补传检查点。
 - `POST /v1/capabilities/negotiate`：对桌面端可执行能力做协商，返回允许的能力集合、限制、需确认项和审计要求。
-- **模块边界**：Context Engine 负责提供 `taskContext`/`qualityProfile`，Domain Services 负责基于这些上下文产生计划，Worker Runtime 在 Skill 级调度 Worker，Runner 专注执行，Desktop Local Capability Host 专注本地能力执行，Integration Fabric 将外部材料/执行/存储统一化。若后续按最终特性说明书演进 Agent 原生直连能力，也必须通过统一策略网关收口，不改变审计与证据主线。
+- **模块边界**：Conversation Orchestrator 负责理解会话和生成工具计划，Tool Invocation Runtime 负责执行工具、进入 gate 并绑定领域对象，Context Engine 负责提供 `taskContext`/`qualityProfile`，Domain Services 负责基于这些上下文产生计划，Skill/Worker Runtime 作为工具背后的内部能力执行层，Runner 专注执行，Desktop Local Capability Host 专注本地能力执行，Integration Fabric 将外部材料/执行/存储统一化。若后续按最终特性说明书演进 Agent 原生直连能力，也必须通过统一策略网关收口，不改变审计与证据主线。
 
 ## 8 任务/执行/审批/知识流时序
 
@@ -190,8 +239,8 @@
 1. `项目接入`：`Settings` 发起，`Baseline Service` 建立 Historical/Official 基线，状态从 `draft` -> `ready`.
 2. `版本建模`：`Home`/`Settings` 创建版本，`Change Impact Service` 生成 Change Set，基线状态 `versioning`.
 3. `会话启动`：`Tasks` 创建 Session，Status `active`, materials uploaded, context stored in `TaskContext`.
-4. `任务分析`：`Skill` 阶段串联 Impact/Verification/Scenario/Case，`QualityProfile` 状态 `analysis`, outputs `verificationPlan`.
-5. `双端推理`：中心端与桌面端都可触发 Skill，产生 `AgentDecision(status=provisional)`；若结论冲突，任务进入 `pending_merge`。
+4. `任务分析`：会话先产出 `ToolInvocationPlan`，工具内部再串联 Impact/Verification/Scenario/Case，`QualityProfile` 状态 `analysis`, outputs `verificationPlan`.
+5. `双端推理`：中心端与桌面端都可触发工具，工具内部可调用不同 Skill，最终产生 `AgentDecision(status=provisional)`；若结论冲突，任务进入 `pending_merge`。
 6. `执行`：`Automation Service` 或 `Desktop Local Capability Host` 统一创建 `Run(execution_channel=web_runner|desktop_local)`，状态 `pending -> running -> complete/fail/pending_merge`。
 7. `失败归因`：`Failure Analysis` 消费 `Run`, outputs `FailureReport` + `Healing` suggestions, states `under_review -> pending_merge -> closed`.
 8. `放行审批`：`Release Advice` 结合 evidence 和 `MergedResolution`, `Approval Control` 判断 `Decision`, states `pending_merge -> pending -> approved/blocked`.
@@ -212,7 +261,7 @@
 | --- | --- | --- |
 | Stage 0 | `TaskContext`/`QualityProfile` schema + `Baseline`/`Candidate` contracts | 构建数据管道 |
 | Stage 1 | `Home/Settings` 版本与项目建档 + `BaselineService` API | 保障接入能力 |
-| Stage 2 | `Tasks` 工作台 + `Skill` 调用链 + `Automation` 接口 + `Device Registry` 基础接入 | 确保分析闭环 |
+| Stage 2 | `Tasks` 工作台 + `Conversation` / `ToolInvocation` 调用链 + `Automation` 接口 + `Device Registry` 基础接入 | 确保分析闭环 |
 | Stage 3 | `Runs` 视图、Runner、Failure/Healing flow + `Desktop Client` 本地执行链路 | 提供执行封装 |
 | Stage 4 | `Release Advice` + `Approval` + `Knowledge` 沉淀 + 桌面同步 | 完成治理闭环 |
 
@@ -221,7 +270,7 @@
 1. **Phase 0（对象与协议固化）**：先建 Raw Assets/Context Objects schema、Baseline/Version/Session/Candidate 模型、Unified Context Engine 接口（§15）。至少先搭 PostgreSQL + MinIO + OpenGrok/Tree-sitter + FastAPI 服务，确保数据结构到位。
 2. **Phase 1（项目初始化接入）**：实现 Asset Connectors、代码/文档索引、Historical Baseline 生成、管理员校正流程，前端在 Settings/Knowledge 层提供材料上传与差错展示（§11.1、§12）。
 3. **Phase 2（版本与会话机制）**：实现版本 fork、Version Working Baseline、Session-only/Candidate Knowledge 流转、Feature Graph/Change Graph，前端 Home/Tasks 提供版本/会话切换视图（§11.2-11.4）。
-4. **Phase 3（质量方案生成）**：完善 Skill/Worker 的 impact、verification、scenario、case，Tasks 页承接多轮审核与重生成；Agent 需提供 `skillId` 调度与 Merge/Score 输出（§14.2、§13.3）。
+4. **Phase 3（质量方案生成）**：完善 Tool/Skill/Worker 的 impact、verification、scenario、case，Tasks 页承接多轮审核与重生成；Agent 需提供 `toolId` 级动作调度和 `ToolInvocation -> Merge/Score` 输出（§14.2、§13.3）。
 5. **Phase 4（双端执行）**：构建 automation.generate -> runner -> failure.analysis -> release.assess 范式，同时打通 device registration -> device session -> canonical run write -> sync events，Web 页面展示执行证据，Desktop Client 展示本地执行证据与权限状态（§9.6-9.9、§14.1）。
 6. **Phase 5（治理与沉淀）**：实现 Candidate 审批流、Baseline 回写、Official Baseline 更新；Settings/Knowledge 提供审批状态与沉淀结果，同时统一桌面端产物补传与审计（§6.3、§12.2）。
 

@@ -8,6 +8,7 @@
 
 ## 1 设计目标与边界
 - 目标：构建一个**质量保障与上线防护平台**，采用“中心控制面 + 桌面执行端”的混合架构，用统一上下文加治理机制替代传统的测试生成器，确保每次变更都能被理解、验证、执行、归因并给出放行建议。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L14)
+- 交互前提：平台采用 `agent-first` 形态，主会话是第一操作入口，所有业务动作原生都必须支持主 Agent 调用；页面按钮、表单和卡片动作只是同一工具体系的可视化封装。
 - 技术边界：核心能力是上下文建模、领域服务编排与治理，执行层（Playwright）和原料（Git/docs/UX）通过防腐层隔离接入，避免将执行细节耦合在决策路径。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L346)
 - 质量原则：统一上下文、物化系统画像、版本期间只更新工作基线、会话知识默认私有，追求可解释、可追溯、可审计。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L57)
 - 形态原则：Web 端是集中式控制面和协作面，Desktop Client 是个人设备上的执行面和本地权限面；两端共享同一任务、证据和审计模型，但本地私有数据默认不上传，上传和同步必须受策略与用户授权控制。
@@ -17,11 +18,12 @@
 - Context Objects 是可推理的系统画像（System/Module/Feature/Page/API/CodeSymbol/Requirement/UXArtifact/TestAsset/RiskPattern/ExternalDependency/Role/State），带关系（contains/implements/depends_on/impacts 等）与证据。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L83)
 - Workspaces（版本工作基线、Task Context Workspace、Quality Assurance Profile、Session Context、Candidate Knowledge）将版本、任务与会话捆绑，为每次变更构建“动态上下文”。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L111)
 - 治理对象分四层：Project/Version/Session/Baseline，知识分级为 Official/Version Shared/Session-only/Candidate，确保变更期间只更新工作基线，版本完成后经审批回写官方基线。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L189)
+- 工具对象补充为 `Conversation Session`、`ToolDefinition`、`ToolInvocation`、`ToolResult`，用于承载主会话输入、统一动作目录、命令执行记录和结构化结果。
 - 设备对象补充为 `Device`、`Desktop Client`、`Local Session`、`Local Capability`、`Sync Cursor`，用于描述个人终端、设备信任、桌面权限和同步状态。
 
 ## 3 七层系统架构
 1. Experience Layer：Web Portal、Desktop Client、CLI、API、Nasus Assistant 作为人机入口。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L346)
-2. Intelligence Orchestration Layer：`Central Orchestrator Agent`、`Edge Desktop Agent`、Skill Registry、Workflow、Worker Scheduler、Merge/Score Engine、Approval Control 负责规划、路由、并发和审批。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L348)
+2. Intelligence Orchestration Layer：`Conversation Orchestrator`、`Central Orchestrator Agent`、`Edge Desktop Agent`、Tool Registry、Tool Invocation Runtime、Skill Registry、Workflow、Worker Scheduler、Merge/Score Engine、Approval Control 负责理解会话、选择工具、路由能力、并发和审批。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L348)
 3. Domain Intelligence Layer：Baseline/Impact/Verification Planning/Scenario/Case/Automation/Failure/Healing/Release Advice 等领域服务产出决策。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L370)
 4. Unified Context Engine：Source Connectors、Code/Knowledge Intelligence、Anchor Extraction、Entity Resolution、Context Assembler、Context Object Store，统一加工上下文对象并对上只暴露 `get_feature_context`、`build_task_context`、`build_quality_profile`、`assess_release_readiness`。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L267)
 5. Three-Layer Context System：Historical System Baseline、Task Context Workspace、Quality Assurance Profile 支撑任务理解与质量画像。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L123)
@@ -31,7 +33,8 @@
 ## 4 逻辑架构与运行平面
 
 - **控制面（Control Plane）**：Web Portal + API Gateway + Policy/Approval Service，负责角色验证、资源授权、任务划分、组织治理和统一监控，构成 `settings` + `approval` 中央治理层。
-- **智能面（Intelligence Plane）**：Unified Context Engine + Domain Intelligence Services + `Central Orchestrator Agent` + `Skill Registry` + `Merge/Score`，负责构建 `Task Context` + `Quality Profile`，并为 Web 与桌面端提供可直接消费的编排能力。
+- **工具契约面（Tool Contract Layer）**：`Conversation Orchestrator` + `Tool Registry` + `Tool Invocation Service` + `Confirmation / Approval Gate`，负责把会话输入、页面动作和外部 API 请求统一映射成可治理的工具调用。
+- **智能面（Intelligence Plane）**：Unified Context Engine + Domain Intelligence Services + `Central Orchestrator Agent` + `Skill Registry` + `Merge/Score`，负责构建 `Task Context` + `Quality Profile`，并为工具执行提供可直接消费的编排能力。
 - **执行面（Execution Plane）**：Web Execution Fabric + Runner + Failure/Healing + Execution Evidence Store，负责网页端工具、Playwright/MCP 调用、确定性执行、失败归因和 patch 建议。
 - **边缘/桌面面（Edge/Desktop Plane）**：Desktop Client + `Edge Desktop Agent` + Local Capability Gateway + Local Cache + Sync Pipeline，负责本地权限执行、本地资源访问、桌面动作、浏览器/应用控制、离线缓存与回传同步。
 - **数据面（Data Plane）**：PostgreSQL + MinIO + OpenGrok + Tree-sitter + Audit/Event Store，提供事实源、证据归档和检索能力。
@@ -39,7 +42,8 @@
 运行平面说明：
 
 - `Control Plane` 为最终特性说明书定义的“Agent 可触发”能力提供治理和策略入口。
-- `Intelligence Plane` 内部分为两层：`Durable Workflow Runtime` 负责长生命周期任务、审批等待、重试和恢复；`Agent Graph Runtime` 负责单个任务内部的阶段推进、Skill 路由、人机节点和局部并行。
+- `Tool Contract Layer` 是所有写操作的 canonical command surface。无论动作来自主会话、按钮、表单、批量操作还是 Desktop，本质上都必须先形成 `ToolInvocation`。
+- `Intelligence Plane` 内部分为两层：`Durable Workflow Runtime` 负责长生命周期任务、审批等待、重试和恢复；`Agent Graph Runtime` 负责单个任务内部的阶段推进、工具内部的 Skill 路由、人机节点和局部并行。
 - `Execution Plane` 负责承接 Web 触发的网页端工具、Playwright 和 MCP 请求。
 - `Edge/Desktop Plane` 负责承接经授权的本地桌面动作和本地推理。
 - `Data Plane` 对所有行为提供事实源、审计与证据保留。
@@ -50,11 +54,15 @@
 
 | 组件 | 主要职责 | 依赖 |
 | --- | --- | --- |
+| Conversation Orchestrator | 接收主会话输入，理解意图，补足上下文，产出 `ToolInvocationPlan` | Tool Registry、Unified Context Engine、Policy Service |
+| Tool Registry | 管理 `ToolDefinition`、工具分类、风险等级、确认方式和输入输出 schema | Policy Service、Skill Registry、Domain Services |
+| Tool Invocation Service | 统一执行 `ToolInvocation`，完成 context binding、policy check、capability check、gate 控制和结果物化 | Tool Registry、Durable Workflow Runtime、Approval Control |
+| Confirmation / Approval Gate | 承接高风险工具动作的用户确认、审批等待和策略放行 | Tool Invocation Service、Policy Service、Approval Control |
 | Central Orchestrator Agent | 接收任务、规划阶段、路由中心侧或边缘侧 Skill、调度 Worker、提交候选结论 | Skill Registry、Durable Workflow Runtime、Agent Graph Runtime、Approval Control |
 | Edge Desktop Agent | 在桌面端执行本地上下文感知、本地 Skill 编排、本地证据增强和本地候选判断生成 | Local Capability Gateway、Sync Pipeline、Policy Service |
 | Durable Workflow Runtime | 承接长生命周期任务、审批等待、超时、重试、恢复与跨端同步编排 | API/Orchestrator、Queue、Approval Control |
-| Agent Graph Runtime | 在单个任务内部执行阶段规划、Skill 路由、并行 Worker 编排和人机节点控制 | Skill Registry、Worker Runtime、Merge/Score |
-| Skill Registry | 管理 `SkillDefinition`、标记 `scope=central|edge|either`、声明风险等级和确认要求 | Policy Service、Worker Runtime、Context Assembler |
+| Agent Graph Runtime | 在单个任务内部执行阶段规划、工具内部的 Skill 路由、并行 Worker 编排和人机节点控制 | Skill Registry、Worker Runtime、Merge/Score |
+| Skill Registry | 管理 `SkillDefinition`、标记 `scope=central|edge|either`，作为工具背后的能力目录 | Policy Service、Worker Runtime、Context Assembler |
 | Worker Runtime | 调度 Context/Impact/Scenario/Failure 等 Worker，收集 partial result 并提交 Merge/Score | Context Assembler、Domain Services、Execution Fabric |
 | Unified Context Engine | 统一感知 Raw Assets、上下文对象、Evidence，提供 `get_feature_context`、`build_task_context`、`build_quality_profile` | Source Connectors、Code/Knowledge Intelligence、Entity Resolution、Context Object Store |
 | Merge/Score + Conflict Resolver | 合并中心端与桌面端 `AgentDecision`、识别冲突、输出 `MergedResolution` 建议 | Agent Graph Runtime、Approval Control、Execution Evidence |
@@ -71,7 +79,9 @@
 | `Project` | 未接入 -> 接入中 -> 待审核 -> 已建档 | Provider 接入、材料完成、管理员确认 | 启动版本建模、提供 Governance |
 | `Version` | 草稿 -> 进行中 -> 待收口 -> 已收口 | Fork Official Baseline、提交 Review、审批通过 | 推动 Session、触发 Change Set |
 | `Session` | 未开始 -> 进行中 -> 暂停 -> 结束 | 用户创建、任务提交、执行完成 | 驱动 Task Context、Execution Runner |
-| `Task Context Workspace` | 构建中 -> 完成 -> 失效 | Agent/Skill 执行、证据补全 | 供 `Quality Profile`、自动化执行使用 |
+| `Conversation Session` | 新建 -> 活跃 -> 暂停 -> 完成 | 用户发言、Agent 响应、工具执行完成 | 形成 `ToolInvocation` 与对象引用主链路 |
+| `ToolInvocation` | pending -> running -> waiting_confirmation / waiting_approval -> completed / failed / cancelled | 会话输入、页面动作、外部 API 请求 | 驱动 workflow、写入对象、产生审计事件 |
+| `Task Context Workspace` | 构建中 -> 完成 -> 失效 | Agent/Tool 执行、证据补全 | 供 `Quality Profile`、自动化执行使用 |
 | `Quality Assurance Profile` | Draft -> Reviewed -> Approved | Verification/Scenario/Case 完成、人工确认 | 触发 automation.run 与 release.assess |
 | `AgentDecision` | provisional -> merged -> approved / rejected | Center/Edge 推理完成、Conflict Resolver、Approval Control | 推动正式任务结论、正式放行或知识晋级 |
 | `MergedResolution` | pending_merge -> ready_for_approval -> approved / rejected | Merge/Score 完成、Approval Control 决策 | 写入正式任务状态、Release Advice、Knowledge Resolution |
@@ -79,13 +89,14 @@
 | `Run` | 待执行 -> 执行中 -> 成功/失败/重试/pending_merge | Automation Service 或 Desktop Trigger 触发 | 归因、Approval、Release Advice |
 | `Device` | 未注册 -> 已注册 -> 已信任 -> 已降级/已吊销 | Desktop Client 注册、设备校验、管理员策略更新 | 触发本地能力、约束同步范围、决定是否允许离线缓存补传 |
 | `Local Session` | 待同步 -> 本地进行中 -> 已补传 -> 已关闭 | 桌面动作、本地缓存生成、网络恢复 | 进入 Sync Pipeline、回传 evidence/run、更新中心端状态 |
-| `Task` | draft -> analyzing -> pending_merge -> ready_for_review -> executing -> ready_for_release -> completed | Skill invoke、AgentDecision 提交、Run 完成、Merge/Approval 完成 | 影响任务 UI、审批流和知识晋级 |
+| `Task` | draft -> analyzing -> pending_merge -> ready_for_review -> executing -> ready_for_release -> completed | Tool invoke、AgentDecision 提交、Run 完成、Merge/Approval 完成 | 影响任务 UI、审批流和知识晋级 |
 
 | 事件流 | 描述 |
 | --- | --- |
+| 工具调用事件 | Conversation/UI/API 请求 -> `ToolInvocation` 创建 -> Policy/Gate -> Domain Object/Workflow |
 | 项目接入事件 | Provider/Material ingestion -> Raw Assets indexed -> Historical System Baseline snapshot |
 | 版本 fork 事件 | `Official Baseline` 被 `Version Working Baseline` fork，`Change Set` 生成并入队 Agent |
-| 会话入队事件 | 用户选版本、创建 Session，向 Agent 提供材料 -> `Task Context` 触发 Skill 运行 |
+| 会话入队事件 | 用户选版本、创建 Session，向 Agent 提供材料 -> Agent 解析为 `ToolInvocationPlan` -> `Task Context` 触发工具执行 |
 | 执行证据事件 | Runner 完成 `Run` 后推送 Logs/Screenshots -> Failure/Healing/Event Store append |
 | 桌面执行事件 | Desktop Client 在授权后执行本地动作 -> Edge Desktop Agent 生成 evidence/run -> Sync Pipeline 补传到中心端 |
 | 冲突合并事件 | Center/Edge 产生不同 `AgentDecision` -> Task/Run/Knowledge 进入 `pending_merge` -> Merge/Score 生成 `MergedResolution` |
@@ -94,27 +105,33 @@
 ## 7 核心数据流
 1. 项目接入：管理员导入原料（Git/文档/US/设计/UX/OpenAPI/历史验证资产），系统完成索引、结构候选抽取、特性关系关联，输出 Historical System Baseline；管理员审核后形成 Official Baseline v1。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L528)
 2. 版本创建：管理员/授权角色导入版本 US/文档/UX/OpenAPI/提交范围，系统从 Official Baseline fork 出 Version Working Baseline，建立 Change Set，并做初步风险识别。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L547)
-3. 会话与协作：授权用户在 Web 或 Desktop Client 中开 Session，上传材料；Web 侧侧重协作与网页端工具，Desktop 侧侧重本地权限动作。系统用 Feature Graph/Change Graph 提示相关会话、识别重复和共享风险，并允许合并验证任务。Session-only 知识默认不进基线，可申请晋升为 Candidate。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L558)
+3. 会话与协作：授权用户在 Web 或 Desktop Client 中开 Session，上传材料；Web 侧侧重协作与网页端工具，Desktop 侧侧重本地权限动作。系统先把用户输入解析成 `ToolInvocationPlan`，再由工具调用推进 Task、Run 和审批链。系统用 Feature Graph/Change Graph 提示相关会话、识别重复和共享风险，并允许合并验证任务。Session-only 知识默认不进基线，可申请晋升为 Candidate。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L558)
 4. Task Context 构成：`历史系统画像 + 当前任务输入 + Web/桌面实时证据 + 设备状态`。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L170)
 5. Quality Assurance Profile 构成：`当前任务上下文 + 质量策略规则 + 历史验证资产 + 风险模型 + 审核反馈 + 设备/权限约束`，推动影响分析、验证计划、场景、用例、自动化建议。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L177)
 6. 执行与归因：Web 端通过 Playwright/MCP 执行网页操作，Desktop Client 通过 Local Capability Gateway 执行本地动作；两者都生成统一 `Run(execution_channel=web_runner|desktop_local)` 和 evidence，Failure Analysis 识别失败类型，Healing 生成 patch，Release Advice 输出上线准备度建议。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L444)
 7. 冲突与合并：中心端与桌面端可独立推理并提交 `AgentDecision`，但都只能先写入 `provisional` 结果；若结论冲突，则任务、放行或知识对象进入 `pending_merge`，由 `Merge/Score + Approval Control` 生成正式 `MergedResolution`。
 8. 治理闭环：高价值 `Candidate Knowledge` 先经审批进入 `Version Shared Knowledge`，版本完成后再将经过确认的版本知识回写 `Official Baseline`；桌面执行端产生的本地证据按策略回传，不默认进入组织级知识库。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L615)
 
-## 8 Agent / Skill / Worker 协作
+## 8 Agent / Tool / Skill / Worker 协作
 - 本节描述当前推荐的系统实现约束，不等同于最终产品能力承诺。若与最终特性说明书冲突，以最终特性说明书为准。
-- 架构模式：`Central Orchestrator Agent + 完整 Edge Desktop Agent + Skills + Parallel Workers + Deterministic Core`。中心端负责全局任务规划、跨系统上下文和正式治理流编排；桌面端负责本地上下文感知、本地 Skill 编排和本地证据增强。
+- 架构模式：`Central Orchestrator Agent + 完整 Edge Desktop Agent + Tools + Skills + Parallel Workers + Deterministic Core`。中心端负责全局任务规划、跨系统上下文和正式治理流编排；桌面端负责本地上下文感知、本地工具执行、本地 Skill 编排和本地证据增强。
 - 运行时采用“`外层耐久工作流 + 内层图编排`”：
   - `Durable Workflow Runtime` 负责长任务、审批等待、超时、重试、恢复和跨端同步。
-  - `Agent Graph Runtime` 负责阶段推进、Skill 路由、局部并行和人机节点。
-- Skill 是一等对象，统一由 `Skill Registry` 管理，并标记：
+  - `Agent Graph Runtime` 负责阶段推进、工具内部的 Skill 路由、局部并行和人机节点。
+- Tool 是产品级动作抽象，统一由 `Tool Registry` 管理，并标记：
+  - `tool_kind=project|version|us|analysis|execution|governance|device|sync|query`
+  - `scope=central|edge|either`
+  - `risk_level=low|medium|high|critical`
+  - `confirmation_mode=none|user_confirm|approval_required|policy_only`
+- Skill 是工具背后的内部能力组件，统一由 `Skill Registry` 管理，并标记：
   - `scope=central`：如 `baseline.build`、`impact.analyze.global`、`verification.plan`、`release.assess`。
   - `scope=edge`：如 `context.local.inspect`、`fs.local`、`browser.local`、`desktop.app`、`artifact.collect`。
   - `scope=either`：如 `failure.analyze`、`healing.propose`、`context.enrich`、`evidence.summarize`。
+- 所有业务动作默认都要先经过工具层。页面按钮、批量操作、桌面动作和主会话输入都应先变成 `ToolInvocation`，再由工具内部去编排 Skill 和 Worker。
 - Skill 下沉范围默认限定为“本地上下文 + 本地执行”，桌面端不承担组织级审批、正式知识晋级和正式基线回写。
 - Workers 仍按 Context（frontend/backend/document/API/historical assets）、Impact（diff/requirement/dependency）、Scenario（mainflow/exception/permission/boundary/integration）、Failure（locator/timing/assertion/env）分池，并行产出局部结果交给 `Merge/Score` 收敛。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L498)
 - 中心端与桌面端都可独立推理，但都只能提交 `AgentDecision(status=provisional)`；冲突时统一进入 `pending_merge`，由 `Merge/Score + Approval Control` 产出正式 `MergedResolution`。
-- 协作链路：`Workflow` 定阶段 -> `Agent Graph Runtime` 路由 Skill -> `Worker Runtime` 并行任务 -> `Merge/Score` 合并候选结果 -> `Approval Control` 决定是否晋升知识、放行或进入下一阶段，保证执行层确定性与结果可审计。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L474)
+- 协作链路：`Conversation` 解析意图 -> `ToolInvocation` 创建 -> `Workflow` 定阶段 -> `Agent Graph Runtime` 路由 Skill -> `Worker Runtime` 并行任务 -> `Merge/Score` 合并候选结果 -> `Approval Control` 决定是否晋升知识、放行或进入下一阶段，保证执行层确定性与结果可审计。[计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md#L474)
 
 ## 9 部署架构与运行单元
 ### 9.1 计划书明确的部署线索
@@ -134,13 +151,14 @@
 ## 11 可靠性、审计、权限与可观测性
 
 - **权限管控**：所有 Project/Version/Session/Knowledge/Approval 操作须通过 RBAC，且必须在 `Settings` 模块明确配置。
-- **审计事件**：Control Plane、Intelligence Plane、Execution Plane 的关键事件（任务创建、Skill 调度、执行、上下文晋级、审批）必须写入不可修改的 Audit Store。
+- **审计事件**：Control Plane、Tool Contract Layer、Intelligence Plane、Execution Plane 的关键事件（会话发言、工具调用、能力调度、执行、上下文晋级、审批）必须写入不可修改的 Audit Store。
 - **证据保留**：所有 `Run` 的日志、截图、trace、Failure 归因、patch 建议、审批决定永远 append-only，并关联 `Task Context`/`Version`。
-- **Skill 可见性与执行权**：Skill 可以在 Web 与 Desktop 中显式展示，但是否可执行必须同时满足 `RBAC + policy + capability grant`。
-- **交互通道**：Portal 到 `api/orchestrator` 的写操作采用 REST；任务、执行、审批的长时状态回传采用 SSE；Runner/Worker 与 Orchestrator 之间走队列和内部事件，不直接暴露给前端。Desktop Client 与中心端通过同步管道回传 `Run`、`evidence` 和设备状态。
+- **Tool 可调用性与执行权**：所有业务动作都应可被主 Agent 通过工具发起，但是否能够执行必须同时满足 `RBAC + policy + capability grant`。高风险工具默认进入确认或审批闸口。
+- **交互通道**：Portal 到 `api/orchestrator` 的写操作通过 `Conversation` 和 `ToolInvocation` 的 REST 入口完成；任务、执行、审批的长时状态回传采用 SSE；Runner/Worker 与 Orchestrator 之间走队列和内部事件，不直接暴露给前端。Desktop Client 与中心端通过同步管道回传 `Run`、`evidence` 和设备状态。
 - **执行隔离**：Runner 运行在隔离环境，依赖 `Environment Manager` 的短期凭证；Desktop Client 只能在本地授权能力范围内执行本地动作，Agent 不能直接绕过 `Local Capability Gateway` 操控本地资源。
 - **远程桌面动作**：中心端可下发桌面动作，但必须经用户确认或命中预授权策略；任何未经授权的本地动作不得执行。
 - **正式事实来源**：中心端与桌面端都可推理，但都只能提交 `provisional` 候选结果；正式事实必须由 `Merge/Score + Approval Control` 写入。
+- **命令入口统一**：主会话、页面动作、外部 API 和 Desktop 动作的写操作都应统一形成 `ToolInvocation`；对象查询接口作为 read model 存在，但不再是主业务动作入口。
 - **本地数据边界**：本地私有数据默认不上传，桌面端生成的文件、文件夹、截图、应用状态和临时缓存只有在显式策略和用户授权下才允许同步到中心端；管理员可以统一监控任务、设备和会话状态，但不会自动获得本地全量数据访问权。
 - **可观测性**：为 Control/Intelligence/Execution 平面提供统一链路追踪、运行指标、队列延迟和失败率；任何 Worker 重启必须能恢复任务状态。
 - **数据恢复**：PostgreSQL 级数据采用定期备份，Execution Evidence 通过 MinIO 版本控制；在 worker 异常时，Workflow Runtime 必须可重入。
