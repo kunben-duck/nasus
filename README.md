@@ -16,10 +16,10 @@ Nasus Assurance Studio 是针对 AI 助手参与开发后留下的质量风险�
 - **不是代码生成器**：所有输出都服务于上线准备度建议和质量判断，执行层由 Playwright 资产在 runner 端完成，平台只提供调度与证据汇总。
 
 ## 用户旅程
-1. 管理员在 `Settings` 中初始化项目，导入 Git、文档、历史验证资产，系统完成原料索引与初版 `Historical System Baseline`。
+1. 管理员在 `Build` 中初始化项目，导入 Git、文档、历史验证资产，系统完成原料索引与初版 `Historical System Baseline`。
 2. 创建版本时从 `Official Baseline` fork 出 `Version Working Baseline`，并导入本版本 US、设计与 OpenAPI 变更，建立版本级 Change Set 与初步风险视图。
-3. 授权用户在 `Home/Tasks` 启动会话，上传材料并在 `Tasks` 中查看 `Task Context Workspace`，系统用历史画像、实时证据与策略规则产生 `Quality Assurance Profile`。
-4. 普通用户在 `Tasks` 多轮审核溯源材料，通过主会话或页面动作触发分析、场景生成、执行、总结等工具；所有写操作都应可回溯到同一套 `ToolInvocation`，而高风险动作仍受 `RBAC + policy + capability grant` 约束，过程中 `Knowledge` 提供证据与 Feature Graph/Change Graph 支撑协作。
+3. 授权用户在 `Version Space / Personal Workspace` 启动会话，上传材料并在 `Personal Workspace` 中查看 `Task Context Workspace`，系统用历史画像、实时证据与策略规则产生 `Quality Assurance Profile`。
+4. 普通用户在 `Personal Workspace` 多轮审核溯源材料，通过主会话或页面动作触发分析、场景生成、执行、总结等工具；所有写操作都应可回溯到同一套 `ToolInvocation`，而高风险动作仍受 `RBAC + policy + capability grant` 约束，过程中 `Knowledge` 提供证据与 Feature Graph/Change Graph 支撑协作。
 5. `Runs` 页面展示 automation.generate 产出的 Playwright 资产、执行结果、失败分析与 patch 建议；Desktop 端也可在本地完成受控执行，两端都可独立推理和执行，但都只能先提交候选结果。
 6. Release Advice/Approval Control 输出上线准备度建议；当中心端与桌面端结论冲突时，任务进入 `pending_merge`，由 `Merge/Score + Approval Control` 形成正式结论。`Candidate Knowledge` 默认先晋级到 `Version Shared Knowledge`，版本收口并审批通过后再回写 `Official Baseline`，形成质量沉淀。
 
@@ -32,7 +32,7 @@ Nasus Assurance Studio 是针对 AI 助手参与开发后留下的质量风险�
 6. **Infrastructure Providers**：PostgreSQL、MinIO、OpenGrok、Tree-sitter、Playwright、Queue/Scheduler 等底层组件。
 
 ## 简版部署架构
-- `portal`：React/TypeScript 前端应用，负责 Home/Tasks/Knowledge/Runs/Settings 五个核心工作区。
+- `portal`：React/TypeScript 前端应用，负责 `Welcome / Build / Dashboard / Documentation` 顶层产品区和项目内 `Project Space` 工作区。
 - `api/orchestrator`：Python + FastAPI + durable workflow（默认 Temporal）+ LangGraph，承载中心侧 Conversation Orchestrator、Tool Registry、Tool Invocation Runtime、Skill Registry、Worker Scheduler、Merge/Score、Approval Control 与领域服务。
 - `worker-runtime`：并行运行 context/impact/scenario/failure 等 worker，异步消费任务队列并产出质量方案与验证资产。
 - `runner`：Node.js/TypeScript + Playwright Test 的隔离执行层，执行 automation.generate 并回写执行证据。
@@ -46,6 +46,7 @@ Nasus Assurance Studio 是针对 AI 助手参与开发后留下的质量风险�
 - [系统架构与部署设计](/Users/uben/project/project/Nasus/docs/system-architecture.md)：详细说明整体架构、数据流、协作模型、部署单元和演进路径。
 - [前后端方案设计](/Users/uben/project/project/Nasus/docs/frontend-backend-design.md)：详细说明技术栈选型、页面职责、后端分层、执行层和阶段实施建议。
 - [前端应用架构](/Users/uben/project/project/Nasus/docs/frontend-application-architecture.md)：定义 Portal / Desktop 的目录结构、路由、状态管理分层、构建部署与测试策略。
+- [前端页面蓝图](/Users/uben/project/project/Nasus/docs/frontend-page-blueprints.md)：定义 16 个视图的页面层级树、右栏面板映射、Agent Goal UI 和组件目录。
 - [后端总设计](/Users/uben/project/project/Nasus/docs/backend-system-design.md)：定义 agent-first 后端总体结构、模块边界、控制流和后端实现主线。
 - [认证与授权设计](/Users/uben/project/project/Nasus/docs/auth-and-access-design.md)：定义 OIDC/OAuth、Token、API 鉴权中间件、RBAC 和设备授权。
 - [LLM Provider 与推理运行时设计](/Users/uben/project/project/Nasus/docs/llm-provider-and-runtime-design.md)：定义 Provider 抽象、Prompt 管理、上下文裁剪、token 预算和降级策略。

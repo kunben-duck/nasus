@@ -8,6 +8,7 @@
 
 - 视觉与交互基线以 [ux/index.html](/Users/uben/project/project/Nasus/ux/index.html) 和 [docs/frontend-visual-style.md](/Users/uben/project/project/Nasus/docs/frontend-visual-style.md) 为准。
 - 业务对象和接口以 [docs/frontend-backend-design.md](/Users/uben/project/project/Nasus/docs/frontend-backend-design.md) 为准。
+- 页面层级树、页面级模块蓝图、右栏 tab 映射和 Agent Goal UI 规格以 [docs/frontend-page-blueprints.md](/Users/uben/project/project/Nasus/docs/frontend-page-blueprints.md) 为准。
 - 本文定义前端工程实现方式。
 
 ## 2. 应用边界
@@ -61,13 +62,23 @@ packages/
 Portal 路由建议：
 
 - `/`
-- `/home`
+- `/welcome`
+- `/build`
+- `/dashboard`
+- `/documentation`
+- `/projects/:projectId`
+- `/projects/:projectId/versions`
+- `/projects/:projectId/versions/new`
+- `/projects/:projectId/workspaces/:usId`
+- `/projects/:projectId/knowledge`
+- `/projects/:projectId/knowledge/:objectId`
+- `/projects/:projectId/runs`
+- `/projects/:projectId/runs/:runId`
+- `/projects/:projectId/governance`
+- `/projects/:projectId/approvals/:approvalId`
+- `/projects/:projectId/release-readiness`
+- `/projects/:projectId/desktop`
 - `/conversations`
-- `/tasks/:taskId`
-- `/knowledge`
-- `/runs/:runId?`
-- `/settings`
-- `/approvals/:approvalId?`
 - `/agent-goals/:goalId?`
 
 Desktop 路由建议：
@@ -78,6 +89,13 @@ Desktop 路由建议：
 - `/device`
 - `/sync`
 - `/settings`
+
+规则：
+
+- `Welcome / Build / Dashboard / Documentation` 是顶层产品区。
+- 点击项目卡后进入 `Project Space`，左侧导航整体切换为项目空间导航。
+- `Version Create`、`Knowledge Detail`、`Run Detail`、`Approval Detail`、`Release Readiness` 是详情态路由，但必须保留父页面高亮与稳定返回。
+- 当前 `ux/` 原型是单页状态机，正式实现要保持一一映射，不得擅自合并掉 `Build`、`Dashboard` 或项目内详情态页面。
 
 ## 5. 状态管理分层
 
@@ -152,13 +170,25 @@ Desktop 路由建议：
 
 Portal / Desktop 至少按以下 feature 组织：
 
+- `welcome`
+- `build`
+- `dashboard`
+- `documentation`
+- `project-overview`
+- `version-space`
+- `version-create`
+- `personal-workspace`
+- `knowledge`
+- `knowledge-detail`
+- `runs`
+- `run-detail`
+- `governance`
+- `approval-detail`
+- `release-readiness`
 - `conversation`
 - `conversation-management`
 - `agent-goals`
 - `tools`
-- `tasks`
-- `knowledge`
-- `runs`
 - `approvals`
 - `settings`
 - `connectors`
@@ -179,7 +209,8 @@ Portal / Desktop 至少按以下 feature 组织：
 共享基础组件：
 
 - `WorkspaceShell`
-- `SidebarNav`
+- `GlobalNav`
+- `WorkspaceNav`
 - `MainHeader`
 - `ChatTimeline`
 - `StructuredMessageCard`
@@ -189,17 +220,53 @@ Portal / Desktop 至少按以下 feature 组织：
 
 业务组件：
 
+- `ProjectCard`
+- `VersionCard`
+- `USBoard`
+- `USCard`
+- `RunCard`
+- `ApprovalCard`
+- `ReleaseReadinessPanel`
+- `FailureTimelineCard`
+- `EvidenceCard`
+- `DiffViewer`
+- `ProgressRing`
 - `ToolPalette`
 - `ToolInvocationTimeline`
 - `ConflictPanel`
 - `EvidenceTimeline`
 - `GovernancePanel`
 - `DeviceStatusPanel`
+- `AgentGoalCard`
+- `AgentStepRail`
+- `ThinkingCard`
+- `SuggestionChip`
+- `GhostChip`
 
 规则：
 
 - 基础组件不直接依赖具体业务对象
 - 业务组件通过 `packages/contracts` 消费统一类型
+
+### 7.1 Agent Goal 组件要求
+
+- `AgentGoalCard` 必须能出现在 `Personal Workspace` 的主画布中，也能作为 `ChatTimeline` 中的结构化消息卡渲染。
+- `AgentStepRail` 必须支持：
+  - 当前 step 高亮
+  - `completed|running|waiting|failed|cancelled` 五态
+  - 流式 step 更新
+- `ThinkingCard` 和 `ObservationCard` 必须支持折叠，不允许把长 reasoning 直接塞进普通消息气泡。
+- `InterruptControls` 必须统一封装 `pause/resume/cancel/feedback` 四类操作，并与 `agent_goal_id` 绑定。
+
+### 7.2 右栏面板配置
+
+- `RightPanelTabs` 不是单一固定配置，而是页面级注册项。
+- 每个页面必须在 route module 中声明：
+  - `panelTitle`
+  - `tabs`
+  - `defaultTab`
+  - `tabContentResolver`
+- canonical 映射以 [docs/frontend-page-blueprints.md](/Users/uben/project/project/Nasus/docs/frontend-page-blueprints.md) 的 `右栏面板映射表` 为准。
 
 ## 8. API Client 与 Contracts
 
@@ -227,7 +294,7 @@ Portal / Desktop 至少按以下 feature 组织：
 - `action error`
   - 按钮/工具调用附近的内联错误
 - `panel error`
-  - `Tasks` / `Runs` / `Knowledge` 局部面板错误
+  - `Personal Workspace` / `Runs` / `Knowledge` / `Governance` 局部面板错误
 - `page banner`
   - 当前页面仍可继续操作，但核心信息不完整
 - `blocking modal`

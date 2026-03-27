@@ -8,6 +8,7 @@
 - 若本文与 [docs/final-feature-spec.md](/Users/uben/project/project/Nasus/docs/final-feature-spec.md) 存在冲突，以最终特性说明书定义的产品能力和默认规则为准。
 - 尤其在 Agent 能力边界上，本文保留当前工程视角下的实现建议；最终产品能力以“Agent 可原生触发检索与执行，但必须经过策略、审计与回放约束”为准。
 - 更细的前端目录结构、路由、状态管理分层、构建部署与测试策略以 [docs/frontend-application-architecture.md](/Users/uben/project/project/Nasus/docs/frontend-application-architecture.md) 为准。
+- 页面层级树、页面级模块蓝图、右栏面板映射和 Agent Goal UI 组件规范以 [docs/frontend-page-blueprints.md](/Users/uben/project/project/Nasus/docs/frontend-page-blueprints.md) 为准。
 
 ## 1 目标与范围
 - 目标：把《实施计划书》中定义的“质量保障与上线防护工作台”做实成一套前后台协作明确、角色职责清晰、执行可落地的实施方案。
@@ -26,14 +27,22 @@
 前端视觉与交互实现以 [ux/index.html](/Users/uben/project/project/Nasus/ux/index.html)、[ux/styles.css](/Users/uben/project/project/Nasus/ux/styles.css)、[ux/app.js](/Users/uben/project/project/Nasus/ux/app.js) 为直接实现基线，[docs/frontend-visual-style.md](/Users/uben/project/project/Nasus/docs/frontend-visual-style.md) 作为高层视觉说明补充。后续正式前端必须保留 `ux/` 原型确立的三列壳层、深色 token、对话优先和结构化右侧面板语言，并将其工程化为 React 组件、主题变量和状态模型。与此同时，前后端交互必须采用 `agent-first + tool-first` 模式：主会话是第一入口，页面按钮、快捷 chip、右侧卡片动作和 Desktop 动作都只是同一套 `ToolInvocation` 的不同触发方式。
 
 ## 3 前端信息架构与页面职责
-- **导航**：五个一级导航 Home/Tasks/Knowledge/Runs/Settings，Desktop Client 复用相同的信息架构但增加本地能力入口、设备状态入口和离线队列入口（§13.2）。
-- **Home**：任务入口与版本选择，复用 `Experience Layer` 的入口能力，帮助用户快速进入当前版本与会话。它不是传统 dashboard，而是沿用 `ux/` 原型的 conversation-first 空态工作台：Hero、能力卡片、建议动作和底部输入框共同构成首次操作入口。
-- **Tasks**：核心工作区，承接 `Task Context Workspace` + `Quality Assurance Profile` 的可视化。界面要支撑分析、场景生成、执行、总结等工具的输出展示、`Tool Palette`、`Tool Invocation Timeline`、`Conflict Panel`、审批状态、重生成按钮与上下文回溯，并保留底部主操作输入框作为“继续分析/补证/触发下一步”的统一入口。任务结果必须允许以“消息流中的结构化卡片”出现，而不是只落在独立表单区。
-  - 需要新增 `Agent Goal` 视图元素：目标状态 badge、step 进度条、`interrupt/resume` 操作、thinking/observing 卡片。
-- **Knowledge**：展示 `Historical System Baseline`、Feature Graph、Change Graph、相关证据，防腐层的数据都要在这里可追溯；右侧控制面板展示相关文档/组件/依赖，并复用 `ux/` 原型中的 tabbed inspector 模式。
-- **Runs**：展示 `automation.generate` 生成的 Playwright 资产、执行结果、Failure Analysis 归因、Healing/patch 审核记录，必要时提供回放入口，并支持按 `execution_channel=web_runner|desktop_local` 过滤。运行详情仍放在同一工作台壳层中，通过右侧 tab 切换 `Assets / System / Runs` 上下文。
-- **Settings**：管理员面板，支持项目初始化、Provider 接入、版本权限、主题与策略，直接映射治理对象（Project/Version/Baseline）与 Approval Control。
-  - 还需承接 Connector 配置、摄入 run 进度、MCP Server 配置与健康检查。
+- **导航模型**：当前 canonical 信息架构不再使用 `Home/Tasks/Knowledge/Runs/Settings` 这一旧命名，而是按原型收敛为三层：
+  - `L0`：`Welcome`
+  - `L1`：`Build`、`Dashboard`、`Documentation`
+  - `L2`：进入具体项目后的 `Project Space`
+- **Build**：项目创建与初始化入口，主屏突出 `Create Project` 大卡、导入入口和对话式引导。它不承担项目组合浏览职责。
+- **Dashboard**：全量项目仪表盘，显示项目卡片、全局进展、风险、待审批项和失败趋势。点击项目卡后下钻到独立 `Project Space`，左侧导航整体替换为项目空间菜单。
+- **Documentation**：一级产品区，承接平台说明、概念、方法论、模板和帮助，不是低频 footer 链接。
+- **Project Space**：项目内工作区集合，包含 `Project Overview`、`Version Space`、`Version Create`、`Personal Workspace`、`Knowledge Gallery`、`Knowledge Detail`、`Runs`、`Run Detail`、`Governance`、`Approval Detail`、`Release Readiness`、`Desktop`。这些页面的布局、组件和右栏映射详见 [docs/frontend-page-blueprints.md](/Users/uben/project/project/Nasus/docs/frontend-page-blueprints.md)。
+- **Personal Workspace**：最核心的 `agent-first` 质量工作台，承接 `Task Context Workspace`、`Quality Assurance Profile`、`QualityAssetPack` 和 `Agent Goal`。界面必须同时展示对话流、结构化资产、工具进度、冲突状态和 Agent Loop。
+- **Agent Goal UI**：不再是一行补充要求，而是正式页面组件。前端必须实现：
+  - 目标状态 badge
+  - step rail / 进度条
+  - `thinking/observing/planning/waiting` 卡片
+  - `interrupt/resume/cancel/feedback` 操作
+  - `AgentGoal` 与消息流混排的卡片渲染
+- **Knowledge / Runs / Governance**：不只是三个一级壳层，而是包含列表页和详情页的工作区族群。各页面的右栏 tab、详情态和返回规则必须与原型一致，不能再统一假设所有页面都使用 `Assets / System / Runs`。
 - **Desktop Client**：桌面工作台与 Web 共用任务模型，但把本地 Tool 面板、设备状态、本地权限申请、本地产物、远程任务确认和离线队列作为一等界面对象；它不替代 Web 的组织级协作面，而是承接本地执行与本地感知。
 - **Tool 可见性**：Web 与 Desktop 默认都展示统一工具列表；Skill 可作为高级视图中的内部能力标签展示，但产品级动作必须以 `ToolDefinition` 为准。是否可执行由 `RBAC + policy + capability grant` 联合决定；高风险工具在 UI 上需要明确展示确认要求与限制条件。
 - **状态同步**：Web 与 Desktop 都通过 TanStack Query 或等价状态层同步后端 `Conversation / ToolInvocation / Task / Run / Device` 状态，前者偏组织级协作状态，后者偏本地执行状态。两端都要保留 `conversationId` 和 `taskContextId` 的主键语义，但 Desktop 允许额外缓存本地队列和离线产物。
@@ -41,9 +50,9 @@
 ### 3.1 门户壳层与路由布局
 
 - Web Portal 采用统一三列壳层：左侧导航承载全局入口，中间主画布承载页面内容，右侧 inspector/setting rail 承载策略、证据过滤、环境和审批动作。以 `ux/` 原型为基线，桌面端和 Web 端都应优先保留 `220px` 左侧栏、`56px` 顶栏、`300px` 右侧上下文面板这一组主尺寸，除非明确进入窄屏断点。
-- `Home`、`Tasks`、`Knowledge`、`Runs` 使用同一 `WorkspaceShell`，只切换中心画布组件与右侧面板配置；`Settings` 可继承同一壳层但允许更表单化布局。
+- `Welcome`、`Build`、`Dashboard`、`Documentation` 共用顶层壳层；进入 `Project Space` 后左侧导航整体替换为项目内菜单，形成明确的下钻感，而不是在外层导航下方内联展开二级菜单。
 - 主工作区内部不再额外挂全局 header，而是由每个页面提供局部标题栏和次级动作区，这一点直接参考 AI Studio 当前的内容型头部结构。
-- 底部输入框采用共享组件 `ActionComposer`：Home 中用于“开始一个任务”，Tasks 中用于“追加上下文并继续分析”，Runs 中用于“请求归因/重跑/提交放行”。该组件必须保留 `ux/` 原型中的渐变 focus 边框、多行输入、自适应高度、左侧工具按钮、右侧发送按钮和底部状态提示。
+- 底部输入框采用共享组件 `ActionComposer`：`Build` 中用于“创建项目/接入资产/初始化系统画像”，`Dashboard` 中用于“询问全局进展与风险”，`Personal Workspace` 中用于“追加上下文并继续分析”，`Runs` 中用于“请求归因/重跑/提交放行”。该组件必须保留 `ux/` 原型中的渐变 focus 边框、多行输入、自适应高度、左侧工具按钮、右侧发送按钮和底部状态提示。
 - Desktop Client 采用双层壳层：上层是 UI Shell，下层是 `Local Capability Host`。UI Shell 只负责桌面任务视图、权限弹窗、离线队列和本地状态展示；`Local Capability Host` 负责文件系统、桌面应用、浏览器、证书、剪贴板、下载目录与本地自动化执行。
 - 响应式规则：`>= 1440px` 维持 Web 三列与 Desktop 三段式主视图；`768px - 1439px` 把右侧 rail 收为抽屉；`< 768px` 将左侧导航和右侧策略面板都改为覆盖层。Desktop Client 在窄窗口下优先保留本地任务队列和执行状态，而不是强行压缩全部控制面。
 
@@ -52,28 +61,28 @@
 - `ux/` 目录中的原型是后续前端开发的样式和布局基线，不是一次性演示稿。正式实现必须先抽取其 CSS 变量、布局尺度、组件模式和状态行为，再映射到 React 组件与主题系统。
 - 视觉 token 必须至少覆盖以下语义层：`bg-base`、`bg-surface`、`bg-elevated`、`bg-hover`、`border-subtle`、`border-default`、`text-primary`、`text-secondary`、`text-tertiary`、`accent-blue`、`accent-purple`、`accent-green`、`accent-amber`、`accent-red` 以及输入框渐变边框使用的 `gradient-start / mid / end`。这些 token 应沉淀到设计系统主题，而不是散落为 Tailwind arbitrary values。
 - 风格基调固定为 dark-first、低对比 chrome、轻量发光 accent、细边框和中等圆角。通用组件基准值沿用原型：主卡片 `10px - 12px` 圆角、常规卡片 `12px - 14px` 内边距、图标按钮 `32px`、消息头像/Agent 图标 `28px`、资产图标 `22px`。
-- 页面信息组织固定为 conversation-first：中间画布优先承载消息流、结构化结果卡、建议动作 chip 和 typing/progress 状态；右侧面板作为“上下文侧车”，通过 `Assets / System / Runs` 这类 tab 切换结构化对象，而不是把主体工作流拆成传统多表单页面。
+- 页面信息组织固定为 conversation-first：中间画布优先承载消息流、结构化结果卡、建议动作 chip 和 typing/progress 状态；右侧面板作为“上下文侧车”，但 tab 配置必须按页面定义。完整映射表以 [docs/frontend-page-blueprints.md](/Users/uben/project/project/Nasus/docs/frontend-page-blueprints.md) 为准，不允许所有页面强行复用同一组 tab。
 - 消息流必须支持混合内容：自然语言段落、内嵌 impact/scenario 卡片、状态 badge、进度条、建议动作 chip、代码或术语高亮、后续动作按钮。Agent 输出不能退化为纯文本列表。
 - 交互细节必须保留：消息进入动画、typing dots、输入区 focus 渐变、pill chip hover/active、右侧 tab active 态、进度条渐进更新、自定义 scrollbar 和轻量 tooltip。
 - 工程实现上禁止沿用原型中的 inline CSS 和直接 DOM 操作。正式前端必须将样式收敛为设计 token、共享 class 或组件封装；交互行为收敛为 React state/store，而不是在页面里散落 `querySelector` 与 `style.display` 逻辑。
-- 组件拆分至少包括：`WorkspaceShell`、`SidebarNav`、`MainHeader`、`ChatTimeline`、`UserMessage`、`AgentMessage`、`StructuredMessageCard`、`ImpactCard`、`ActionChips`、`ActionComposer`、`RightPanelTabs`、`AssetCard`、`SystemBaselineCard`、`GovernanceCard`、`StatusBadge`。这些组件需要在 Web 和 Desktop 之间最大化复用。
+- 组件拆分至少包括：`WorkspaceShell`、`GlobalNav`、`WorkspaceNav`、`PageHeader`、`ChatTimeline`、`UserMessage`、`AgentMessage`、`StructuredMessageCard`、`ActionComposer`、`RightPanelTabs`、`ProjectCard`、`VersionCard`、`USBoard`、`USCard`、`RunCard`、`ApprovalCard`、`ReleaseReadinessPanel`、`FailureTimelineCard`、`EvidenceCard`、`DiffViewer`、`ProgressRing`、`ToolPalette`、`ToolInvocationTimeline`、`ConflictPanel`、`AgentGoalCard`、`AgentStepRail`、`ThinkingCard`。这些组件需要在 Web 和 Desktop 之间最大化复用。
 
 ### 3.3 前后端模块边界
 
 | 前端职责 | 后端接口 | 数据契约 |
 | --- | --- | --- |
-| `Home` / `Tasks` 发起会话、触发工具、显示上下文和冲突状态 | `POST /v1/conversations/{id}/messages`、`GET /v1/conversations/{id}/events`、`GET /v1/tools/catalog`、`POST /v1/tool-invocations`、`GET /v1/tasks/{id}`、`GET /v1/tasks/{id}/conflicts`、`GET /v1/features/{featureId}/context` | `ConversationSession`、`ToolDefinition[]`、`ToolInvocation[]`、`TaskContext`、`QualityProfile`、`FeatureContext`、`AgentDecision[]` |
+| `Build` / `Dashboard` / `Personal Workspace` 发起会话、触发工具、显示上下文和冲突状态 | `POST /v1/conversations/{id}/messages`、`GET /v1/conversations/{id}/events`、`GET /v1/tools/catalog`、`POST /v1/tool-invocations`、`GET /v1/tasks/{id}`、`GET /v1/tasks/{id}/conflicts`、`GET /v1/features/{featureId}/context` | `ConversationSession`、`ToolDefinition[]`、`ToolInvocation[]`、`TaskContext`、`QualityProfile`、`FeatureContext`、`AgentDecision[]` |
 | `Knowledge` 展示对象图谱、证据，支持 Candidate 审批请求与合并结论查看 | `GET /v1/objects/{id}`、`POST /v1/approvals` | `ContextObject` 关系结构、`ApprovalRequest`、`MergedResolution` |
 | `Runs` 展示执行、回放、失败归因、patch 建议和通道过滤 | `POST /v1/runs`、`GET /v1/runs/{id}`、`POST /v1/failure` | `Run`、`ExecutionEvidence`、`FailureReport` |
-| `Settings` 管理项目、Provider、策略和权限 | `GET/POST /v1/projects`、`GET /v1/policies`、`POST /v1/policies` | `ProjectConfig`、`PolicyDefinition` |
+| `Build` / `Project Overview` / `Documentation` 管理项目接入、Provider、策略和权限说明 | `GET/POST /v1/projects`、`GET /v1/policies`、`POST /v1/policies` | `ProjectConfig`、`PolicyDefinition` |
 | `Desktop Client` 发起本地权限申请、触发本地工具、同步本地执行状态、上传本地产物 | `GET /v1/tools/catalog`、`POST /v1/tool-invocations`、`POST /v1/devices/register`、`POST /v1/device-sessions`、`POST /v1/sync`、`POST /v1/runs`、`POST /v1/capabilities/negotiate` | `ToolDefinition[]`、`ToolInvocation[]`、`DeviceProfile`、`DeviceSession`、`SyncEvent`、`LocalRunArtifact`、`CapabilityGrant`、`AgentDecision` |
 
 ### 3.4 组件与状态
 
-- `Tasks` 中的状态控件：`草稿`、`分析中`、`待审阅`、`已收敛`，按钮依赖状态启用重生成/执行准备动作；所有写动作都必须能回溯到 `toolInvocationId`。
+- `Personal Workspace` 中的状态控件：`草稿`、`分析中`、`待审阅`、`已收敛`，按钮依赖状态启用重生成/执行准备动作；所有写动作都必须能回溯到 `toolInvocationId`。
 - `Knowledge` 的对象详情侧栏保持两个层级：`对象元数据` + `证据轨迹`；证据链由 Evidence Card 列表 + control panel 过滤。
 - `Runs` 提供执行时间线、环境快照标签、失败归因标签、patch 建议卡片，并支持按 `已完成/失败/待放行` 和 `execution_channel` 过滤。
-- `Settings` 以策略/权限/Provider 三个分区展示，常规表单与审批表结合，所有编辑操作走审批流程。
+- `Build` 和 `Project Overview` 承接项目初始化、Connector 和 Provider 配置；策略与审批说明则通过 `Governance`、`Documentation` 和独立配置面板承接，所有编辑操作走审批流程。
 - `Desktop Client` 的状态分为 `设备在线`、`等待授权`、`执行中`、`pending_merge`、`离线待补传`、`受限模式`，界面必须显式显示本地能力可用性、当前权限范围、同步滞后和远程任务确认状态。
 - `ChatTimeline` 需要显式支持 `user`、`agent`、`typing`、`structured-result` 四类消息节点，并保留阶段推进能力，例如“先输出场景卡，再输出生成脚本过程说明”。消息节点应由 `phase`、`messageType` 和 `relatedToolInvocationId` 驱动，而不是只靠 markdown 文本渲染。
 - 右侧上下文面板必须有独立状态片：`activeContextTab`、`scenarioProgress`、`scenarioStatusLabel`、`selectedAssetId`、`selectedRunId`。这些状态由 store 管理，并允许被 Agent 响应或运行事件流增量更新。
@@ -84,11 +93,22 @@
 
 | 页面 | 主要组件 | 前端数据源 | 关键交互 |
 | --- | --- | --- | --- |
-| `Home` | Hero 标题、能力卡片网格、项目切换器、版本卡片、最近会话列表、底部 `ActionComposer` | `Project` `Version` `SessionSummary` | 进入版本、恢复会话、创建任务 |
-| `Tasks` | 任务头部、状态条、任务上下文卡片、质量画像卡片、`Tool Palette`、`Tool Invocation Timeline`、`Conflict Panel`、审阅动作区、右侧控制面板、底部 `ActionComposer` | `ConversationSession` `ToolInvocation[]` `TaskContext` `QualityProfile` `ToolResult[]` `AgentDecision[]` | 发起分析、触发工具、局部重生成、确认收敛、处理冲突、跳转执行 |
-| `Knowledge` | 图谱视图、对象列表、对象详情抽屉、证据时间线、知识晋级面板 | `ContextObject` `FeatureContext` `EvidenceRef[]` | 搜索对象、查看证据、发起审批 |
-| `Runs` | 执行列表、运行详情、回放卡片、失败归因卡片、放行建议面板、冲突摘要、右侧过滤器、底部 `ActionComposer` | `Run` `ExecutionEvidence` `FailureReport` `ReleaseAdvice` `MergedResolution` | 发起执行、过滤运行、复核失败、处理冲突、提交放行 |
-| `Settings` | Provider 配置表单、策略面板、权限矩阵、项目接入向导 | `ProjectConfig` `PolicyDefinition` `RoleMatrix` | 配置接入、修改策略、管理角色 |
+| `Welcome` | Hero 标题、能力卡片、最近项目、最近版本、最近会话、底部 `ActionComposer` | `ProjectSummary[]` `VersionSummary[]` `ConversationSession[]` | 进入 Build、进入 Dashboard、恢复会话 |
+| `Build` | `Create Project` 大卡、导入模块、初始化计划、项目创建会话、底部 `ActionComposer` | `ProjectDraft` `ConnectorBinding[]` `ConnectorRun[]` | 创建项目、导入 Git/US/UX、初始化系统画像 |
+| `Dashboard` | 全局统计、项目卡片网格、阻塞列表、快捷问询 chips、底部 `ActionComposer` | `ProjectPortfolioCard[]` `RiskRollup` `ApprovalSummary` `RunSummary` | 打开项目、查询进展、查看风险 |
+| `Documentation` | 文档 Hero、分类卡片、模板、示例、底部 `ActionComposer` | `DocTopic[]` `TemplateSummary[]` | 搜索文档、查看模板 |
+| `Project Overview` | 项目头部、系统画像摘要、连接源、活跃版本、项目会话 | `Project` `BaselineSummary` `ConnectorRun[]` `VersionSummary[]` | 创建版本、刷新系统画像 |
+| `Version Space` | 版本头部、`USBoard`、版本风险卡、待执行/待审批列表、会话区 | `Version` `USWorkItem[]` `RiskSummary` | 查看 US、分配负责人、进入个人工作台 |
+| `Version Create` | 创建向导、US 导入、负责人分配、基线 fork 预览、会话区 | `VersionDraft` `USImportPreview` `OwnerAssignment[]` | 创建版本、导入 US、fork 基线 |
+| `Personal Workspace` | US 头部、`ChatTimeline`、`QualityAssetPack` 画布、`Tool Palette`、`Tool Invocation Timeline`、`Conflict Panel`、`Agent Goal`、底部 `ActionComposer` | `ConversationSession` `ToolInvocation[]` `TaskContext` `QualityProfile` `QualityAssetPack` `AgentDecision[]` `AgentGoal[]` | 发起分析、触发工具、局部重生成、处理中断、跳转执行 |
+| `Knowledge Gallery` | 图谱/列表切换、对象列表、搜索、会话区 | `ContextObject[]` `FeatureContext` | 搜索对象、进入对象详情 |
+| `Knowledge Detail` | 对象头部、关系、证据、历史、会话区 | `ContextObject` `EvidenceRef[]` `ApprovalRequest[]` | 查看证据、发起晋级 |
+| `Runs` | 执行列表、过滤条、失败摘要、会话区 | `Run[]` `FailureReport[]` | 打开运行、按通道过滤 |
+| `Run Detail` | Timeline、Logs、Trace、Evidence、Failure Analysis、Healing、会话区 | `Run` `ExecutionEvidence[]` `FailureReport` `ReleaseAdvice` | 重跑、查看 trace、生成修复建议 |
+| `Governance` | 待审批列表、待 merge 列表、策略阻塞、会话区 | `ApprovalRecord[]` `MergedResolution[]` | 进入审批、进入放行面板 |
+| `Approval Detail` | diff 审阅、冲突字段、审批动作、会话区 | `ApprovalRecord` `MergedResolution` `ConflictPayload` | 审批、拒绝、接受自动 merge |
+| `Release Readiness` | 评分摘要、阻塞项、执行健康、知识晋级状态、会话区 | `ReleaseAdvice` `ApprovalRecord[]` `RiskSummary` | 生成放行建议、提交放行 |
+| `Desktop` | 本地队列、能力授权、同步健康、本地会话区 | `DeviceSession` `CapabilityGrant[]` `SyncEvent[]` | 确认本地任务、重试同步 |
 | `Desktop Client` | 设备状态卡、权限申请卡、本地 `Tool Palette`、本地任务队列、本地执行面板、远程任务确认面板、同步状态条、离线补传面板 | `ConversationSession` `ToolDefinition[]` `ToolInvocation[]` `DeviceSession` `CapabilityGrant` `LocalTask` `LocalRunArtifact` `AgentDecision[]` | 申请权限、执行本地任务、确认远程动作、查看同步状态、补传产物 |
 
 ## 4 后端分层与服务边界
@@ -226,7 +246,7 @@
 - `GET /v1/tools/catalog`：返回工具列表、tool_kind、scope、risk、confirmation_mode、required_context，供 Web 与 Desktop 渲染统一工具面板。
 - `POST /v1/tool-invocations`：正式公共写入口，由 `Tool Invocation Runtime` 统一执行工具；工具内部再通过 Tool Registry 映射 Skill 和 Worker。
 - `GET /v1/features/{featureId}/context`：封装 `get_feature_context`，前端 `Knowledge` 页面用它展示 Feature Graph、Change Graph、相关证据。这是当前工程实现基线，不限制最终产品在 Agent 侧提供更高阶的原生检索能力。
-- `GET /v1/tasks/{id}/conflicts`：返回双端 `AgentDecision`、冲突原因和推荐 `MergedResolution`，供 `Tasks`、`Runs` 与 `Desktop Client` 统一展示。
+- `GET /v1/tasks/{id}/conflicts`：返回双端 `AgentDecision`、冲突原因和推荐 `MergedResolution`，供 `Personal Workspace`、`Runs` 与 `Desktop Client` 统一展示。
 - `POST /v1/runs`：由 Automation Service 或 Desktop 端触发执行，统一创建 canonical `Run`；完成后 evidence 回写 `runs/{runId}`，Failure Worker 订阅同一 run，得出归因并触发 Healing/Release Advice。
 - `POST /v1/approvals`：Approval Control 用于处理 `Candidate Knowledge` 的晋级和基线回写。默认路径为 `Candidate -> Version Shared -> Official`，任何晋级或回写动作都必须经过审批，审批结果驱动 Baseline Service 更新。
 - `POST /v1/devices/register`：Desktop Client 首次注册设备身份，服务端根据设备、用户、组织和版本返回信任状态、初始策略和客户端配置。
@@ -239,9 +259,9 @@
 
 ### 8.1 流程快照
 
-1. `项目接入`：`Settings` 发起，`Baseline Service` 建立 Historical/Official 基线，状态从 `draft` -> `ready`.
-2. `版本建模`：`Home`/`Settings` 创建版本，`Change Impact Service` 生成 Change Set，基线状态 `versioning`.
-3. `会话启动`：`Tasks` 创建 Session，Status `active`, materials uploaded, context stored in `TaskContext`.
+1. `项目接入`：`Build` 发起，`Baseline Service` 建立 Historical/Official 基线，状态从 `draft` -> `ready`.
+2. `版本建模`：`Project Overview`/`Version Space` 创建版本，`Change Impact Service` 生成 Change Set，基线状态 `versioning`.
+3. `会话启动`：`Personal Workspace` 创建 Session，Status `active`, materials uploaded, context stored in `TaskContext`.
 4. `任务分析`：会话先产出 `ToolInvocationPlan`，工具内部再串联 Impact/Verification/Scenario/Case，`QualityProfile` 状态 `analysis`, outputs `verificationPlan`.
 5. `双端推理`：中心端与桌面端都可触发工具，工具内部可调用不同 Skill，最终产生 `AgentDecision(status=provisional)`；若结论冲突，任务进入 `pending_merge`。
 6. `执行`：`Automation Service` 或 `Desktop Local Capability Host` 统一创建 `Run(execution_channel=web_runner|desktop_local)`，状态 `pending -> running -> complete/fail/pending_merge`。
@@ -254,7 +274,7 @@
 - 所有 `Run` 必须绑定 `taskContextId`；failure/approval 回写都会携带该上下文。
 - `Desktop Client` 产生的执行同样必须绑定 `taskContextId` 和 `deviceSessionId`，但正式记录统一写入 canonical `Run`，通过 `execution_channel=desktop_local` 与 `LocalRunArtifact` 识别来源。
 - `Knowledge` 页面展示 `Task -> AgentDecision -> Run -> Approval` 时间线，并允许基于 `Candidate` 触发 `Approval`。
-- 异常流：若 `Run` 失败且 `failure_classified` 触发 `healing.propose`, UI 提示 `Tasks` 进入重生成并重新走 `automation`.
+- 异常流：若 `Run` 失败且 `failure_classified` 触发 `healing.propose`, UI 提示 `Personal Workspace` 进入重生成并重新走 `automation`.
 - 异常流：若桌面端离线，则本地状态进入缓存队列，客户端在恢复连接后补传 `LocalRunArtifact` 与 `SyncEvent`，服务端不得因短暂离线直接丢弃任务状态。
 - 异常流：若中心端与桌面端的分析、归因或放行结论冲突，则任务、运行或知识记录进入 `pending_merge`，只有 `MergedResolution` 获批后才能推进正式状态。
 
@@ -263,18 +283,18 @@
 | 阶段 | 交付物 | 关系 |
 | --- | --- | --- |
 | Stage 0 | `TaskContext`/`QualityProfile` schema + `Baseline`/`Candidate` contracts | 构建数据管道 |
-| Stage 1 | `Home/Settings` 版本与项目建档 + `BaselineService` API | 保障接入能力 |
-| Stage 2 | `Tasks` 工作台 + `Conversation` / `ToolInvocation` 调用链 + `Automation` 接口 + `Device Registry` 基础接入 | 确保分析闭环 |
+| Stage 1 | `Build/Project Overview` 项目建档 + `BaselineService` API | 保障接入能力 |
+| Stage 2 | `Personal Workspace` 工作台 + `Conversation` / `ToolInvocation` 调用链 + `Automation` 接口 + `Device Registry` 基础接入 | 确保分析闭环 |
 | Stage 3 | `Runs` 视图、Runner、Failure/Healing flow + `Desktop Client` 本地执行链路 | 提供执行封装 |
 | Stage 4 | `Release Advice` + `Approval` + `Knowledge` 沉淀 + 桌面同步 | 完成治理闭环 |
 
 ## 9 分阶段落地建议
 
 1. **Phase 0（对象与协议固化）**：先建 Raw Assets/Context Objects schema、Baseline/Version/Session/Candidate 模型、Unified Context Engine 接口（§15）。至少先搭 PostgreSQL + MinIO + OpenGrok/Tree-sitter + FastAPI 服务，确保数据结构到位。
-2. **Phase 1（项目初始化接入）**：实现 Asset Connectors、代码/文档索引、Historical Baseline 生成、管理员校正流程，前端在 Settings/Knowledge 层提供材料上传与差错展示（§11.1、§12）。
-3. **Phase 2（版本与会话机制）**：实现版本 fork、Version Working Baseline、Session-only/Candidate Knowledge 流转、Feature Graph/Change Graph，前端 Home/Tasks 提供版本/会话切换视图（§11.2-11.4）。
-4. **Phase 3（质量方案生成）**：完善 Tool/Skill/Worker 的 impact、verification、scenario、case，Tasks 页承接多轮审核与重生成；Agent 需提供 `toolId` 级动作调度和 `ToolInvocation -> Merge/Score` 输出（§14.2、§13.3）。
+2. **Phase 1（项目初始化接入）**：实现 Asset Connectors、代码/文档索引、Historical Baseline 生成、管理员校正流程，前端在 `Build / Project Overview / Knowledge` 层提供材料上传与差错展示（§11.1、§12）。
+3. **Phase 2（版本与会话机制）**：实现版本 fork、Version Working Baseline、Session-only/Candidate Knowledge 流转、Feature Graph/Change Graph，前端 `Version Space / Personal Workspace` 提供版本/会话切换视图（§11.2-11.4）。
+4. **Phase 3（质量方案生成）**：完善 Tool/Skill/Worker 的 impact、verification、scenario、case，`Personal Workspace` 页承接多轮审核与重生成；Agent 需提供 `toolId` 级动作调度和 `ToolInvocation -> Merge/Score` 输出（§14.2、§13.3）。
 5. **Phase 4（双端执行）**：构建 automation.generate -> runner -> failure.analysis -> release.assess 范式，同时打通 device registration -> device session -> canonical run write -> sync events，Web 页面展示执行证据，Desktop Client 展示本地执行证据与权限状态（§9.6-9.9、§14.1）。
-6. **Phase 5（治理与沉淀）**：实现 Candidate 审批流、Baseline 回写、Official Baseline 更新；Settings/Knowledge 提供审批状态与沉淀结果，同时统一桌面端产物补传与审计（§6.3、§12.2）。
+6. **Phase 5（治理与沉淀）**：实现 Candidate 审批流、Baseline 回写、Official Baseline 更新；`Governance / Knowledge / Project Overview` 提供审批状态与沉淀结果，同时统一桌面端产物补传与审计（§6.3、§12.2）。
 
 整体落地顺序：建议先以单个 project + 2~3 模块建立主链路，采用模块化单体部署（portal、desktop-client、api/orchestrator、worker-runtime、runner + Postgres/MinIO/OpenGrok/Queue）。随着容量增长，再按 context/impact/scenario/failure 分池扩展、runner 变 job、Desktop Local Capability Host 独立服务化、索引脱离在线路径，并逐步补齐更细粒度的治理与策略控制。
