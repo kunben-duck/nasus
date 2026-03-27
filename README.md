@@ -50,11 +50,17 @@ Nasus Assurance Studio 是针对 AI 助手参与开发后留下的质量风险�
 - [认证与授权设计](/Users/uben/project/project/Nasus/docs/auth-and-access-design.md)：定义 OIDC/OAuth、Token、API 鉴权中间件、RBAC 和设备授权。
 - [LLM Provider 与推理运行时设计](/Users/uben/project/project/Nasus/docs/llm-provider-and-runtime-design.md)：定义 Provider 抽象、Prompt 管理、上下文裁剪、token 预算和降级策略。
 - [Conversation Orchestrator 设计](/Users/uben/project/project/Nasus/docs/conversation-orchestrator-design.md)：定义主会话如何把自然语言输入转成 `ToolInvocationPlan`。
+- [会话与消息管理设计](/Users/uben/project/project/Nasus/docs/conversation-session-management.md)：定义会话生命周期、消息对象、上下文窗口管理、多会话协作和 session-only knowledge 绑定。
 - [首发 Tool Catalog（V1）](/Users/uben/project/project/Nasus/docs/tool-catalog-v1.md)：定义首发必须实现的工具目录与 demo 最小子集。
+- [Unified Context Engine 设计](/Users/uben/project/project/Nasus/docs/unified-context-engine-design.md)：定义 Source Connector、原料摄入、代码/文档理解、锚点抽取、实体归并和上下文组装。
+- [Skill 实现模式设计](/Users/uben/project/project/Nasus/docs/skill-implementation-patterns.md)：定义 Skill 的代码骨架、输入输出协议、与 LLM/Worker 的关系和结果落库规则。
+- [质量资产生成策略设计](/Users/uben/project/project/Nasus/docs/quality-generation-strategies.md)：定义测试范围、场景、用例、自动化、变更文档、失败分析和修复建议的生成策略。
+- [MCP 集成设计](/Users/uben/project/project/Nasus/docs/mcp-integration-design.md)：定义 Nasus 如何接入外部 MCP Server，并将外部能力纳入 Tool/Policy/Audit 体系。
 - [后端领域模型](/Users/uben/project/project/Nasus/docs/backend-domain-model.md)：定义核心对象、状态机、正式事实边界和对象关系。
 - [后端运行时与工具协议](/Users/uben/project/project/Nasus/docs/backend-runtime-and-tool-protocol.md)：定义 Conversation、Tool、Skill、Worker、Workflow 的职责与协议。
 - [后端 API 与事件契约](/Users/uben/project/project/Nasus/docs/backend-api-and-events.md)：定义 REST、SSE、内部事件和工具调用接口。
 - [后端执行、同步与治理](/Users/uben/project/project/Nasus/docs/backend-execution-sync-governance.md)：定义 runner、本地执行、同步、审批和策略闸口。
 - [后端运维与测试基线](/Users/uben/project/project/Nasus/docs/backend-ops-and-test-baseline.md)：定义环境、可观测性、发布、备份恢复和测试矩阵。
+- [端到端数据流示例](/Users/uben/project/project/Nasus/docs/end-to-end-flow-examples.md)：用完整链路说明 Conversation、Tool、Workflow、Skill、Worker、领域对象和 SSE 如何串联。
 - [ux/index.html](/Users/uben/project/project/Nasus/ux/index.html)、[ux/styles.css](/Users/uben/project/project/Nasus/ux/styles.css)、[ux/app.js](/Users/uben/project/project/Nasus/ux/app.js)：当前前端 demo 与后续正式开发的样式、布局和交互基线。
 - [前端视觉与交互规范](/Users/uben/project/project/Nasus/docs/frontend-visual-style.md)：高层视觉说明文档，作为 `ux/` 原型的补充，不替代 `ux/` 目录的实现基线。

@@ -66,7 +66,26 @@
 
 ### 2.4 Agent Graph Runtime
 
-默认采用 `LangGraph`，承接单次任务内的规划和路由：
+默认采用 `LangGraph`，但其职责已经从“单次工具执行窗口”扩展为双层编排：
+
+#### 2.4.1 外层 Agent Loop Graph
+
+承接高级目标的自主循环：
+
+- `think`
+- `act`
+- `observe`
+- `decide`
+
+负责：
+
+- 为 `AgentGoal` 选择下一步 Tool
+- 根据 ToolResult 动态调整后续动作
+- 产出 `GraphCompletion` 或 `GraphSuspension`
+
+#### 2.4.2 内层 Tool Graph
+
+承接单个 Tool 内部的规划和路由：
 
 - `build_task_context`
 - `build_quality_profile`
@@ -86,9 +105,9 @@
 - human-in-the-loop 节点
 - partial result 合并
 
-约束：
+统一约束：
 
-- `LangGraph` 负责单次工具执行窗口内的规划、路由和局部 checkpoint。
+- `LangGraph` 负责 Agent Loop 单次 iteration 或 Tool 单次执行窗口内的规划、路由和局部 checkpoint。
 - 一旦遇到需要等待外部确认、审批、设备恢复、长时间执行结果回传的节点，graph 必须输出 `GraphSuspension`，由 `Temporal` 持久化并挂起 workflow。
 - 恢复时由 `Temporal` 重新调用 graph，并传回 `graph_checkpoint_ref`、`resume_reason`、`resume_payload`。
 
@@ -96,22 +115,27 @@
 
 固定流转如下：
 
-1. `Conversation` 或显式 `ToolInvocation` 创建 workflow。
-2. `Temporal` 进入当前 tool 对应的 workflow 阶段，并调用 `LangGraph`。
-3. `LangGraph` 在单次执行窗口内完成：
+1. `Conversation`、`AgentGoalProposal` 或显式 `ToolInvocation` 创建 workflow。
+2. 若是高级目标，`Temporal` 启动 `AgentGoalWorkflow` 并调用外层 `LangGraph Agent Loop Graph`。
+3. 外层 graph 在单次 iteration 内完成：
+   - THINK
+   - 选择 Tool
+   - 触发 Tool 执行或挂起
+4. 当 Tool 真正执行时，`Temporal` 进入当前 tool 对应的 workflow 阶段，并调用内层 `LangGraph Tool Graph`。
+5. 内层 graph 在单次执行窗口内完成：
    - 上下文装配
    - Tool 内部 Skill 路由
    - Worker 并行
    - 局部结果归并
-4. 若 graph 得到可立即提交的结果，则直接返回 `GraphCompletion` 给 `Temporal`。
-5. 若 graph 遇到以下节点，必须返回 `GraphSuspension`，而不是自行长期等待：
+6. 若 graph 得到可立即提交的结果，则直接返回 `GraphCompletion` 给 `Temporal`。
+7. 若 graph 遇到以下节点，必须返回 `GraphSuspension`，而不是自行长期等待：
    - `waiting_confirmation`
    - `waiting_approval`
    - `waiting_device_online`
    - `waiting_run_completion`
    - `waiting_sync_replay`
-6. `Temporal` 持久化 suspension，并把 workflow 状态切换到对应等待态。
-7. 外部事件到达后，`Temporal` 恢复 workflow，再次调用 `LangGraph` 完成后续步骤。
+8. `Temporal` 持久化 suspension，并把 workflow 状态切换到对应等待态。
+9. 外部事件到达后，`Temporal` 恢复 workflow，再次调用对应 graph 完成后续步骤。
 
 权责划分：
 
@@ -121,7 +145,7 @@
   - 重试/补偿/取消
   - 外部信号接收
 - `LangGraph`
-  - 单次任务窗口内的 planning
+  - AgentGoal 单次 iteration planning
   - Tool 内 Skill/Worker 编排
   - 局部检查点
   - 输出 `GraphCompletion` 或 `GraphSuspension`

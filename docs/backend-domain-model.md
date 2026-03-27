@@ -18,12 +18,28 @@
 
 ### 2.2 治理与空间对象
 
+`Session.space_type` 与 `ConversationSession.space_type` 的 canonical 枚举固定为：
+
+- `build`
+- `dashboard`
+- `project`
+- `version`
+- `workspace`
+- `knowledge`
+- `runs`
+- `governance`
+- `documentation`
+
 | 对象 | 关键字段 | 正式事实 | 写入方 |
 | --- | --- | --- | --- |
 | `Project` | `project_id`, `name`, `slug`, `status`, `owner_id`, `policy_profile_id` | 是 | 中心端 |
 | `Version` | `version_id`, `project_id`, `name`, `status`, `source_baseline_id`, `git_branch_ref` | 是 | 中心端 |
 | `Session` | `session_id`, `project_id`, `version_id`, `status`, `owner_id`, `space_type` | 是 | 中心端 |
 | `ConversationSession` | `conversation_id`, `session_id`, `space_type`, `space_id`, `initiator_id`, `status`, `last_message_at` | 是 | 中心端 / Desktop |
+| `ConversationMessage` | `message_id`, `conversation_id`, `role`, `status`, `content_type`, `tool_refs`, `object_refs` | 是 | 中心端 / Desktop |
+| `ConversationSummaryCheckpoint` | `checkpoint_id`, `conversation_id`, `message_range_start`, `message_range_end`, `summary_text` | 是 | 中心端 |
+| `ConversationLink` | `link_id`, `left_conversation_id`, `right_conversation_id`, `link_kind`, `confidence` | 是 | 中心端 |
+| `SessionKnowledgeBinding` | `binding_id`, `conversation_id`, `candidate_object_ref`, `scope` | 是 | 中心端 |
 | `USWorkItem` | `us_id`, `version_id`, `title`, `description_ref`, `assignee_id`, `status`, `risk_level` | 是 | 中心端 |
 | `Baseline` | `baseline_id`, `project_id`, `kind`, `status`, `source_version_id`, `parent_baseline_id`, `fork_strategy`, `overlay_ref`, `materialized_snapshot_ref` | 是 | 中心端 |
 | `CandidateKnowledge` | `candidate_id`, `project_id`, `version_id`, `source_object_refs`, `status`, `approval_state` | 否 | 中心端 / Edge |
@@ -35,6 +51,8 @@
 | `ToolDefinition` | `tool_id`, `tool_kind`, `scope`, `risk_level`, `confirmation_mode`, `input_schema_ref`, `output_schema_ref` | 是 | 中心端 |
 | `ToolInvocation` | `invocation_id`, `conversation_id`, `tool_id`, `initiator_surface`, `initiator_actor`, `target_scope`, `status` | 是 | 中心端 / Edge |
 | `ToolResult` | `invocation_id`, `status`, `summary`, `object_refs`, `evidence_refs`, `next_recommended_tools` | 否 | 中心端 / Edge |
+| `AgentGoal` | `goal_id`, `conversation_id`, `status`, `autonomy_level`, `max_steps`, `steps_completed`, `workflow_id` | 是 | 中心端 |
+| `AgentStep` | `step_id`, `goal_id`, `step_index`, `phase`, `decision`, `selected_tool_id`, `tool_invocation_id` | 是 | 中心端 |
 | `SkillDefinition` | `skill_id`, `scope`, `mapped_tool_ids`, `internal_only` | 是 | 中心端 |
 | `WorkerJob` | `job_id`, `skill_id`, `task_id`, `status`, `retry_count`, `queue_name` | 否 | 中心端 |
 
@@ -68,12 +86,20 @@
 | 对象 | 关键字段 | 正式事实 | 写入方 |
 | --- | --- | --- | --- |
 | `ContextObject` | `object_id`, `type`, `status`, `confidence`, `source_refs`, `relationship_refs` | 是 | 中心端 |
+| `RawAssetRecord` | `raw_asset_id`, `project_id`, `version_id`, `source_type`, `canonical_uri`, `content_ref`, `content_hash` | 是 | 中心端 |
+| `ConnectorDefinition` | `connector_id`, `connector_type`, `status`, `config_ref` | 是 | 中心端 |
+| `ConnectorBinding` | `binding_id`, `project_id`, `connector_id`, `status`, `scope_ref` | 是 | 中心端 |
+| `ConnectorRun` | `run_id`, `binding_id`, `trigger_kind`, `status`, `checkpoint_ref` | 是 | 中心端 |
+| `ConnectorCheckpoint` | `checkpoint_id`, `binding_id`, `cursor_ref`, `captured_at` | 是 | 中心端 |
+| `MCPServerDefinition` | `server_id`, `name`, `transport_kind`, `status`, `endpoint_or_command_ref` | 是 | 中心端 |
+| `MCPServerBinding` | `binding_id`, `project_id`, `server_id`, `status`, `policy_profile_id` | 是 | 中心端 |
+| `MCPServerHealth` | `health_id`, `server_id`, `status`, `checked_at`, `details_ref` | 是 | 中心端 |
 | `PolicySnapshot` | `policy_snapshot_id`, `scope`, `version`, `rules_ref` | 是 | 中心端 |
 | `AuditEvent` | `event_id`, `event_type`, `occurred_at`, `actor_ref`, `conversation_id`, `tool_invocation_id`, `object_refs` | 是 | 中心端 / Edge |
 
 ## 3. 正式事实边界
 
-- `UserIdentity / ProjectMembership / RoleBinding / AccessSession / ServicePrincipal / Project / Version / Session / ConversationSession / USWorkItem / Baseline / Task / TaskContext / QualityProfile / QualityAssetPack / Run / ExecutionEvidence / MergedResolution / ApprovalRecord / DeviceProfile / DeviceSession / CapabilityGrant / ContextObject / PolicySnapshot / AuditEvent` 属于正式事实对象。
+- `UserIdentity / ProjectMembership / RoleBinding / AccessSession / ServicePrincipal / Project / Version / Session / ConversationSession / ConversationMessage / ConversationSummaryCheckpoint / ConversationLink / SessionKnowledgeBinding / USWorkItem / Baseline / AgentGoal / AgentStep / Task / TaskContext / QualityProfile / QualityAssetPack / Run / ExecutionEvidence / MergedResolution / ApprovalRecord / DeviceProfile / DeviceSession / CapabilityGrant / ContextObject / RawAssetRecord / ConnectorDefinition / ConnectorBinding / ConnectorRun / ConnectorCheckpoint / MCPServerDefinition / MCPServerBinding / MCPServerHealth / PolicySnapshot / AuditEvent` 属于正式事实对象。
 - `ToolResult / WorkerJob / AgentDecision / CandidateKnowledge / LocalRunArtifact` 属于候选或执行中间对象。
 - `AgentDecision` 不能直接推进正式放行、正式知识晋级或正式基线回写。
 - `ToolInvocation` 是正式命令记录，但不是正式业务结论。
@@ -155,7 +181,53 @@
 - `rotated` 由 refresh token rotation 触发。
 - `revoked / expired` 后不得再签发新 access token。
 
-### 4.9 QualityAssetPack
+### 4.9 ConversationSession
+
+`draft -> active -> idle -> archived`
+
+分支：
+
+- `active -> merged`
+- `active -> closed`
+
+迁移规则：
+
+- 首条消息写入后进入 `active`
+- 被并入其他会话后进入 `merged`
+- 归档后默认不出现在常规列表
+
+### 4.10 ConversationMessage
+
+`accepted -> streaming -> completed`
+
+分支：
+
+- `streaming -> interrupted`
+- `streaming -> failed`
+- `completed -> archived`
+
+迁移规则：
+
+- 流式 assistant 消息必须显式收到完成事件才可进入 `completed`
+- 已完成消息正文 append-only
+
+### 4.11 AgentGoal
+
+`pending -> running -> paused -> completed`
+
+分支：
+
+- `running -> failed`
+- `running -> cancelled`
+- `paused -> running`
+- `paused -> cancelled`
+
+迁移规则：
+
+- `paused` 必须带 `pause_reason`
+- 同一 `ConversationSession` 同时只允许一个 `running` 的 `AgentGoal`
+
+### 4.12 QualityAssetPack
 
 `draft -> building -> review_ready -> approved / superseded`
 
@@ -216,15 +288,28 @@
 - `Project 1:N ProjectMembership`
 - `Project 1:N RoleBinding`
 - `Session 1:N ConversationSession`
+- `ConversationSession 1:N ConversationMessage`
+- `ConversationSession 1:N ConversationSummaryCheckpoint`
+- `ConversationSession 1:N SessionKnowledgeBinding`
+- `ConversationSession 1:N AgentGoal`
 - `USWorkItem 1:N Task`
 - `USWorkItem 1:1 QualityAssetPack`
 - `ConversationSession 1:N ToolInvocation`
+- `AgentGoal 1:N AgentStep`
+- `AgentStep 0:1 ToolInvocation`
 - `Task 1:1 TaskContext`
 - `Task 1:1 QualityProfile`
 - `Task 1:N Run`
 - `Task 1:N AgentDecision`
 - `Task 1:N MergedResolution`
 - `Run 1:N ExecutionEvidence`
+- `Project 1:N RawAssetRecord`
+- `Project 1:N ConnectorBinding`
+- `ConnectorDefinition 1:N ConnectorBinding`
+- `ConnectorBinding 1:N ConnectorRun`
+- `ConnectorBinding 1:N ConnectorCheckpoint`
+- `Project 1:N MCPServerBinding`
+- `MCPServerDefinition 1:N MCPServerBinding`
 - `DeviceProfile 1:N DeviceSession`
 - `DeviceSession 1:N SyncEvent`
 - `Run 1:N LocalRunArtifact`

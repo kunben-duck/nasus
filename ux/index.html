@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nasus - AI Quality Platform</title>
     <meta name="description" content="Nasus AI-native quality assurance platform for iterative system development">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23131314'/%3E%3Cpath d='M18 46V18h7l14 18V18h7v28h-7L25 28v18h-7Z' fill='%23e3e3e3'/%3E%3C/svg%3E">
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <!-- FontAwesome -->
@@ -228,62 +229,14 @@
         <aside class="sidebar">
             <!-- Logo -->
             <div class="sidebar-header">
-                <div class="sidebar-logo">
+                <div class="sidebar-logo" id="home-link" style="cursor:pointer;">
                     Nasus Studio
                     <span class="sidebar-version">v</span>
                 </div>
             </div>
 
             <!-- Navigation -->
-            <nav class="sidebar-nav custom-scrollbar">
-                <!-- Build section -->
-                <div class="sidebar-section-label" style="padding-top: 8px; font-size: 11px; color: var(--text-tertiary); letter-spacing: 0;">‹ Build</div>
-
-                <button class="sidebar-nav-item active" id="nav-personal" data-view="personal">
-                    <i class="fa-regular fa-user"></i>
-                    Personal Workspace
-                </button>
-                <button class="sidebar-nav-item" id="nav-project" data-view="project">
-                    <i class="fa-solid fa-layer-group"></i>
-                    Project Space
-                </button>
-                <button class="sidebar-nav-item" id="nav-version" data-view="version">
-                    <i class="fa-solid fa-code-branch"></i>
-                    Version Space
-                </button>
-                <button class="sidebar-nav-item" id="nav-gallery" data-view="gallery">
-                    <i class="fa-regular fa-images"></i>
-                    Knowledge Gallery
-                </button>
-                <button class="sidebar-nav-item" id="nav-runs" data-view="runs">
-                    <i class="fa-solid fa-play"></i>
-                    Execution Runs
-                </button>
-                <button class="sidebar-nav-item" id="nav-approvals" data-view="approvals">
-                    <i class="fa-solid fa-stamp"></i>
-                    Governance
-                </button>
-
-                <!-- Active US -->
-                <div class="sidebar-section-label">
-                    Active US
-                    <button style="background:none;border:none;color:var(--text-tertiary);cursor:pointer;font-size:11px;" class="tooltip" data-tip="Add US">
-                        <i class="fa-solid fa-plus"></i>
-                    </button>
-                </div>
-
-                <button class="us-item active" id="us-123-btn">
-                    <span class="us-dot amber"></span>
-                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">US-123: Payment flow u...</span>
-                </button>
-                <button class="us-item">
-                    <span class="us-dot gray"></span>
-                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">US-128: OAuth Resiliency</span>
-                </button>
-                <button class="us-item">
-                    <span class="us-dot green"></span>
-                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">US-115: PDF Export</span>
-                </button>
+            <nav class="sidebar-nav custom-scrollbar" id="sidebar-nav">
             </nav>
 
             <!-- Footer -->
@@ -396,6 +349,6 @@
     </div>
 
     <!-- Scripts -->
-    <script src="app.js?v=fresh3"></script>
+    <script src="app.js?v=l0-l1-l2-architecture"></script>
 </body>
 </html>

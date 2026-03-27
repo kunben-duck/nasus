@@ -181,3 +181,29 @@ Token 统计维度至少包括：
 - 工具规划优先使用结构化输出链路
 - token 预算必须先于模型调用检查
 - Provider 故障不能直接让主工作流失控，必须走降级路径
+
+## 12. 首发模型路由建议
+
+首发建议至少准备以下模型槽位：
+
+- `planner.primary`
+  - 用于 `Conversation Orchestrator` 的意图分类、多步计划和工具排序
+- `structured.primary`
+  - 用于稳定输出 `ToolInvocationPlan`、Skill 结构化结果、冲突 payload
+- `analysis.primary`
+  - 用于 `failure.analyze`、`release.advice`、高风险摘要
+- `fallback.primary`
+  - 用于预算不足、主模型失败时的降级
+
+默认路由：
+
+- `Conversation Orchestrator`
+  - 先走 `structured.primary`
+- `Agent Loop THINK`
+  - 走 `planner.primary`
+- `quality.scope/scenario/case/change-doc`
+  - 走 `structured.primary`，必要时由 `planner.primary` 辅助
+- `failure.analyze / healing.propose / release.advice`
+  - 走 `analysis.primary`
+
+首发不要求锁死单一厂商，但必须先在 `Prompt Registry` 中为以上槽位配置明确的主模型和 fallback 模型。

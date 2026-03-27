@@ -38,17 +38,19 @@
 
 ## 4. 输出
 
-`Conversation Orchestrator` 固定只产出 3 类结果之一：
+`Conversation Orchestrator` 固定只产出 4 类结果之一：
 
 - `ClarificationRequest`
 - `ToolInvocationPlan`
 - `DirectAnswer`
+- `AgentGoalProposal`
 
 约束：
 
-- 只要问题能落到现有工具目录，就优先产出 `ToolInvocationPlan`
+- 只要问题能落到现有工具目录，就优先产出 `ToolInvocationPlan` 或 `AgentGoalProposal`
 - 只读型、低风险、无需长流程的查询可以产出 `DirectAnswer`
 - 缺上下文或意图歧义时，必须先产出 `ClarificationRequest`
+- 高级目标、需要动态多步推进的请求，必须产出 `AgentGoalProposal`
 
 ## 5. 内部处理流程
 
@@ -63,7 +65,7 @@
 4. `Plan Action`
    - 选择一个或多个工具，补足输入参数，确定执行顺序
 5. `Emit`
-   - 输出 `ClarificationRequest / ToolInvocationPlan / DirectAnswer`
+   - 输出 `ClarificationRequest / ToolInvocationPlan / DirectAnswer / AgentGoalProposal`
 
 ### 5.2 决策规则
 
@@ -73,6 +75,9 @@
 - 若用户输入“帮我创建版本并导入 US”
   - 分类为 `multi-step version operation`
   - 产出多步 `ToolInvocationPlan`
+- 若用户输入“帮我完成这个 US 的质量闭环”
+  - 分类为 `agent_goal`
+  - 产出 `AgentGoalProposal`
 - 若用户输入缺少关键上下文
   - 先发 `ClarificationRequest`
 - 若用户输入包含高风险治理动作
@@ -90,6 +95,18 @@
 - `required_clarifications`
 - `steps`
 - `recommended_next_tools`
+
+### 6.1 AgentGoalProposal 结构
+
+最小字段：
+
+- `goal_template` 可空
+- `goal_description`
+- `suggested_autonomy_level`
+- `estimated_steps`
+- `estimated_duration`
+- `target_refs`
+- `requires_user_confirmation`
 
 每个 `step` 最小字段：
 
@@ -118,7 +135,7 @@
 ## 8. 与 Tool Runtime、Temporal、LangGraph 的边界
 
 - `Conversation Orchestrator`
-  - 负责生成计划
+  - 负责生成计划或提出 `AgentGoalProposal`
 - `Tool Invocation Runtime`
   - 负责执行计划中的 step
 - `Temporal`
@@ -129,7 +146,21 @@
 即：
 
 `Conversation Orchestrator` 解决“接下来做什么”
-`LangGraph` 解决“这个工具内部怎么做”
+`LangGraph` 解决“Agent Loop 或工具内部具体怎么做”
+
+## 8.1 与 Agent Loop、LLM Runtime 的衔接
+
+- `Conversation Orchestrator` 先做意图分类：
+  - 低风险只读查询 -> `DirectAnswer`
+  - 单步或多步确定性动作 -> `ToolInvocationPlan`
+  - 需要持续自主推进的高级目标 -> 交给 `Agent Loop Runtime`
+- 意图分类默认优先使用 `structured` 模型输出，不直接依赖自由文本 function calling。
+- 当问题被提升为 `AgentGoal` 时：
+  - Orchestrator 只负责创建 `goal_description + initial context`
+  - 后续 `THINK/ACT/OBSERVE/DECIDE` 交给 [docs/agent-loop-runtime.md](/Users/uben/project/project/Nasus/docs/agent-loop-runtime.md)
+- Tool 选择遵循“先规则过滤，再由结构化模型排序”的路线：
+  - 规则过滤：空间、角色、risk、required_context
+  - 结构化模型排序：从候选工具中选最合适工具
 
 ## 9. 结果回写
 
@@ -137,6 +168,7 @@
 
 - `conversation.message.created`
 - 可选的 `conversation.plan.updated`
+- 可选的 `conversation.agent_goal.proposed`
 - 如执行工具，则创建 `ToolInvocation`
 
 `Conversation Orchestrator` 自身不写 `Task / Run / MergedResolution`。

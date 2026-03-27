@@ -2,6 +2,16 @@
 
 ## 1. 执行模型
 
+首发范围说明：
+
+- 首发 Demo 以中心端 `Agent Loop Runtime` 为主。
+- Desktop 端首发只承接：
+  - 本地受控动作执行
+  - 本地产物采集
+  - 同步补传
+  - 本地确认与授权
+- Desktop 独立的长生命周期 Agent Loop 不作为首发要求，归入 `Phase 2+` 演进范围。
+
 ### 1.1 Web Runner
 
 - 接收 `Run` 创建请求和执行配置

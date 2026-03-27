@@ -12,12 +12,19 @@
   - [docs/auth-and-access-design.md](/Users/uben/project/project/Nasus/docs/auth-and-access-design.md)
   - [docs/llm-provider-and-runtime-design.md](/Users/uben/project/project/Nasus/docs/llm-provider-and-runtime-design.md)
   - [docs/conversation-orchestrator-design.md](/Users/uben/project/project/Nasus/docs/conversation-orchestrator-design.md)
+  - [docs/conversation-session-management.md](/Users/uben/project/project/Nasus/docs/conversation-session-management.md)
   - [docs/tool-catalog-v1.md](/Users/uben/project/project/Nasus/docs/tool-catalog-v1.md)
+  - [docs/unified-context-engine-design.md](/Users/uben/project/project/Nasus/docs/unified-context-engine-design.md)
+  - [docs/skill-implementation-patterns.md](/Users/uben/project/project/Nasus/docs/skill-implementation-patterns.md)
+  - [docs/quality-generation-strategies.md](/Users/uben/project/project/Nasus/docs/quality-generation-strategies.md)
+  - [docs/mcp-integration-design.md](/Users/uben/project/project/Nasus/docs/mcp-integration-design.md)
   - [docs/backend-domain-model.md](/Users/uben/project/project/Nasus/docs/backend-domain-model.md)
   - [docs/backend-runtime-and-tool-protocol.md](/Users/uben/project/project/Nasus/docs/backend-runtime-and-tool-protocol.md)
   - [docs/backend-api-and-events.md](/Users/uben/project/project/Nasus/docs/backend-api-and-events.md)
   - [docs/backend-execution-sync-governance.md](/Users/uben/project/project/Nasus/docs/backend-execution-sync-governance.md)
   - [docs/backend-ops-and-test-baseline.md](/Users/uben/project/project/Nasus/docs/backend-ops-and-test-baseline.md)
+  - [docs/agent-loop-runtime.md](/Users/uben/project/project/Nasus/docs/agent-loop-runtime.md)
+  - [docs/end-to-end-flow-examples.md](/Users/uben/project/project/Nasus/docs/end-to-end-flow-examples.md)
 
 ## 2. 核心前提
 
@@ -55,6 +62,7 @@
 | `Auth & Access Layer` | 身份认证、会话管理、角色绑定、API 鉴权与设备授权 |
 | `Tool Contract Layer` | 统一管理工具目录、工具调用、确认/审批闸口、策略检查 |
 | `Workflow Layer` | 编排长生命周期业务流程，等待确认/审批，驱动跨端协作 |
+| `Agent Loop Layer` | 承接用户高级目标的自主循环执行，Think → Act → Observe → Decide 持续推进 |
 | `Agent Graph Layer` | 在单任务内规划步骤、选择工具后的 Skill 路由、并行 Worker 调度 |
 | `LLM Runtime Layer` | 管理 Provider、Prompt、上下文裁剪、预算与降级 |
 | `Domain Materialization Layer` | 把工具结果物化为 `TaskContext`、`Run`、`MergedResolution` 等对象 |
@@ -90,28 +98,67 @@
 - `device_sync`
 - `shared_contracts`
 
+### 3.4 服务间通信矩阵
+
+| 来源 | 目标 | 通信方式 | 备注 |
+| --- | --- | --- | --- |
+| Frontend / Desktop UI | `api/orchestrator` | REST + SSE | 主入口 |
+| `api/orchestrator` | `workflow-service` | Temporal Client / Workflow Signal | 启动、恢复、取消 workflow |
+| `workflow-service` | `worker-runtime` | 队列分发 `WorkerJob` | 队列产品可替换，协议固定 |
+| `workflow-service` | `runner` | run queue / command dispatch | 承接确定性执行 |
+| `workflow-service` | `sync-service` | REST / internal event | 设备同步与补传 |
+| `worker-runtime` | `llm_gateway` | 内部 SDK / service call | 统一模型调用 |
+| `runner` / `sync-service` | PostgreSQL / MinIO | ORM / object storage client | 写对象和证据 |
+
+### 3.5 代码骨架建议
+
+建议按应用与共享包拆分：
+
+- `apps/api-orchestrator`
+- `apps/workflow-service`
+- `apps/worker-runtime`
+- `apps/runner`
+- `apps/sync-service`
+- `packages/domain`
+- `packages/shared-contracts`
+- `packages/llm-gateway`
+- `packages/prompt-registry`
+- `packages/context-engine`
+- `packages/tool-registry`
+- `packages/governance`
+- `infra/docker`
+- `infra/migrations`
+
+默认约束：
+
+- 每个 app 只有一个主入口和一个配置入口。
+- 共享 schema、事件、对象引用协议都放在 `packages/shared-contracts`。
+- Alembic migration 统一放在 `infra/migrations`。
+- `docker-compose.yml`、本地启动脚本和示例环境变量应落在 `infra/docker` 与仓库根目录。
+
 ## 4. 控制流主线
 
 ### 4.1 主会话驱动链路
 
-主链路从“API 调 service”调整为“会话 / UI -> 工具调用 -> workflow / service / worker -> 领域对象”：
+主链路从“API 调 service”调整为“会话 / UI -> Tool/AgentGoal -> workflow / service / worker -> 领域对象”：
 
 1. 用户在主会话输入自然语言，或点击 UI/桌面动作入口。
-2. `Conversation Orchestrator` 读取上下文，理解意图，产出 `ToolInvocationPlan`。
-3. `Tool Invocation Runtime` 创建 `ToolInvocation`，绑定 `conversation_id`、`space_id`、`task_id` 等上下文。
-4. 工具调用先经过：
+2. `Conversation Orchestrator` 读取上下文，理解意图，产出 `ToolInvocationPlan` 或 `AgentGoalProposal`。
+3. 若是确定性计划，则 `Tool Invocation Runtime` 创建 `ToolInvocation`，绑定 `conversation_id`、`space_id`、`task_id` 等上下文。
+4. 若是高级目标，则 `Agent Loop Runtime` 创建 `AgentGoal`，并在 `Temporal + LangGraph` 中持续推进。
+5. 工具调用先经过：
    - `context binding`
    - `policy check`
    - `capability check`
    - `confirmation / approval gate`
-5. 工具执行期可进入：
+6. 工具执行期可进入：
    - `Temporal workflow`
    - `LangGraph` 内部 planning
    - `worker-runtime`
    - `runner`
    - `sync-service`
-6. 工具结果被物化为领域对象、候选决策或正式结论。
-7. 所有动作都写入 `AuditEvent`，并关联 `conversation_id + tool_invocation_id + task_id + run_id`。
+7. 工具结果被物化为领域对象、候选决策或正式结论。
+8. 所有动作都写入 `AuditEvent`，并关联 `conversation_id + tool_invocation_id + task_id + run_id`；Agent 自驱链路还需关联 `agent_goal_id + agent_step_id`。
 
 ### 4.2 UI 与会话双轨
 
@@ -131,6 +178,7 @@
 | `Tool Registry` | 维护 `ToolDefinition`，声明风险、确认方式、输入输出 schema、产物对象 |
 | `Tool Invocation Runtime` | 统一执行业务动作，做 context binding、policy gate、approval gate、result materialization |
 | `Confirmation / Approval Gate` | 承接高风险动作的确认和审批等待 |
+| `Agent Loop Runtime` | 承接 Agent 自驱目标的持续循环执行，每步自主选择工具并根据结果动态调整 |
 | `Central Orchestrator Agent` | 负责中心侧 planning、工具选择和候选结论生成 |
 | `Edge Desktop Agent` | 负责本地上下文增强、本地工具执行和本地候选结果生成 |
 | `LLM Gateway` | 统一模型路由、Prompt 选择、token 预算、重试和降级 |
@@ -164,5 +212,12 @@
 7. `llm-provider-and-runtime-design`
 8. `conversation-orchestrator-design`
 9. `tool-catalog-v1`
+10. `agent-loop-runtime`
+11. `conversation-session-management`
+12. `unified-context-engine-design`
+13. `skill-implementation-patterns`
+14. `quality-generation-strategies`
+15. `mcp-integration-design`
+16. `end-to-end-flow-examples`
 
 完成后再进入代码实现，避免开发过程中继续回到产品层做核心决策。

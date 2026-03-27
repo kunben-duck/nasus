@@ -62,11 +62,13 @@ Portal 路由建议：
 
 - `/`
 - `/home`
+- `/conversations`
 - `/tasks/:taskId`
 - `/knowledge`
 - `/runs/:runId?`
 - `/settings`
 - `/approvals/:approvalId?`
+- `/agent-goals/:goalId?`
 
 Desktop 路由建议：
 
@@ -85,12 +87,16 @@ Desktop 路由建议：
 
 - 由 TanStack Query 管理
 - 对象包括：
+  - `ConversationSession`
   - `Conversation`
+  - `AgentGoal`
   - `ToolInvocation`
   - `Task`
   - `Run`
   - `Approval`
   - `DeviceSession`
+  - `ConnectorRun`
+  - `MCPServerHealth`
 
 ### 5.2 Event State
 
@@ -147,12 +153,16 @@ Desktop 路由建议：
 Portal / Desktop 至少按以下 feature 组织：
 
 - `conversation`
+- `conversation-management`
+- `agent-goals`
 - `tools`
 - `tasks`
 - `knowledge`
 - `runs`
 - `approvals`
 - `settings`
+- `connectors`
+- `mcp-servers`
 - `device`（desktop 必选）
 - `sync`（desktop 必选）
 

@@ -25,11 +25,28 @@
 
 | 接口 | 用途 |
 | --- | --- |
+| `POST /v1/conversations` | 创建会话 |
+| `GET /v1/conversations` | 获取会话列表 |
+| `GET /v1/conversations/{id}` | 获取会话详情 |
+| `GET /v1/conversations/search` | 搜索会话与消息 |
+| `PATCH /v1/conversations/{id}/archive` | 归档会话 |
+| `POST /v1/conversations/{id}/merge` | 合并会话 |
 | `POST /v1/conversations/{id}/messages` | 主会话输入入口 |
 | `GET /v1/conversations/{id}/events` | 会话事件流 |
 | `GET /v1/tools/catalog` | 获取工具目录 |
 | `POST /v1/tool-invocations` | 显式工具调用 |
 | `GET /v1/tool-invocations/{id}` | 获取工具调用状态与结果 |
+
+### 2.2.1 Agent Goal
+
+| 接口 | 用途 |
+| --- | --- |
+| `POST /v1/agent-goals` | 创建 Agent 自驱目标 |
+| `GET /v1/agent-goals/{id}` | 获取目标详情 |
+| `GET /v1/agent-goals/{id}/events` | 获取目标事件流 |
+| `POST /v1/agent-goals/{id}/interrupt` | 打断目标执行 |
+| `POST /v1/agent-goals/{id}/resume` | 恢复目标执行 |
+| `POST /v1/agent-goals/{id}/feedback` | 向运行中的目标注入反馈 |
 
 ### 2.3 Domain Read / Write Boundary
 
@@ -69,7 +86,31 @@
 | `GET /v1/sync/events` | 同步事件流 |
 | `POST /v1/capabilities/negotiate` | 协商本地能力 |
 
-### 2.6 Notification / Activity
+### 2.6 UCE / Connectors
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /v1/connectors` | 获取 connector 列表 |
+| `POST /v1/connectors` | 创建 connector 定义或绑定 |
+| `PATCH /v1/connectors/{id}` | 更新 connector 配置 |
+| `POST /v1/connectors/{id}/runs` | 触发一次摄入 run |
+| `GET /v1/connectors/{id}/runs` | 获取摄入 run 历史 |
+| `GET /v1/raw-assets/{id}` | 获取原料详情 |
+| `GET /v1/context-objects/{id}` | 获取上下文对象详情 |
+| `GET /v1/context-objects/search` | 搜索上下文对象 |
+| `GET /v1/context-graph` | 图谱查询 |
+
+### 2.7 MCP Server Management
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /v1/mcp-servers` | 获取 MCP Server 列表 |
+| `POST /v1/mcp-servers` | 注册 MCP Server |
+| `PATCH /v1/mcp-servers/{id}` | 更新 MCP Server 配置 |
+| `POST /v1/mcp-servers/{id}/health-check` | 手动健康检查 |
+| `GET /v1/mcp-servers/{id}/health` | 获取健康状态 |
+
+### 2.8 Notification / Activity
 
 | 接口 | 用途 |
 | --- | --- |
@@ -93,12 +134,42 @@
 
 ### 3.1 Conversation
 
+`POST /v1/conversations`
+
+- 请求用途：创建新会话
+- 最小字段：
+  - `session_id`
+  - `space_type`
+  - `space_id`
+  - `title` 可空
+
+`GET /v1/conversations`
+
+- 返回用途：按空间和项目列出会话
+- 至少支持：
+  - `project_id`
+  - `version_id`
+  - `session_id`
+  - `space_type`
+  - `status`
+  - `q`
+
 `POST /v1/conversations/{id}/messages`
 
 - 请求用途：提交自然语言输入或结构化指令
 - 同步返回：消息接收确认、`conversation_id`
 - 异步行为：通过事件流回传 `tool_invocation_plan`、执行进度和结构化结果
 - 幂等：按 `client_message_id` 去重
+
+`PATCH /v1/conversations/{id}/archive`
+
+- 请求用途：归档会话
+- 约束：归档不删除消息，不影响审计和搜索
+
+`POST /v1/conversations/{id}/merge`
+
+- 请求用途：把当前会话并入目标会话
+- 约束：必须返回 `target_conversation_id` 与 `ConversationLink`
 
 ### 3.2 ToolInvocation
 
@@ -108,6 +179,15 @@
 - 同步返回：`tool_invocation_id`、初始 `status`
 - 异步行为：通过事件流推进到 `running / waiting_confirmation / waiting_approval / completed / failed`
 - 幂等：按 `idempotency_key` 去重
+
+### 3.2.1 AgentGoal
+
+`POST /v1/agent-goals`
+
+- 请求用途：创建 Agent 自驱目标
+- 同步返回：`agent_goal_id`、初始 `status`
+- 异步行为：通过事件流回传 step、thinking、tool progress、pause/resume/completed
+- 幂等：按 `client_goal_id` 或 `idempotency_key` 去重
 
 ### 3.3 Read API
 
@@ -183,6 +263,21 @@
 - `tool_invocation_id`
 - `entity_version`
 
+统一错误响应固定为：
+
+```json
+{
+  "request_id": "string",
+  "timestamp": "ISO8601",
+  "error": {
+    "code": "string",
+    "message": "string",
+    "details": {},
+    "retry_after": null
+  }
+}
+```
+
 ## 5. SSE 事件流
 
 ### 5.1 统一事件信封
@@ -209,7 +304,20 @@
 ### 5.2 公开事件类型
 
 - `conversation.message.created`
+- `conversation.archived`
+- `conversation.merged`
 - `conversation.plan.updated`
+- `conversation.agent_goal.proposed`
+- `agent.goal.created`
+- `agent.goal.updated`
+- `agent.goal.paused`
+- `agent.goal.resumed`
+- `agent.goal.completed`
+- `agent.goal.failed`
+- `agent.step.thinking`
+- `agent.step.acting`
+- `agent.step.observing`
+- `agent.step.decided`
 - `tool.invoked`
 - `tool.waiting_confirmation`
 - `tool.waiting_approval`

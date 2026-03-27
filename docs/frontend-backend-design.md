@@ -17,6 +17,7 @@
 - **中心后端**：`Python + FastAPI + durable workflow（默认 Temporal） + LangGraph`。FastAPI 提供会话入口、工具调用入口、对象查询和 SSE 事件输出；durable workflow 负责长生命周期任务、审批等待、重试和恢复；LangGraph 负责单任务内部的 Agent 图编排、Tool 选择后的 Skill 路由、Worker 并行与人机节点。
 - **Web 前端**：`React + TypeScript + Tailwind + Zustand/Redux Toolkit + TanStack Query`（§14.1、§13）。这个组合支持 Prompt-first、Workspace-oriented 的复杂工作台，Tailwind 负责快速构建三列工作台与结构化侧栏，样式实现必须以 `ux/` 目录中的原型为基线抽象出 design tokens 和共享组件，而不是回退到通用后台模板。
 - **Desktop Client**：`Electron + React + TypeScript + local-agent-runtime`。Electron 作为桌面壳层承接本地 UI、权限弹窗、系统托盘、自动更新和 IPC；`local-agent-runtime` 作为完整 Edge Agent 的运行时，负责本地推理、本地 Skill 编排、本地队列与本地证据汇总。若后续对体积和安全边界要求进一步提高，可在保持本地执行层独立的前提下迁移壳层到 Tauri。
+  - 首发范围说明：中心端 `Agent Loop` 是首发主路径；Desktop 端首发以本地执行、本地产物与同步为主，独立长生命周期 Agent Loop 归入 `Phase 2+`。
 - **本地执行层**：`local-agent-runtime` 建议独立于 UI 壳，首版默认使用 `Node.js/TypeScript` 作为本地能力协调进程，负责文件系统、桌面应用、浏览器、剪贴板、下载目录、凭证注入、离线缓存与边缘 Agent 编排；只有在特定本地自动化、OCR 或系统适配器确实需要时，再通过 sidecar 引入 Python，不把这些职责塞回前端壳层。
 - **执行层**：`Node.js/TypeScript + Playwright Test`（§14.1、§9.6），作为脱离推理层的确定性 runner，专门执行 `automation.generate` 产出的 Playwright 资产并返送 Logs/断言/痕迹；Web 端网页自动化与 Desktop Client 的本地自动化共享同一执行证据模型。
 - **存储**：`PostgreSQL` 存对象模型、版本/会话/审批状态、设备与会话元数据；`MinIO` 存 Raw Assets、UX/文档/执行产物、本地同步产物等大文件（§4.1、§7.3、§14.1）。
@@ -28,9 +29,11 @@
 - **导航**：五个一级导航 Home/Tasks/Knowledge/Runs/Settings，Desktop Client 复用相同的信息架构但增加本地能力入口、设备状态入口和离线队列入口（§13.2）。
 - **Home**：任务入口与版本选择，复用 `Experience Layer` 的入口能力，帮助用户快速进入当前版本与会话。它不是传统 dashboard，而是沿用 `ux/` 原型的 conversation-first 空态工作台：Hero、能力卡片、建议动作和底部输入框共同构成首次操作入口。
 - **Tasks**：核心工作区，承接 `Task Context Workspace` + `Quality Assurance Profile` 的可视化。界面要支撑分析、场景生成、执行、总结等工具的输出展示、`Tool Palette`、`Tool Invocation Timeline`、`Conflict Panel`、审批状态、重生成按钮与上下文回溯，并保留底部主操作输入框作为“继续分析/补证/触发下一步”的统一入口。任务结果必须允许以“消息流中的结构化卡片”出现，而不是只落在独立表单区。
+  - 需要新增 `Agent Goal` 视图元素：目标状态 badge、step 进度条、`interrupt/resume` 操作、thinking/observing 卡片。
 - **Knowledge**：展示 `Historical System Baseline`、Feature Graph、Change Graph、相关证据，防腐层的数据都要在这里可追溯；右侧控制面板展示相关文档/组件/依赖，并复用 `ux/` 原型中的 tabbed inspector 模式。
 - **Runs**：展示 `automation.generate` 生成的 Playwright 资产、执行结果、Failure Analysis 归因、Healing/patch 审核记录，必要时提供回放入口，并支持按 `execution_channel=web_runner|desktop_local` 过滤。运行详情仍放在同一工作台壳层中，通过右侧 tab 切换 `Assets / System / Runs` 上下文。
 - **Settings**：管理员面板，支持项目初始化、Provider 接入、版本权限、主题与策略，直接映射治理对象（Project/Version/Baseline）与 Approval Control。
+  - 还需承接 Connector 配置、摄入 run 进度、MCP Server 配置与健康检查。
 - **Desktop Client**：桌面工作台与 Web 共用任务模型，但把本地 Tool 面板、设备状态、本地权限申请、本地产物、远程任务确认和离线队列作为一等界面对象；它不替代 Web 的组织级协作面，而是承接本地执行与本地感知。
 - **Tool 可见性**：Web 与 Desktop 默认都展示统一工具列表；Skill 可作为高级视图中的内部能力标签展示，但产品级动作必须以 `ToolDefinition` 为准。是否可执行由 `RBAC + policy + capability grant` 联合决定；高风险工具在 UI 上需要明确展示确认要求与限制条件。
 - **状态同步**：Web 与 Desktop 都通过 TanStack Query 或等价状态层同步后端 `Conversation / ToolInvocation / Task / Run / Device` 状态，前者偏组织级协作状态，后者偏本地执行状态。两端都要保留 `conversationId` 和 `taskContextId` 的主键语义，但 Desktop 允许额外缓存本地队列和离线产物。
