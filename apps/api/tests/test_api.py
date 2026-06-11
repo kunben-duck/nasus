@@ -445,6 +445,28 @@ def test_workspace_quality_loop_request_creates_agent_goal_proposal_and_runtime_
     assert refreshed["agent_goals"][-1]["status"] in {"running", "completed"}
 
 
+def test_project_quality_loop_request_selects_first_us_and_generates_scenarios():
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": "proj_payment", "title": "Payment System"},
+    ).json()
+
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": "Continue the quality loop and generate scenarios for the riskiest open US"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_goal"]["title"].startswith("Advance quality loop")
+
+    def scenario_lane_persisted() -> bool:
+        workspace = client.get("/v1/projects/proj_payment/workspaces/us_123").json()
+        scenarios = next((lane for lane in workspace["asset_lanes"] if lane["id"] == "lane_scenarios"), None)
+        return scenarios is not None and scenarios["status"] == "approved"
+
+    wait_until(scenario_lane_persisted)
+
+
 def test_agent_goal_interrupt_and_resume_update_conversation_snapshot():
     conversation = client.post(
         "/v1/conversations",

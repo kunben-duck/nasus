@@ -77,6 +77,9 @@ async function main() {
     await page.getByTestId('project-agent-submit').click()
     await expectVisible(page.getByText(/source groups are indexed|system image is/i).first(), 'agent answered system image query')
 
+    await page.getByTestId('agent-card-quality-loop-agent').click()
+    await expectVisible(page.getByText(/imported US work item/i).first(), 'quality loop requires imported US')
+
     console.log('smoke: success')
   } finally {
     await browser.close()

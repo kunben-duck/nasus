@@ -21,4 +21,7 @@ test('agent-first build to project workspace path works end-to-end', async ({ pa
   await page.getByTestId('project-agent-input').fill('Show me the current system image freshness and baseline status')
   await page.getByTestId('project-agent-submit').click()
   await expect(page.getByText(/source groups are indexed|system image is/i).first()).toBeVisible({ timeout: 15_000 })
+
+  await page.getByTestId('agent-card-quality-loop-agent').click()
+  await expect(page.getByText(/imported US work item/i).first()).toBeVisible({ timeout: 15_000 })
 })

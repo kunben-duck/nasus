@@ -2016,6 +2016,33 @@ class ApplicationStore:
         if not invocation.conversation_id:
             return
 
+        conversation = self.conversations.get(invocation.conversation_id)
+        if not project_id and conversation:
+            project_id = conversation.project_id or ""
+        if not us_id and project_id:
+            first_us = next(iter(self.us_items.get(project_id, [])), None)
+            us_id = first_us.id if first_us is not None else ""
+        if not project_id or not us_id:
+            await self.append_message(
+                invocation.conversation_id,
+                "assistant",
+                "I need at least one imported US work item before I can start the quality loop. Import US documents first, then I can generate scenarios, cases, automation, and release evidence.",
+                metadata={"planner_kind": "quality_loop_blocked", "missing_context": ["us_work_item"]},
+            )
+            await self._emit_tool_status(
+                invocation_id,
+                "failed",
+                "US work item is required before scenario generation",
+                [["conversation", invocation.conversation_id], ["project", project_id]],
+                ToolResult(
+                    invocation_id=invocation_id,
+                    status="failed",
+                    summary="US work item is required before scenario generation",
+                    next_recommended_tools=["project.import_us_docs"],
+                ),
+            )
+            return
+
         existing_goal_id = invocation.input_payload.get("agent_goal_id")
         if isinstance(existing_goal_id, str) and existing_goal_id in self.agent_goals:
             goal = self.agent_goals[existing_goal_id]

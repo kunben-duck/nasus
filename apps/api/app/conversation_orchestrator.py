@@ -226,22 +226,23 @@ class ConversationOrchestrator:
         )
 
     def _quality_loop_goal(self, conversation: ConversationSession, user_message: str) -> OrchestratorDecision:
-        project_id = conversation.project_id or ""
-        us_id = conversation.us_id or conversation.space_id
+        project_id = conversation.project_id or (conversation.space_id if conversation.space_type == "project" else "")
+        us_id = conversation.us_id or (conversation.space_id if conversation.space_type == "workspace" else "")
+        subject = us_id or project_id or "current project"
         return OrchestratorDecision(
             kind="agent_goal",
             agent_goal=AgentGoalProposal(
                 goal_template="quality_loop",
-                title=f"Advance quality loop for {us_id}",
+                title=f"Advance quality loop for {subject}",
                 summary="Drive the current US through the next quality step and keep the user updated with clear progress.",
                 goal_description=user_message,
                 estimated_steps=4,
                 initial_tool_id="quality.scenario.generate",
                 initial_tool_input={"project_id": project_id, "us_id": us_id},
-                target_refs=[f"project:{project_id}", f"us:{us_id}"],
-                query_keys=[["workspace", project_id, us_id], ["conversation", conversation.id]],
+                target_refs=[f"project:{project_id}"] + ([f"us:{us_id}"] if us_id else []),
+                query_keys=[["project", project_id], ["conversation", conversation.id]],
                 kickoff_message=(
-                    f"I'll take over the next quality step for **{us_id}**. I will review the current workspace context, "
+                    f"I'll take over the next quality step for **{subject}**. I will review the current workspace context, "
                     "generate the scenario pack, observe the result, and then propose the best next action."
                 ),
             ),
@@ -301,7 +302,7 @@ class ConversationOrchestrator:
         )
 
     def _looks_like_quality_goal(self, conversation: ConversationSession, lowered: str, raw: str) -> bool:
-        if conversation.space_type != "workspace":
+        if conversation.space_type not in {"workspace", "project"}:
             return False
         quality_needles = [
             "quality loop",

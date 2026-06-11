@@ -24,7 +24,7 @@ class AgentLoopRuntime:
                 summary=proposal.summary,
                 autonomy_level=proposal.suggested_autonomy_level,
                 project_id=conversation.project_id,
-                us_id=conversation.us_id or conversation.space_id,
+                us_id=self._goal_us_id(conversation, proposal),
                 steps=self._steps_for_proposal(proposal),
             )
         )
@@ -146,6 +146,15 @@ class AgentLoopRuntime:
             AgentStep(id="step_observe", title="Observe result", status="pending"),
             AgentStep(id="step_decide", title="Decide next frontier", status="pending"),
         ]
+
+    @staticmethod
+    def _goal_us_id(conversation, proposal: AgentGoalProposal) -> str | None:
+        if conversation.us_id:
+            return conversation.us_id
+        proposed_us_id = proposal.initial_tool_input.get("us_id")
+        if isinstance(proposed_us_id, str) and proposed_us_id:
+            return proposed_us_id
+        return None
 
     async def _update_goal(self, goal: AgentGoal, *, patch: dict[str, str]) -> None:
         self.store.conversation_repository.upsert_goal(goal)
