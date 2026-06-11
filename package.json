@@ -1,0 +1,15 @@
+{
+  "name": "nasus",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev:portal": "npm --prefix apps/portal run dev -- --host 0.0.0.0 --port 5173",
+    "build:portal": "npm --prefix apps/portal run build",
+    "dev:api": "./.venv/bin/python -m uvicorn apps.api.app.main:app --app-dir . --host 0.0.0.0 --port 8000 --reload",
+    "test:e2e": "playwright test",
+    "test:smoke": "node tests/e2e/smoke.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.2"
+  }
+}

@@ -1,67 +1,271 @@
 # Nasus Assurance Studio
 
-## 项目简介
-Nasus Assurance Studio 是针对 AI 助手参与开发后留下的质量风险而设计的**质量保障与上线防护工作台**。它的核心任务不是生成代码，而是围绕一次变更完成变更理解、影响识别、验证组织、证据收敛、结果归因、放行建议和质量知识沉淀。
+## README 定位
 
-当前仓库处于方案设计阶段，核心内容以架构设计、部署设计和前后端方案文档为主，目标是在正式开工前先把系统边界、实现路径和技术选型讲清楚。
+本 README 作为仓库首页版的项目计划说明，主要回答：
 
-当前默认产品形态是“单企业内多项目平台”，不是公网 SaaS 多租户产品；租户边界默认等同于部署边界。
+- Nasus 是什么
+- 为什么这个项目有意义
+- 当前阶段做什么、不做什么
+- 当前有哪些核心模块
+- 后续应该去哪里看更详细的产品、架构与开发文档
 
-## 核心价值与边界
-- **质量保障优先于测试生成**：平台聚焦变更认知和决策，Agent 可以原生触发检索与执行能力，但所有高风险行为都必须受策略、审计与回放约束。
-- **Agent-first + Tool-native**：主会话是第一操作入口，所有业务动作原生都支持 Agent 调用；按钮、表单和卡片动作只是同一套工具契约的可视化封装。
-- **统一上下文+双基线**：通过 Raw Assets、Context Objects、Task Context Workspace 等对象层与 `Official / Version Shared / Session-only / Candidate` 知识分级，保证会话噪音不会污染官方基线。
-- **治理与审批闭环**：Project/Version/Session/Baseline 四层治理对象+Approval Control 推进 Candidate Knowledge 的晋级，确保可追溯、可审计。
-- **双端 Agent 协作**：采用 `Central Agent + Edge Agent + Tools + Skills + Workers + Deterministic Execution` 的混合形态，Web 端与 Desktop 端都可参与任务推理与执行。
-- **不是代码生成器**：所有输出都服务于上线准备度建议和质量判断，执行层由 Playwright 资产在 runner 端完成，平台只提供调度与证据汇总。
+详细的产品特性、系统架构和开发指导已经拆分到 `docs/` 中维护，README 不再承载详细技术方案。
 
-## 用户旅程
-1. 管理员在 `Build` 中初始化项目，导入 Git、文档、历史验证资产，系统完成原料索引与初版 `Historical System Baseline`。
-2. 创建版本时从 `Official Baseline` fork 出 `Version Working Baseline`，并导入本版本 US、设计与 OpenAPI 变更，建立版本级 Change Set 与初步风险视图。
-3. 授权用户在 `Version Space / Personal Workspace` 启动会话，上传材料并在 `Personal Workspace` 中查看 `Task Context Workspace`，系统用历史画像、实时证据与策略规则产生 `Quality Assurance Profile`。
-4. 普通用户在 `Personal Workspace` 多轮审核溯源材料，通过主会话或页面动作触发分析、场景生成、执行、总结等工具；所有写操作都应可回溯到同一套 `ToolInvocation`，而高风险动作仍受 `RBAC + policy + capability grant` 约束，过程中 `Knowledge` 提供证据与 Feature Graph/Change Graph 支撑协作。
-5. `Runs` 页面展示 automation.generate 产出的 Playwright 资产、执行结果、失败分析与 patch 建议；Desktop 端也可在本地完成受控执行，两端都可独立推理和执行，但都只能先提交候选结果。
-6. Release Advice/Approval Control 输出上线准备度建议；当中心端与桌面端结论冲突时，任务进入 `pending_merge`，由 `Merge/Score + Approval Control` 形成正式结论。`Candidate Knowledge` 默认先晋级到 `Version Shared Knowledge`，版本收口并审批通过后再回写 `Official Baseline`，形成质量沉淀。
+## 项目定义
 
-## 简版整体架构
-1. **Experience Layer**：Web Portal/Desktop Client/CLI/API/Nasus Assistant 为入口。
-2. **Intelligence Orchestration Layer**：`Central Agent + Edge Agent + Conversation + Tool Contracts + Skills + Workers + Deterministic Execution` 负责理解会话、选择工具、路由 Skill、调度 Worker、合并结果、推动审批。
-3. **Domain Intelligence Layer**：Baseline、Impact、Verification Planning、Scenario、Case、Automation、Failure Analysis、Healing、Release Advice 九大服务构成业务面。
-4. **Unified Context Engine**：Source Connectors + Code Intelligence + Knowledge Intelligence + Anchor Extraction + Entity Resolution + Context Assembler + Context Object Store，产出 `Historical Baseline / Task Context / Quality Profile`。
-5. **Integration Fabric**：隔离 Git/Docs/OpenAPI、执行器、存储与策略，为上层提供统一能力。
-6. **Infrastructure Providers**：PostgreSQL、MinIO、OpenGrok、Tree-sitter、Playwright、Queue/Scheduler 等底层组件。
+### 一句话定义
 
-## 简版部署架构
-- `portal`：React/TypeScript 前端应用，负责 `Welcome / Build / Dashboard / Documentation` 顶层产品区和项目内 `Project Space` 工作区。
-- `api/orchestrator`：Python + FastAPI + durable workflow（默认 Temporal）+ LangGraph，承载中心侧 Conversation Orchestrator、Tool Registry、Tool Invocation Runtime、Skill Registry、Worker Scheduler、Merge/Score、Approval Control 与领域服务。
-- `worker-runtime`：并行运行 context/impact/scenario/failure 等 worker，异步消费任务队列并产出质量方案与验证资产。
-- `runner`：Node.js/TypeScript + Playwright Test 的隔离执行层，执行 automation.generate 并回写执行证据。
-- `desktop-client`：Electron + React + TypeScript + local-agent-runtime 的本地执行端，承接 Edge Agent、本地权限动作、离线队列和同步回传。
-- `storage`：PostgreSQL 用于对象模型和治理状态，MinIO 存 Raw Assets、执行产物；OpenGrok + Tree-sitter 负责代码索引与解析。
-- `queue/scheduler`：承接 `worker-runtime` 的调度与 `runner` 任务触发。具体产品选型尚未在计划书中写死，但运行模型已明确要求异步调度和确定性执行；正式结论仍走中心端 merge/approval 主线。
+**通用 coding agents 帮你写代码，Nasus 帮你决定这次变更是否真的准备好上线。**
+
+### 产品愿景
+
+**在 agent 大规模参与研发之后，重建软件交付的质量边界。**
+
+### 产品定位
+
+Nasus 是一个面向 AI coding 时代的**功能验收与上线决策控制平面**。
+
+它的核心职责不是生成代码，也不是替代整个测试工具链，而是围绕一次变更完成：
+
+- 变更理解
+- 影响识别
+- 验证组织
+- 证据收敛
+- 结果归因
+- 放行建议
+- 质量知识沉淀
+
+它要回答的核心问题只有一个：
+
+> **这次变更是否真的准备好上线。**
+
+## 为什么这个项目有意义
+
+在 AI 大规模参与研发之后，代码产出速度会持续提高，但“上线判断”会变得更困难。
+
+团队真正缺的不是更多生成能力，而是：
+
+- 这次变更到底影响了哪些模块、页面、接口和角色
+- 当前版本的功能验收是否完整
+- 已生成的验证资产是否真正覆盖了风险
+- 执行结果能否支撑上线判断
+- 失败到底是脚本问题、环境问题，还是功能问题
+- 版本结束后，哪些知识应该成为组织的长期质量记忆
+
+存量系统尤其如此。Git、US、设计文档、UX 图、接口文档、历史测试资产和执行证据通常是分散的，导致每个版本都在重复理解系统、重复组织验证、重复承担上线不确定性。
+
+Nasus 的意义，就是在 AI coding 时代，为组织补上一层专门面向**功能验收与上线判断**的控制系统。
+
+## 当前阶段的范围
+
+### 当前阶段做什么
+
+当前阶段聚焦以下主线：
+
+1. 项目创建与存量系统知识接入
+2. 系统画像初始化与正式基线建立
+3. 版本分支创建与版本级 US 导入
+4. 围绕 US 的质量闭环
+5. Agent 驱动的验证规划、资产生成与执行组织
+6. 执行证据收敛、失败归因与放行建议
+7. 高价值知识沉淀与正式基线回写
+
+### 当前阶段不做什么
+
+为避免范围膨胀，以下内容不属于当前阶段目标：
+
+- 不做通用代码生成平台
+- 不做通用聊天型 Agent 平台
+- 不做全面替代现有测试管理系统的平台
+- 不以“生成更多测试用例”作为核心价值目标
+- 不优先做 Desktop / Edge 本地执行体系
+- 不优先做公网 SaaS 多租户平台
+- 不把所有研发运维场景都纳入首发交付
+
+### 当前阶段交付边界
+
+当前阶段默认：
+
+- 以 **Web Portal** 作为正式工作入口
+- 以 **agent-first** 作为主交互原则
+- 以 **功能验收与上线判断闭环** 作为交付主线
+
+## 核心产品原则
+
+1. **质量保障优先于测试生成**
+2. **功能验收与上线判断优先于资产数量**
+3. **统一上下文优先于离散检索**
+4. **系统画像是长期资产，不是一次性导入结果**
+5. **版本期间更新工作基线，不直接污染正式基线**
+6. **会话知识默认私有，可经治理提升**
+7. **Agent-first，但不能绕过治理**
+8. **Agent 负责规划与收敛，执行保持确定性**
+9. **证据、审计、审批优先于一次性全自动**
+
+## 核心工作空间
+
+- **Build**：项目创建与原料接入入口
+- **Dashboard**：项目组合与全局进展仪表盘
+- **Documentation**：说明、指南、模板与方法论入口
+- **Project Space**：项目级长期空间
+- **Version Space**：版本级协作与收敛空间
+- **Personal Workspace**：围绕单个 US 的质量主工作区
+
+## 当前阶段的核心应用模块
+
+README 里的“模块”只指产品应用架构模块，不把前端、后端、平台底座这类技术拆分当成产品一级模块。
+
+### 1. 系统画像构建模块
+
+这是 Nasus 的系统理解基础层，负责把分散的存量系统知识转成可持续使用的系统画像。
+
+它回答的问题是：
+
+- 当前系统到底由哪些模块、页面、接口、依赖和历史资产组成
+- 当前版本变更影响了哪些对象
+- Agent 和质量闭环应该基于什么上下文开展工作
+
+它承载的关键能力包括：
+
+- Git、US、UX、接口文档、历史测试资产等原料接入
+- 系统画像初始化
+- 正式系统基线建立与维护
+- 版本工作基线与正式基线的关系管理
+- 为后续分析、生成、执行和放行提供统一上下文
+
+### 2. Agent 主体模块
+
+这是 Nasus 的主驱动主体，负责把用户目标转成可持续推进的工作过程。它不是“页面里的聊天助手”，而是贯穿整个系统的 `Agent Service`。
+
+它回答的问题是：
+
+- 用户当前真正想完成的任务是什么
+- 下一步应该做什么
+- 需要调用哪些工具、追问哪些信息、如何推进闭环
+
+它承载的关键能力包括：
+
+- 主会话作为第一操作入口
+- 短期工作记忆、会话记忆和项目长期记忆管理
+- 自主规划与目标推进
+- Tool 调用与结果收敛
+- 多 Agent 并行协作与蜂群式任务拆分
+- 结果总结、建议与下一步引导
+
+### 3. 质量闭环主体模块
+
+这是 Nasus 的业务价值主线，负责把一次变更从“理解”推进到“是否准备好上线”的判断。
+
+它回答的问题是：
+
+- 当前 US / 版本的功能验收是否完整
+- 验证资产是否覆盖风险
+- 执行结果是否足以支撑上线判断
+- 哪些知识应该沉淀回基线
+
+它承载的关键能力包括：
+
+- 版本创建与 US 导入
+- 围绕 US 的质量分析
+- 测试范围、场景、计划、用例与自动化建议
+- 执行证据、失败归因与修复建议
+- 审批、冲突处理、放行建议与基线回写
+
+### 三个模块的关系
+
+Nasus 当前阶段的产品主线可以收敛成：
+
+`系统画像构建 -> Agent 主体 -> 质量闭环主体`
+
+也就是：
+
+- 系统画像构建，为 Agent 和质量工作提供统一上下文
+- Agent 主体，负责理解目标、管理记忆、规划步骤、调度工具和并行 Agent
+- 质量闭环主体，负责形成可审计的功能验收结果和上线判断
+
+## Agent-first 要求
+
+Nasus 不是“页面里加一个聊天框”，而是一个 **agent-first** 产品。
+
+这意味着：
+
+- 主会话是第一操作入口
+- 用户应该可以通过自然语言驱动关键工作
+- 按钮、表单、快捷操作只是同一工具体系的可视化封装
+- Agent 可以主动追问缺失信息、规划下一步、组织质量闭环
+- 系统内部所有核心业务能力都应注册为工具，让 Agent 可以原生调用
+- Agent Service 必须管理短期记忆、会话记忆、长期系统画像记忆和候选知识
+- 复杂任务可以由 Agent 拆分为多个并行子 Agent 协作完成，再由合并与治理链路收敛
+
+同时，agent-first 不等于 uncontrolled agent：
+
+- Agent 不能绕过治理、审批和正式结论链路
+- Agent 不能直接污染正式基线
+- Agent 不能把一次性输出直接当成正式事实
+- 并行子 Agent 只能提交候选结果，不能直接写正式领域对象
+
+## 关键用户旅程
+
+1. 用户在 `Build` 创建项目并导入存量系统知识
+2. 系统初始化系统画像并形成正式系统基线
+3. 用户创建版本并导入版本级 US / 分支信息
+4. 用户围绕 US 启动质量闭环，Agent 生成验证方案
+5. 用户多轮审核并补充意见，系统局部重生成并收敛
+6. 系统执行自动化并分析失败
+7. 系统给出上线准备度建议
+8. 高价值知识经过审批沉淀回版本工作基线或正式系统基线
+
+## 当前阶段目标
+
+### 业务目标
+
+- 降低存量系统版本变更的理解成本
+- 提升功能验收设计质量与覆盖度
+- 提高验证资产生成与维护效率
+- 为 AI 生成代码建立可验证、可审计、可放行的质量机制
+- 让团队对“是否可以上线”形成更稳定的证据与决策基础
+- 沉淀组织级质量记忆，提升后续版本交付信心
+
+### 成功标准
+
+当前阶段的成功，不是“功能很多”，而是“完整跑通一条可上线判断的闭环”。
+
+也就是：
+
+- 在 1 个存量系统上完成初始化接入
+- 在 1 条真实版本链路上完成 US 质量闭环
+- 能输出可追溯的执行证据与放行建议
+- 能在版本结束后完成一次正式知识沉淀
 
 ## 文档导航
-- [项目计划书](/Users/uben/project/project/Nasus/nasus_assurance_studio_implementation_plan.md)：原始实施版计划书，包含对象模型、治理规则、阶段规划和产品形态。
-- [最终特性说明书](/Users/uben/project/project/Nasus/docs/final-feature-spec.md)：定义最终产品能力、角色旅程、默认规则和治理要求，是当前产品行为的最高优先级文档。
-- [系统架构与部署设计](/Users/uben/project/project/Nasus/docs/system-architecture.md)：详细说明整体架构、数据流、协作模型、部署单元和演进路径。
-- [前后端方案设计](/Users/uben/project/project/Nasus/docs/frontend-backend-design.md)：详细说明技术栈选型、页面职责、后端分层、执行层和阶段实施建议。
-- [前端应用架构](/Users/uben/project/project/Nasus/docs/frontend-application-architecture.md)：定义 Portal / Desktop 的目录结构、路由、状态管理分层、构建部署与测试策略。
-- [前端页面蓝图](/Users/uben/project/project/Nasus/docs/frontend-page-blueprints.md)：定义 16 个视图的页面层级树、右栏面板映射、Agent Goal UI 和组件目录。
-- [后端总设计](/Users/uben/project/project/Nasus/docs/backend-system-design.md)：定义 agent-first 后端总体结构、模块边界、控制流和后端实现主线。
-- [认证与授权设计](/Users/uben/project/project/Nasus/docs/auth-and-access-design.md)：定义 OIDC/OAuth、Token、API 鉴权中间件、RBAC 和设备授权。
-- [LLM Provider 与推理运行时设计](/Users/uben/project/project/Nasus/docs/llm-provider-and-runtime-design.md)：定义 Provider 抽象、Prompt 管理、上下文裁剪、token 预算和降级策略。
-- [Conversation Orchestrator 设计](/Users/uben/project/project/Nasus/docs/conversation-orchestrator-design.md)：定义主会话如何把自然语言输入转成 `ToolInvocationPlan`。
-- [会话与消息管理设计](/Users/uben/project/project/Nasus/docs/conversation-session-management.md)：定义会话生命周期、消息对象、上下文窗口管理、多会话协作和 session-only knowledge 绑定。
-- [首发 Tool Catalog（V1）](/Users/uben/project/project/Nasus/docs/tool-catalog-v1.md)：定义首发必须实现的工具目录与 demo 最小子集。
-- [Unified Context Engine 设计](/Users/uben/project/project/Nasus/docs/unified-context-engine-design.md)：定义 Source Connector、原料摄入、代码/文档理解、锚点抽取、实体归并和上下文组装。
-- [Skill 实现模式设计](/Users/uben/project/project/Nasus/docs/skill-implementation-patterns.md)：定义 Skill 的代码骨架、输入输出协议、与 LLM/Worker 的关系和结果落库规则。
-- [质量资产生成策略设计](/Users/uben/project/project/Nasus/docs/quality-generation-strategies.md)：定义测试范围、场景、用例、自动化、变更文档、失败分析和修复建议的生成策略。
-- [MCP 集成设计](/Users/uben/project/project/Nasus/docs/mcp-integration-design.md)：定义 Nasus 如何接入外部 MCP Server，并将外部能力纳入 Tool/Policy/Audit 体系。
-- [后端领域模型](/Users/uben/project/project/Nasus/docs/backend-domain-model.md)：定义核心对象、状态机、正式事实边界和对象关系。
-- [后端运行时与工具协议](/Users/uben/project/project/Nasus/docs/backend-runtime-and-tool-protocol.md)：定义 Conversation、Tool、Skill、Worker、Workflow 的职责与协议。
-- [后端 API 与事件契约](/Users/uben/project/project/Nasus/docs/backend-api-and-events.md)：定义 REST、SSE、内部事件和工具调用接口。
-- [后端执行、同步与治理](/Users/uben/project/project/Nasus/docs/backend-execution-sync-governance.md)：定义 runner、本地执行、同步、审批和策略闸口。
-- [后端运维与测试基线](/Users/uben/project/project/Nasus/docs/backend-ops-and-test-baseline.md)：定义环境、可观测性、发布、备份恢复和测试矩阵。
-- [端到端数据流示例](/Users/uben/project/project/Nasus/docs/end-to-end-flow-examples.md)：用完整链路说明 Conversation、Tool、Workflow、Skill、Worker、领域对象和 SSE 如何串联。
-- [ux/index.html](/Users/uben/project/project/Nasus/ux/index.html)、[ux/styles.css](/Users/uben/project/project/Nasus/ux/styles.css)、[ux/app.js](/Users/uben/project/project/Nasus/ux/app.js)：当前前端 demo 与后续正式开发的样式、布局和交互基线。
-- [前端视觉与交互规范](/Users/uben/project/project/Nasus/docs/frontend-visual-style.md)：高层视觉说明文档，作为 `ux/` 原型的补充，不替代 `ux/` 目录的实现基线。
+
+### 外层总览
+
+- [项目计划书](./docs/nasus_assurance_studio_implementation_plan.md)
+- [文档总览](./docs/README.md)
+- [最终特性说明书](./docs/final-feature-spec.md)
+- [系统架构与部署设计](./docs/system-architecture.md)
+- [实现总览](./docs/implementation-overview.md)
+
+### 产品模块与空间承载面
+
+以下文档分别回答：
+
+- 产品一级模块由哪些能力组成
+- 这些能力落在哪些工作空间里
+- 研发实现如何分层落地
+
+- [模块地图](./docs/modules/README.md)
+- [系统画像构建模块](./docs/modules/system-image/README.md)
+- [Agent 主体模块](./docs/modules/agent/README.md)
+- [质量闭环主体模块](./docs/modules/quality-loop/README.md)
+- [Studio Entry 空间](./docs/spaces/studio-entry.md)
+- [Project Foundation 空间](./docs/spaces/project-foundation.md)
+- [平台能力总览](./docs/implementation/platform/README.md)
+
+### 原型基线
+
+- [UX 原型 HTML](./ux/index.html)
+- [UX 原型样式](./ux/styles.css)
+- [UX 原型脚本](./ux/app.js)

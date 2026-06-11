@@ -10,8 +10,8 @@
 | --- | --- | --- |
 | 本说明书 | 定义产品能力真相、核心对象、用户旅程、默认规则 | 最高 |
 | `docs/system-architecture.md` | 解释系统分层、运行平面、部署单元和实现约束 | 次级 |
-| `docs/frontend-backend-design.md` | 解释前后端技术方案、模块边界和工程落地建议 | 次级 |
-| `nasus_assurance_studio_implementation_plan.md` | 提供原始规划、背景材料和阶段性输入 | 参考 |
+| `docs/implementation-overview.md` | 解释实现总蓝图、模块边界和工程落地建议 | 次级 |
+| `docs/nasus_assurance_studio_implementation_plan.md` | 提供原始规划、背景材料和阶段性输入 | 参考 |
 
 约束：
 
@@ -43,6 +43,7 @@ Nasus 的目标不是做通用聊天工具，而是把 AI 变成版本质量工�
 - **系统画像是长期资产**：系统画像不是一次性导入结果，而是可基线化、可分支、可合并的长期知识对象。
 - **对话优先，不等于无结构**：用户主要通过对话驱动 Agent 完成工作，但所有关键输出都必须落成结构化对象。
 - **Agent-first，不等于绕过治理**：主会话是第一操作入口，所有业务动作都应支持 Agent 调用，但高风险动作仍必须进入确认、审批或策略闸口。
+- **Agent Service 是系统主驱动层**：Agent 不只是对话 UI，而是负责目标理解、记忆管理、工具规划、多 Agent 并行调度和结果收敛的系统级服务。
 - **工具是业务动作的正式接口**：项目、版本、US、执行、审批、同步和查询能力都要先定义成可被 Agent 调用的工具，页面按钮和表单只是同一工具体系的可视化封装。
 - **Agent 负责规划，系统负责治理**：Agent 可以自主规划和调用 tools/skills，但正式结论、审批、基线写回仍由治理流控制。
 - **版本分支像 Git 一样工作**：版本工作在系统画像分支上展开，上线后再把新知识合并回正式系统画像。
@@ -63,8 +64,7 @@ Nasus 的目标不是做通用聊天工具，而是把 AI 变成版本质量工�
 
 说明：
 
-- `Desktop Client` 是运行端和执行入口，不是独立业务角色。
-- 平台管理员、版本负责人、质量负责人、质量参与者都可能在特定场景下通过 `Desktop Client` 执行本地动作。
+- 当前开发与验收范围聚焦 `Web Portal`。
 
 ### 3.2 空间模型
 
@@ -73,14 +73,12 @@ Nasus 的目标不是做通用聊天工具，而是把 AI 变成版本质量工�
 | `Project Space` | 项目级长期质量空间 | Git 仓库、US 文档、UX 图、系统画像、正式系统基线、参与者、策略 | 创建项目、导入原料、初始化系统画像、查看全局知识、管理基线分支 |
 | `Version Space` | 版本级质量闭环空间 | 版本分支、版本级 US、开发分支、版本风险、版本质量资产、放行结论 | 创建版本、导入版本输入、分配 US、监控质量进度、审批放行 |
 | `Personal Workspace` | 个人执行与对话工作空间 | 分配到个人的 US、质量任务、质量资产、执行结果、会话 | 通过对话完成分析、生成资产、执行脚本、总结结果 |
-| `Desktop Client` | 本地执行和本地权限空间 | 本地会话、本地产物、本地能力授权、本地执行队列 | 执行本地动作、上传本地证据、接受远程任务、离线补传 |
 
 ### 3.3 入口默认值
 
 | 入口 | 最终定位 |
 | --- | --- |
 | `Web Portal` | 默认正式工作台入口，承接项目空间、版本空间、组织级协作和审批 |
-| `Desktop Client` | 默认个人执行入口，承接本地能力和本地执行 |
 | `CLI / API` | 辅助入口，服务于集成、批处理和自动化 |
 | `Assistant` | 增强入口，复用同一套对象模型和 Agent 能力，但不高于 `Web Portal` |
 
@@ -97,12 +95,12 @@ Nasus 的目标不是做通用聊天工具，而是把 AI 变成版本质量工�
 | `US Work Item` | 版本中的一个 US 单元，绑定需求描述、责任人、相关系统对象和质量闭环状态 | 版本级 |
 | `Quality Task` | 围绕某个 US 产生的一次具体质量任务或子任务 | US 级 |
 | `Quality Asset Pack` | 围绕 US 形成的一组质量资产，包括测试场景、范围、计划、用例、自动化脚本、性能脚本、变更文档和变更方案 | US 级 |
-| `Run` | 一次正式执行实例的 canonical 对象，必须带 `execution_channel=web_runner|desktop_local` | 执行层正式对象 |
+| `Run` | 一次正式执行实例的 canonical 对象，当前阶段固定以 `execution_channel=web_runner` 交付 | 执行层正式对象 |
 | `Evidence` | 执行结果、截图、日志、trace、归因、总结等证据对象 | 证据层 |
-| `ToolDefinition` | 一个可被主 Agent、UI 或 Desktop 统一触发的业务动作定义，描述输入、输出、风险和确认方式 | 产品级动作目录 |
+| `ToolDefinition` | 一个可被主 Agent 或 UI 统一触发的业务动作定义，描述输入、输出、风险和确认方式 | 产品级动作目录 |
 | `ToolInvocation` | 一次具体的工具调用记录，连接对话、界面动作与后端领域对象 | 命令执行层 |
 | `ToolResult` | 工具调用的结构化返回，包含摘要、对象引用、证据引用和后续推荐动作 | 结果封装层 |
-| `AgentDecision` | 中心端或桌面端产出的候选分析、归因、修复、放行或知识判断，状态为 `provisional / merged / approved / rejected` | 候选决策层 |
+| `AgentDecision` | Agent Service 或 Worker 产出的候选分析、归因、修复、放行或知识判断，状态为 `provisional / merged / approved / rejected` | 候选决策层 |
 | `MergedResolution` | 由 `Merge/Score + Approval Control` 汇总形成的正式任务结论、正式放行建议或正式知识结论 | 正式治理层 |
 | `Conversation Session` | 用户在项目空间、版本空间或个人工作空间中的一次对话工作会话 | 会话层 |
 
@@ -138,7 +136,7 @@ Nasus 的主交互方式不是多页面表单流，而是“带结构化上下�
 
 - 用户可以直接通过主会话发起查询、分析、执行、审批申请、同步和治理动作。
 - 主会话会把自然语言输入解析成 `ToolInvocationPlan`，再调用对应工具完成动作。
-- 同一动作无论来自会话、按钮、表单、卡片还是 Desktop 操作，本质上都应落成同一类 `ToolInvocation`。
+- 同一动作无论来自会话、按钮、表单还是卡片操作，本质上都应落成同一类 `ToolInvocation`。
 
 每个空间都以一个主对话界面为中心，参考 AI Studio 的工作方式：
 
@@ -174,7 +172,33 @@ Nasus 的主交互方式不是多页面表单流，而是“带结构化上下�
 - 页面按钮、快捷 chip、右侧卡片动作只是同一工具体系的 UI 封装
 - 读查询可以保留 read API，但主业务动作不能只存在于 UI 表单里而无法被 Agent 调用
 
-### 5.3 对话交互示例
+### 5.3 Agent Service、记忆与并行协作
+
+Nasus 的 Agent 主体是系统级 `Agent Service`，而不是单个 LLM 调用。
+
+Agent Service 必须包含：
+
+- `Agent Supervisor`：把用户目标转成 `AgentGoal`，决定自主级别、预算、工具链和是否拆分并行子任务。
+- `Agent Memory Manager`：统一管理短期工作记忆、会话记忆、项目长期记忆和候选知识。
+- `Agent Goal Runtime`：围绕单个高级目标执行 Think -> Act -> Observe -> Decide 循环。
+- `Agent Swarm Coordinator`：在复杂任务中并行调度多个 worker agent。
+- `Agent Result Merger`：合并子 Agent 候选结果，识别冲突并提交给 `Merge/Score` 与审批链。
+
+记忆分层固定为：
+
+- **短期工作记忆**：单个 `AgentGoal` 内的当前目标、步骤、观察结果和预算。
+- **会话记忆**：`ConversationSession` 内的最近消息、摘要 checkpoint、用户反馈和工具调用历史。
+- **长期系统记忆**：系统画像、正式基线、历史质量资产、执行证据和已批准质量规则。
+- **候选记忆**：Agent 发现但尚未确认的候选风险、候选关系、候选验证策略和候选失败归因。
+
+并行 Agent 协作遵循以下规则：
+
+- 大版本风险分析、多 US 质量评估、多模块影响分析和批量失败归因可以进入 Agent swarm。
+- 每个子 Agent 都必须通过工具调用执行动作，并关联 `AgentGoal / ToolInvocation / Evidence / AuditEvent`。
+- 子 Agent 只能产出候选结果；正式状态、正式放行、正式基线写回必须经过 `Merge/Score + Approval Control`。
+- Swarm 必须受并发数、token 预算、工具调用次数和策略闸口约束。
+
+### 5.4 对话交互示例
 
 项目创建示例：
 
@@ -244,9 +268,9 @@ Nasus 的主交互方式不是多页面表单流，而是“带结构化上下�
 
 | 项目 | 内容 |
 | --- | --- |
-| 触发者 | 质量参与者、质量负责人，以及在桌面端运行任务的相关角色 |
-| 入口空间 | `Personal Workspace` `Desktop Client` |
-| 核心动作 | 触发自动化脚本执行、性能脚本执行、本地动作执行，收集证据并总结结果 |
+| 触发者 | 质量参与者、质量负责人 |
+| 入口空间 | `Personal Workspace` |
+| 核心动作 | 触发自动化脚本执行、性能脚本执行，收集证据并总结结果 |
 | Agent 作用 | 决定调用哪类执行能力、总结执行结果、归纳失败原因、给出下一步建议 |
 | 关键产物 | `Run`、`Evidence`、执行总结、失败归因、修复建议 |
 | 结果 | US 级质量资产从“设计完成”进入“执行完成且有证据支撑” |
@@ -323,8 +347,6 @@ Nasus 的主交互方式不是多页面表单流，而是“带结构化上下�
   - 生成自动化脚本、触发执行、查看执行进度、回放、失败归因、修复建议
 - `Governance Tools`
   - 发起审批、合并冲突、提交放行、写回基线、查看审批状态
-- `Device / Edge Tools`
-  - 注册设备、申请本地能力、执行本地动作、查看同步状态、补传证据
 - `Query / Insight Tools`
   - 查看当前测试进度、查看版本风险、查看系统画像、查看 US 状态、查看未闭环项
 
@@ -363,9 +385,9 @@ Nasus 要做的是“Agent 负责理解、规划、选用工具、协同和总�
 | 层 | 职责 |
 | --- | --- |
 | `Conversation Agent Layer` | 面向用户对话、理解意图、规划步骤、组织协作，并把输入解析成工具调用计划 |
-| `Tool Contract Layer` | 把所有业务动作封装成可被主 Agent、UI 和 Desktop 统一调用的正式工具 |
+| `Tool Contract Layer` | 把所有业务动作封装成可被主 Agent 和 UI 统一调用的正式工具 |
 | `Skill / Worker Layer` | 作为工具背后的能力组件和执行单元，负责具体分析、生成和归因 |
-| `Deterministic Execution Layer` | 承载脚本执行、桌面动作、本地动作、证据留存 |
+| `Deterministic Execution Layer` | 承载脚本执行与证据留存 |
 | `Governance Layer` | 承载审批、放行、分支管理、基线回写、审计 |
 | `Knowledge Layer` | 承载系统画像、版本分支、US 质量资产和历史证据 |
 
@@ -373,11 +395,10 @@ Nasus 要做的是“Agent 负责理解、规划、选用工具、协同和总�
 
 ### 9.1 Agent 形态
 
-- 采用 `Central Agent + 完整 Edge Agent`
-- Tool 是产品级动作抽象，Skill 默认作为工具背后的内部能力组件，且仍以 `中心为主、少量本地下沉`
-- Web 和 Desktop 都显式展示可调用的工具，并允许在高级视图中展示工具背后的 Skill 组成
-- 双端都可以独立推理
-- 双端都只能先写入 `AgentDecision(status=provisional)`
+- 采用 `Central Agent`
+- Tool 是产品级动作抽象，Skill 默认作为工具背后的内部能力组件，并以中心侧统一编排为准
+- Web 显式展示可调用的工具，并允许在高级视图中展示工具背后的 Skill 组成
+- 当前阶段由中心侧统一推理并写入 `AgentDecision(status=provisional)`
 - 正式结论必须由 `Merge/Score + Approval Control` 形成 `MergedResolution`
 
 ### 9.2 Agent 可以做的事
@@ -395,7 +416,7 @@ Nasus 要做的是“Agent 负责理解、规划、选用工具、协同和总�
 - 不能绕过审批直接写正式放行结论
 - 不能绕过治理直接把版本知识写回正式系统画像
 - 不能绕过执行器直接认定执行成功
-- 不能绕过权限直接执行高风险本地动作
+- 不能绕过权限直接执行高风险动作
 
 ### 9.4 Tool 原生边界
 
@@ -409,7 +430,6 @@ Nasus 要做的是“Agent 负责理解、规划、选用工具、协同和总�
 | 规则项 | 默认值 |
 | --- | --- |
 | 主入口 | `Web Portal` |
-| 本地执行入口 | `Desktop Client` |
 | 主交互方式 | 对话优先 |
 | 第一操作入口 | `Conversation Session` |
 | 主要工作组织方式 | `Project Space -> Version Space -> Personal Workspace` |
@@ -420,7 +440,7 @@ Nasus 要做的是“Agent 负责理解、规划、选用工具、协同和总�
 | 对话输出默认形态 | 优先落为结构化对象，不止停留在文本 |
 | 页面动作语义 | 同一工具体系的可视化封装 |
 | 执行记录 | 统一为 canonical `Run`，必须带 `execution_channel` |
-| 决策记录 | 双端先产出 `AgentDecision(status=provisional)` |
+| 决策记录 | 中心侧先产出 `AgentDecision(status=provisional)` |
 | 冲突状态 | 统一进入 `pending_merge` |
 | 正式结论对象 | `MergedResolution` |
 | 高风险工具动作 | 必须经过权限、策略、审计和必要确认/审批 |
