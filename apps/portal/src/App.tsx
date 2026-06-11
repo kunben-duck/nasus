@@ -1,9 +1,7 @@
-import { RouterProvider } from 'react-router-dom'
-
-import { router } from './app/router'
+import { NasusStudio } from './app/NasusStudio'
 
 function App() {
-  return <RouterProvider router={router} />
+  return <NasusStudio />
 }
 
 export default App

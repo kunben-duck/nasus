@@ -120,7 +120,7 @@ class ConversationOrchestrator:
                 "us_id": conversation.us_id or conversation.space_id,
             }
         elif conversation.space_type == "knowledge":
-            tool_id = "query.knowledge.status"
+            tool_id = "query.system_image.status"
             input_payload = {"project_id": conversation.project_id or conversation.space_id}
         elif conversation.space_type == "runs":
             tool_id = "query.run.status"

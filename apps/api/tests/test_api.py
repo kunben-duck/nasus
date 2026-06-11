@@ -308,6 +308,58 @@ def test_tool_invocation_creates_project():
     assert any(project["name"] == "Agent Ops Hub" for project in projects)
 
 
+def test_system_image_exposes_long_term_baseline_shape():
+    response = client.get("/v1/projects/proj_payment/system-image")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["project"]["system_image_status"] == "ready"
+    assert {source["source_type"] for source in body["sources"]} == {"code", "us_doc", "test_asset"}
+    assert body["baselines"][0]["kind"] == "official"
+    assert body["baselines"][0]["fork_strategy"] == "copy_on_write"
+    assert len(body["relationships"]) >= 3
+    assert {metric["metric_group"] for metric in body["metric_snapshots"]} == {
+        "code_quality",
+        "us_completion_quality",
+        "test_quality",
+        "release_readiness",
+    }
+
+
+def test_created_project_has_draft_system_image_and_can_initialize_via_tool():
+    project = client.post("/v1/projects", json={"name": "System Image Long Term"}).json()
+
+    draft = client.get(f"/v1/projects/{project['id']}/system-image")
+    assert draft.status_code == 200
+    draft_body = draft.json()
+    assert draft_body["project"]["system_image_status"] == "draft"
+    assert {source["source_type"] for source in draft_body["sources"]} == {"code", "us_doc", "test_asset"}
+    assert all(source["ingestion_status"] == "pending" for source in draft_body["sources"])
+    assert draft_body["baselines"][0]["status"] == "draft"
+
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+    invoked = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "baseline.initialize",
+            "input": {"project_id": project["id"]},
+        },
+    )
+    assert invoked.status_code == 200
+    invocation_id = invoked.json()["id"]
+    wait_until(lambda: client.get(f"/v1/tool-invocations/{invocation_id}").json()["status"] == "completed")
+
+    ready = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    assert ready["project"]["system_image_status"] == "ready"
+    assert all(source["ingestion_status"] == "indexed" for source in ready["sources"])
+    assert ready["baselines"][0]["status"] == "ready"
+    assert len(ready["objects"]) >= 3
+    assert len(ready["metric_snapshots"]) == 4
+
+
 def test_project_and_version_are_persisted_across_store_restart():
     project = client.post("/v1/projects", json={"name": "Persistent Project"}).json()
     version = client.post(f"/v1/projects/{project['id']}/versions", json={"name": "2026.Q4"}).json()

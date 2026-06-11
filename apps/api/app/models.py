@@ -205,6 +205,88 @@ class KnowledgeObject(BaseModel):
     freshness: str
 
 
+class RawAssetRecord(BaseModel):
+    id: str
+    project_id: str
+    version_id: Optional[str] = None
+    source_type: Literal["code", "us_doc", "test_asset"]
+    source_uri: str
+    ingestion_status: Literal["pending", "indexed", "failed", "stale"] = "pending"
+    content_hash: str = ""
+    content_ref: Optional[str] = None
+    evidence_refs: List[str] = Field(default_factory=list)
+    last_ingested_at: Optional[str] = None
+
+
+class BaselineRecord(BaseModel):
+    id: str
+    project_id: str
+    kind: Literal["official", "version_working", "version_shared"]
+    status: Literal["draft", "building", "ready", "stale", "pending_merge", "promoted"]
+    source_version_id: Optional[str] = None
+    parent_baseline_id: Optional[str] = None
+    fork_strategy: Literal["copy_on_write", "materialized_snapshot"] = "copy_on_write"
+    object_count: int = 0
+    relationship_count: int = 0
+    metric_snapshot_count: int = 0
+    updated_at: str
+
+
+class ContextRelationship(BaseModel):
+    id: str
+    project_id: str
+    baseline_id: str
+    from_object_id: str
+    relationship_type: Literal[
+        "implements",
+        "depends_on",
+        "covers",
+        "validates",
+        "impacts",
+        "evidenced_by",
+        "belongs_to",
+    ]
+    to_object_id: str
+    confidence: float = Field(ge=0, le=1)
+    source_refs: List[str] = Field(default_factory=list)
+
+
+class ContextObjectOverlay(BaseModel):
+    id: str
+    project_id: str
+    baseline_id: str
+    object_id: str
+    field_path: str
+    operation: Literal["add", "replace", "remove"]
+    value_ref: Optional[str] = None
+    source_refs: List[str] = Field(default_factory=list)
+    status: Literal["candidate", "merged", "rejected"] = "candidate"
+
+
+class QualityMetricSnapshot(BaseModel):
+    id: str
+    project_id: str
+    baseline_id: str
+    version_id: Optional[str] = None
+    us_id: Optional[str] = None
+    task_id: Optional[str] = None
+    metric_group: Literal["code_quality", "us_completion_quality", "test_quality", "release_readiness"]
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+    evidence_refs: List[str] = Field(default_factory=list)
+    captured_at: str
+
+
+class SystemImageResponse(BaseModel):
+    project: ProjectCard
+    summary: str
+    baselines: List[BaselineRecord]
+    sources: List[RawAssetRecord]
+    objects: List[KnowledgeObject]
+    relationships: List[ContextRelationship]
+    overlays: List[ContextObjectOverlay]
+    metric_snapshots: List[QualityMetricSnapshot]
+
+
 class DocumentationEntry(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

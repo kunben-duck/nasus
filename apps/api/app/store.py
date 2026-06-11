@@ -19,6 +19,7 @@ from .models import (
     ApprovalDetail,
     ApprovalSummary,
     AssetLane,
+    BaselineRecord,
     BuildResponse,
     ConversationArchiveRequest,
     ConversationLink,
@@ -26,6 +27,8 @@ from .models import (
     ConversationMergeRequest,
     ConversationSession,
     ConversationSummaryCheckpoint,
+    ContextObjectOverlay,
+    ContextRelationship,
     DashboardResponse,
     DocumentationEntry,
     EventPayload,
@@ -33,6 +36,8 @@ from .models import (
     MessageBlock,
     ProjectCard,
     ProjectWorkspaceResponse,
+    QualityMetricSnapshot,
+    RawAssetRecord,
     ReleaseReadiness,
     RunDetail,
     RunSummary,
@@ -48,6 +53,7 @@ from .models import (
     ToolResult,
     UserProfile,
     USItem,
+    SystemImageResponse,
     VersionSummary,
     WelcomeResponse,
 )
@@ -119,6 +125,17 @@ class ApplicationStore:
                 description="Generate structured test scenarios for the selected US.",
                 required_context=["project_id", "us_id"],
                 produced_objects=["QualityAssetPack", "AgentGoal"],
+            ),
+            ToolDefinition(
+                tool_id="baseline.initialize",
+                label="Initialize System Image",
+                tool_kind="project",
+                scope="central",
+                risk_level="high",
+                confirmation_mode="user_confirm",
+                description="Build the first Official System Image from code, US documents, and historical test assets.",
+                required_context=["project_id", "code_source", "us_doc_source", "test_asset_source"],
+                produced_objects=["Baseline", "ContextObject", "QualityMetricSnapshot"],
             ),
             ToolDefinition(
                 tool_id="query.dashboard.progress",
@@ -197,6 +214,17 @@ class ApplicationStore:
                 required_context=["project_id"],
                 produced_objects=["ConversationSession"],
             ),
+            ToolDefinition(
+                tool_id="query.system_image.status",
+                label="Check System Image",
+                tool_kind="query",
+                scope="central",
+                risk_level="low",
+                confirmation_mode="none",
+                description="Summarize source freshness, baseline readiness, relationships, and quality metric snapshots.",
+                required_context=["project_id"],
+                produced_objects=["ConversationSession"],
+            ),
         ]
         self.orchestrator = ConversationOrchestrator(
             tools=self.tools,
@@ -214,6 +242,11 @@ class ApplicationStore:
         self.approvals: Dict[str, List[ApprovalSummary]] = defaultdict(list)
         self.approval_details: Dict[str, ApprovalDetail] = {}
         self.knowledge_objects: Dict[str, List[KnowledgeObject]] = defaultdict(list)
+        self.raw_assets: Dict[str, List[RawAssetRecord]] = defaultdict(list)
+        self.baselines: Dict[str, List[BaselineRecord]] = defaultdict(list)
+        self.context_relationships: Dict[str, List[ContextRelationship]] = defaultdict(list)
+        self.context_object_overlays: Dict[str, List[ContextObjectOverlay]] = defaultdict(list)
+        self.quality_metric_snapshots: Dict[str, List[QualityMetricSnapshot]] = defaultdict(list)
         self.documentation_entries: List[DocumentationEntry] = []
         self.release_readiness: Dict[str, ReleaseReadiness] = {}
         self.conversations: Dict[str, ConversationSession] = {}
@@ -240,6 +273,11 @@ class ApplicationStore:
         persisted_approvals, self.approval_details = self.project_repository.load_approvals()
         self.approvals = defaultdict(list, persisted_approvals)
         self.knowledge_objects = defaultdict(list, self.project_repository.load_knowledge_objects())
+        self.raw_assets = defaultdict(list, self.project_repository.load_raw_assets())
+        self.baselines = defaultdict(list, self.project_repository.load_baselines())
+        self.context_relationships = defaultdict(list, self.project_repository.load_context_relationships())
+        self.context_object_overlays = defaultdict(list, self.project_repository.load_context_object_overlays())
+        self.quality_metric_snapshots = defaultdict(list, self.project_repository.load_quality_metric_snapshots())
         self.release_readiness = self.project_repository.load_release_readiness()
 
     def _load_persisted_runtime_state(self) -> None:
@@ -292,6 +330,21 @@ class ApplicationStore:
 
         persisted_knowledge = self.project_repository.load_knowledge_objects()
         self.knowledge_objects[project_id] = persisted_knowledge.get(project_id, [])
+
+        persisted_sources = self.project_repository.load_raw_assets()
+        self.raw_assets[project_id] = persisted_sources.get(project_id, [])
+
+        persisted_baselines = self.project_repository.load_baselines()
+        self.baselines[project_id] = persisted_baselines.get(project_id, [])
+
+        persisted_relationships = self.project_repository.load_context_relationships()
+        self.context_relationships[project_id] = persisted_relationships.get(project_id, [])
+
+        persisted_overlays = self.project_repository.load_context_object_overlays()
+        self.context_object_overlays[project_id] = persisted_overlays.get(project_id, [])
+
+        persisted_metrics = self.project_repository.load_quality_metric_snapshots()
+        self.quality_metric_snapshots[project_id] = persisted_metrics.get(project_id, [])
 
         persisted_release_readiness = self.project_repository.load_release_readiness()
         self.release_readiness.update(persisted_release_readiness)
@@ -536,12 +589,250 @@ class ApplicationStore:
         self.project_repository.replace_runs(project.id, [self.run_details["run_9021"]])
         self.project_repository.replace_approvals(project.id, [self.approval_details["approval_442"]])
         self.project_repository.replace_knowledge_objects(project.id, self.knowledge_objects[project.id])
+        self._ensure_system_image_state(project.id, ready=True, version_id=version.id)
         self.project_repository.upsert_release_readiness(project.id, self.release_readiness[version.id])
         self.get_or_create_conversation("welcome", "welcome", "Welcome")
         self.get_or_create_conversation("build", "build", "Build")
         self.get_or_create_conversation("dashboard", "dashboard", "Dashboard")
         self.get_or_create_conversation("project", project.id, project.name)
         self.get_or_create_conversation("workspace", "us_123", "US-123 Workspace")
+
+    def _ensure_system_image_state(self, project_id: str, *, ready: bool, version_id: Optional[str] = None) -> None:
+        project = self.projects[project_id]
+        now = _now_iso()
+        baseline_id = f"base_{project_id}_official"
+        status = "ready" if ready else "draft"
+        source_status = "indexed" if ready else "pending"
+        object_count = len(self.knowledge_objects.get(project_id, []))
+        relationship_count = 4 if ready else 0
+        metric_count = 4 if ready else 0
+
+        if not self.raw_assets.get(project_id):
+            self.raw_assets[project_id] = [
+                RawAssetRecord(
+                    id=f"raw_{project_id}_code",
+                    project_id=project_id,
+                    version_id=version_id,
+                    source_type="code",
+                    source_uri=f"git://{_slugify(project.name)}",
+                    ingestion_status=source_status,
+                    content_hash=f"hash:{project_id}:code",
+                    content_ref=f"minio://nasus/raw/{project_id}/code",
+                    evidence_refs=["source:git", "parser:tree-sitter", "index:opengrok"] if ready else [],
+                    last_ingested_at=now if ready else None,
+                ),
+                RawAssetRecord(
+                    id=f"raw_{project_id}_us",
+                    project_id=project_id,
+                    version_id=version_id,
+                    source_type="us_doc",
+                    source_uri=f"docs://{_slugify(project.name)}/historical-us",
+                    ingestion_status=source_status,
+                    content_hash=f"hash:{project_id}:us",
+                    content_ref=f"minio://nasus/raw/{project_id}/us-docs",
+                    evidence_refs=["source:historical-us", "parser:document-chunker"] if ready else [],
+                    last_ingested_at=now if ready else None,
+                ),
+                RawAssetRecord(
+                    id=f"raw_{project_id}_tests",
+                    project_id=project_id,
+                    version_id=version_id,
+                    source_type="test_asset",
+                    source_uri=f"tests://{_slugify(project.name)}/regression",
+                    ingestion_status=source_status,
+                    content_hash=f"hash:{project_id}:tests",
+                    content_ref=f"minio://nasus/raw/{project_id}/test-assets",
+                    evidence_refs=["source:test-cases", "source:automation-scripts"] if ready else [],
+                    last_ingested_at=now if ready else None,
+                ),
+            ]
+        elif ready:
+            for source in self.raw_assets[project_id]:
+                source.ingestion_status = "indexed"
+                source.last_ingested_at = source.last_ingested_at or now
+                if not source.evidence_refs:
+                    if source.source_type == "code":
+                        source.evidence_refs = ["source:git", "parser:tree-sitter", "index:opengrok"]
+                    elif source.source_type == "us_doc":
+                        source.evidence_refs = ["source:historical-us", "parser:document-chunker"]
+                    else:
+                        source.evidence_refs = ["source:test-cases", "source:automation-scripts"]
+
+        self.baselines[project_id] = [
+            BaselineRecord(
+                id=baseline_id,
+                project_id=project_id,
+                kind="official",
+                status=status,
+                fork_strategy="copy_on_write",
+                object_count=object_count,
+                relationship_count=relationship_count,
+                metric_snapshot_count=metric_count,
+                updated_at=now,
+            )
+        ]
+
+        if ready and self.knowledge_objects.get(project_id):
+            objects = self.knowledge_objects[project_id]
+            checkout = next((item for item in objects if "CHECKOUT" in item.id), objects[0])
+            asset = next((item for item in objects if item.type == "QualityAssetPack"), objects[-1])
+            self.context_relationships[project_id] = [
+                ContextRelationship(
+                    id=f"rel_{project_id}_code_feature",
+                    project_id=project_id,
+                    baseline_id=baseline_id,
+                    from_object_id=checkout.id,
+                    relationship_type="implements",
+                    to_object_id="raw:code",
+                    confidence=0.89,
+                    source_refs=[f"raw:{project_id}:code"],
+                ),
+                ContextRelationship(
+                    id=f"rel_{project_id}_us_feature",
+                    project_id=project_id,
+                    baseline_id=baseline_id,
+                    from_object_id="US-123",
+                    relationship_type="impacts",
+                    to_object_id=checkout.id,
+                    confidence=0.84,
+                    source_refs=[f"raw:{project_id}:us_doc"],
+                ),
+                ContextRelationship(
+                    id=f"rel_{project_id}_tests_feature",
+                    project_id=project_id,
+                    baseline_id=baseline_id,
+                    from_object_id=asset.id,
+                    relationship_type="covers",
+                    to_object_id=checkout.id,
+                    confidence=0.88,
+                    source_refs=[f"raw:{project_id}:test_asset"],
+                ),
+                ContextRelationship(
+                    id=f"rel_{project_id}_evidence_metric",
+                    project_id=project_id,
+                    baseline_id=baseline_id,
+                    from_object_id=checkout.id,
+                    relationship_type="evidenced_by",
+                    to_object_id="metric:test_quality",
+                    confidence=0.91,
+                    source_refs=["run:run_9021", "scenario-pack:r3"],
+                ),
+            ]
+        else:
+            self.context_relationships[project_id] = []
+
+        self.context_object_overlays[project_id] = [
+            ContextObjectOverlay(
+                id=f"overlay_{project_id}_version_risk",
+                project_id=project_id,
+                baseline_id=baseline_id,
+                object_id="OBJ-CHECKOUT",
+                field_path="risk_patterns.checkout_redirect",
+                operation="add",
+                value_ref="candidate:risk-pattern:checkout-redirect",
+                source_refs=["run:run_9021", "approval:approval_442"],
+                status="candidate",
+            )
+        ] if ready else []
+
+        self.quality_metric_snapshots[project_id] = [
+            QualityMetricSnapshot(
+                id=f"metric_{project_id}_code",
+                project_id=project_id,
+                baseline_id=baseline_id,
+                version_id=version_id,
+                metric_group="code_quality",
+                metrics={"changed_modules": 3, "critical_paths": 2, "code_risk_score": 67},
+                evidence_refs=[f"raw:{project_id}:code"],
+                captured_at=now,
+            ),
+            QualityMetricSnapshot(
+                id=f"metric_{project_id}_us",
+                project_id=project_id,
+                baseline_id=baseline_id,
+                version_id=version_id,
+                us_id="us_123" if ready else None,
+                metric_group="us_completion_quality",
+                metrics={"requirements_clarity": 0.82, "acceptance_criteria_coverage": 0.76},
+                evidence_refs=[f"raw:{project_id}:us_doc"],
+                captured_at=now,
+            ),
+            QualityMetricSnapshot(
+                id=f"metric_{project_id}_tests",
+                project_id=project_id,
+                baseline_id=baseline_id,
+                version_id=version_id,
+                metric_group="test_quality",
+                metrics={"scenario_coverage": 0.78, "automation_coverage": 0.52, "failed_runs": 1 if ready else 0},
+                evidence_refs=[f"raw:{project_id}:test_asset"],
+                captured_at=now,
+            ),
+            QualityMetricSnapshot(
+                id=f"metric_{project_id}_release",
+                project_id=project_id,
+                baseline_id=baseline_id,
+                version_id=version_id,
+                metric_group="release_readiness",
+                metrics={"release_score": project.progress, "open_blockers": project.blocked_items},
+                evidence_refs=["approval:approval_442"] if ready else [],
+                captured_at=now,
+            ),
+        ] if ready else []
+
+        self.project_repository.replace_system_image(
+            project_id,
+            sources=self.raw_assets[project_id],
+            baselines=self.baselines[project_id],
+            relationships=self.context_relationships[project_id],
+            overlays=self.context_object_overlays[project_id],
+            metric_snapshots=self.quality_metric_snapshots[project_id],
+        )
+
+    def _initialize_system_image(self, project_id: str) -> SystemImageResponse:
+        project = self.projects[project_id]
+        if not self.knowledge_objects.get(project_id):
+            self.knowledge_objects[project_id] = [
+                KnowledgeObject(
+                    id=f"OBJ-{project.code}-CORE",
+                    name=f"{project.name} Core",
+                    type="System",
+                    branch="Official",
+                    confidence="0.72",
+                    relations=["Imported Code", "Historical US", "Regression Tests"],
+                    evidence=["Source import placeholders"],
+                    freshness="just now",
+                ),
+                KnowledgeObject(
+                    id=f"OBJ-{project.code}-US",
+                    name="Historical US Baseline",
+                    type="Feature",
+                    branch="Official",
+                    confidence="0.68",
+                    relations=[f"{project.name} Core", "Quality Loop"],
+                    evidence=["US document import"],
+                    freshness="just now",
+                ),
+                KnowledgeObject(
+                    id=f"OBJ-{project.code}-TESTS",
+                    name="Regression Quality Pack",
+                    type="QualityAssetPack",
+                    branch="Official",
+                    confidence="0.66",
+                    relations=[f"{project.name} Core", "Release Gate"],
+                    evidence=["Historical cases", "Automation scripts"],
+                    freshness="just now",
+                ),
+            ]
+            self.project_repository.replace_knowledge_objects(project_id, self.knowledge_objects[project_id])
+
+        project.system_image_status = "ready"
+        project.progress = max(project.progress, 28)
+        self.projects[project_id] = project
+        self.project_repository.upsert_project(project)
+        version_id = self.versions[project_id][0].id if self.versions.get(project_id) else None
+        self._ensure_system_image_state(project_id, ready=True, version_id=version_id)
+        self._refresh_project_read_models(project_id)
+        return self.get_system_image(project_id)
 
     def get_welcome(self) -> WelcomeResponse:
         recent_conversations = list(self.conversations.values())[:3]
@@ -687,6 +978,7 @@ class ApplicationStore:
         self.project_repository.replace_runs(project.id, [])
         self.project_repository.replace_approvals(project.id, [])
         self.project_repository.replace_knowledge_objects(project.id, [])
+        self._ensure_system_image_state(project.id, ready=False)
         self.get_or_create_conversation("project", project.id, project.name)
         return project
 
@@ -713,6 +1005,33 @@ class ApplicationStore:
     def get_knowledge_object(self, project_id: str, object_id: str) -> KnowledgeObject:
         self._refresh_project_read_models(project_id)
         return next(item for item in self.knowledge_objects[project_id] if item.id == object_id)
+
+    def get_system_image(self, project_id: str) -> SystemImageResponse:
+        self._refresh_project_read_models(project_id)
+        project = self.projects[project_id]
+        baseline = self.baselines[project_id][0] if self.baselines.get(project_id) else None
+        source_counts = {
+            source_type: sum(1 for source in self.raw_assets[project_id] if source.source_type == source_type)
+            for source_type in ["code", "us_doc", "test_asset"]
+        }
+        summary = (
+            f"{project.name} system image is {project.system_image_status}. "
+            f"Sources: code={source_counts['code']}, us_doc={source_counts['us_doc']}, "
+            f"test_asset={source_counts['test_asset']}. "
+            f"Baseline {baseline.id if baseline else 'not initialized'} has "
+            f"{baseline.object_count if baseline else 0} objects and "
+            f"{baseline.relationship_count if baseline else 0} relationships."
+        )
+        return SystemImageResponse(
+            project=project,
+            summary=summary,
+            baselines=self.baselines[project_id],
+            sources=self.raw_assets[project_id],
+            objects=self.knowledge_objects[project_id],
+            relationships=self.context_relationships[project_id],
+            overlays=self.context_object_overlays[project_id],
+            metric_snapshots=self.quality_metric_snapshots[project_id],
+        )
 
     def get_run_detail(self, project_id: str, run_id: str) -> RunDetail:
         self._refresh_project_read_models(project_id)
@@ -971,6 +1290,9 @@ class ApplicationStore:
             project_id = str(payload.input.get("project_id") or "")
             us_id = str(payload.input.get("us_id") or "")
             await self._run_scenario_invocation(invocation.id, project_id, us_id)
+        elif payload.tool_id == "baseline.initialize":
+            project_id = str(payload.input.get("project_id") or "")
+            await self._run_baseline_initialize_invocation(invocation.id, project_id)
         elif payload.tool_id.startswith("query."):
             await self._run_query_invocation(invocation.id)
         else:
@@ -1548,6 +1870,17 @@ class ApplicationStore:
             "The most relevant hotspots are checkout flow recovery, payment gateway fallback, and quality asset packs linked to the active release branch."
         )
 
+    def _system_image_status_summary(self, project_id: str) -> str:
+        image = self.get_system_image(project_id)
+        indexed = sum(1 for source in image.sources if source.ingestion_status == "indexed")
+        metric_groups = ", ".join(sorted({metric.metric_group for metric in image.metric_snapshots})) or "none"
+        return (
+            f"{image.project.name} system image is {image.project.system_image_status}. "
+            f"{indexed}/{len(image.sources)} source groups are indexed across code, historical US docs, and test assets. "
+            f"It currently has {len(image.objects)} objects, {len(image.relationships)} relationships, "
+            f"and metric groups: {metric_groups}."
+        )
+
     def _run_status_summary(self, project_id: str) -> str:
         runs = self.runs.get(project_id, [])
         if not runs:
@@ -1595,7 +1928,7 @@ class ApplicationStore:
                 status="completed",
                 summary=f"Created draft project {project.name}",
                 object_refs=[f"project:{project.id}"],
-                next_recommended_tools=["version.create"],
+                next_recommended_tools=["baseline.initialize", "version.create"],
             ),
         )
 
@@ -1626,6 +1959,53 @@ class ApplicationStore:
                 summary=f"Created version {version.name}",
                 object_refs=[f"version:{version.id}"],
                 next_recommended_tools=["quality.scenario.generate"],
+            ),
+        )
+
+    async def _run_baseline_initialize_invocation(self, invocation_id: str, project_id: str) -> None:
+        invocation = self.tool_invocations[invocation_id]
+        if not project_id:
+            invocation.status = "failed"
+            invocation.summary = "project_id is required to initialize a system image"
+            invocation.result = ToolResult(
+                invocation_id=invocation.id,
+                status="failed",
+                summary=invocation.summary,
+            )
+            self.conversation_repository.upsert_tool_invocation(invocation)
+            return
+
+        await self._emit_tool_status(
+            invocation_id,
+            "running",
+            "Initializing Official System Image from code, US docs, and test assets",
+            [["project", project_id], ["system-image", project_id], ["dashboard"]],
+        )
+        await asyncio.sleep(0.2)
+        system_image = self._initialize_system_image(project_id)
+        if invocation.conversation_id:
+            await self.append_message(
+                invocation.conversation_id,
+                "assistant",
+                (
+                    f"The Official System Image for **{system_image.project.name}** is ready. "
+                    f"I indexed {len(system_image.sources)} source groups, materialized "
+                    f"{len(system_image.objects)} context objects, {len(system_image.relationships)} relationships, "
+                    f"and {len(system_image.metric_snapshots)} quality metric snapshots."
+                ),
+            )
+        await self._emit_tool_status(
+            invocation_id,
+            "completed",
+            f"Initialized system image for {system_image.project.name}",
+            [["project", project_id], ["system-image", project_id], ["dashboard"], ["knowledge", project_id]],
+            ToolResult(
+                invocation_id=invocation_id,
+                status="completed",
+                summary=system_image.summary,
+                object_refs=[f"project:{project_id}", f"baseline:{system_image.baselines[0].id}"],
+                evidence_refs=[source.id for source in system_image.sources],
+                next_recommended_tools=["query.system_image.status", "version.create"],
             ),
         )
 
@@ -1811,6 +2191,9 @@ class ApplicationStore:
         elif invocation.tool_id == "query.knowledge.status" and project_id:
             fallback_text = self._knowledge_status_summary(project_id)
             query_keys.extend([["knowledge", project_id], ["project", project_id]])
+        elif invocation.tool_id == "query.system_image.status" and project_id:
+            fallback_text = self._system_image_status_summary(project_id)
+            query_keys.extend([["system-image", project_id], ["knowledge", project_id], ["project", project_id]])
         elif invocation.tool_id == "query.run.status" and project_id:
             fallback_text = self._run_status_summary(project_id)
             query_keys.extend([["runs", project_id], ["project", project_id]])
@@ -1855,7 +2238,7 @@ class ApplicationStore:
                 invocation_id=invocation_id,
                 status="completed",
                 summary=fallback_text,
-                object_refs=[],
+                object_refs=[f"project:{project_id}"] if project_id else [],
                 next_recommended_tools=["quality.scenario.generate"] if invocation.tool_id == "query.workspace.status" else [],
             ),
         )

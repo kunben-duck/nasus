@@ -12,6 +12,7 @@ import type {
   SettingsConnectionResult,
   StudioSettingsConnectionTestRequest,
   StudioSettings,
+  SystemImageData,
   ToolDefinition,
   ToolInvocation,
   RunDetail,
@@ -81,6 +82,7 @@ export const api = {
   getWorkspace: (projectId: string, usId: string) =>
     request<WorkspaceData>(`/v1/projects/${projectId}/workspaces/${usId}`),
   getKnowledge: (projectId: string) => request<KnowledgeObject[]>(`/v1/projects/${projectId}/knowledge`),
+  getSystemImage: (projectId: string) => request<SystemImageData>(`/v1/projects/${projectId}/system-image`),
   getKnowledgeDetail: (projectId: string, objectId: string) =>
     request<KnowledgeObject>(`/v1/projects/${projectId}/knowledge/${objectId}`),
   getProjectRuns: (projectId: string) => request(`/v1/projects/${projectId}/runs`),

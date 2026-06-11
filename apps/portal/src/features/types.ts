@@ -87,6 +87,80 @@ export interface KnowledgeObject {
   freshness: string
 }
 
+export interface RawAssetRecord {
+  id: string
+  project_id: string
+  version_id?: string | null
+  source_type: 'code' | 'us_doc' | 'test_asset'
+  source_uri: string
+  ingestion_status: 'pending' | 'indexed' | 'failed' | 'stale'
+  content_hash: string
+  content_ref?: string | null
+  evidence_refs: string[]
+  last_ingested_at?: string | null
+}
+
+export interface BaselineRecord {
+  id: string
+  project_id: string
+  kind: 'official' | 'version_working' | 'version_shared'
+  status: 'draft' | 'building' | 'ready' | 'stale' | 'pending_merge' | 'promoted'
+  source_version_id?: string | null
+  parent_baseline_id?: string | null
+  fork_strategy: 'copy_on_write' | 'materialized_snapshot'
+  object_count: number
+  relationship_count: number
+  metric_snapshot_count: number
+  updated_at: string
+}
+
+export interface ContextRelationship {
+  id: string
+  project_id: string
+  baseline_id: string
+  from_object_id: string
+  relationship_type: 'implements' | 'depends_on' | 'covers' | 'validates' | 'impacts' | 'evidenced_by' | 'belongs_to'
+  to_object_id: string
+  confidence: number
+  source_refs: string[]
+}
+
+export interface ContextObjectOverlay {
+  id: string
+  project_id: string
+  baseline_id: string
+  object_id: string
+  field_path: string
+  operation: 'add' | 'replace' | 'remove'
+  value_ref?: string | null
+  source_refs: string[]
+  status: 'candidate' | 'merged' | 'rejected'
+}
+
+export interface QualityMetricSnapshot {
+  id: string
+  project_id: string
+  baseline_id: string
+  version_id?: string | null
+  us_id?: string | null
+  task_id?: string | null
+  metric_group: 'code_quality' | 'us_completion_quality' | 'test_quality' | 'release_readiness'
+  metrics: Record<string, unknown>
+  evidence_refs: string[]
+  captured_at: string
+}
+
+export interface SystemImageData {
+  project: ProjectCard
+  summary: string
+  baselines: BaselineRecord[]
+  sources: RawAssetRecord[]
+  objects: KnowledgeObject[]
+  relationships: ContextRelationship[]
+  overlays: ContextObjectOverlay[]
+  metric_snapshots: QualityMetricSnapshot[]
+}
+
 export interface MessageBlock {
   type: 'text' | 'structured_card' | 'tool_progress'
   text: string

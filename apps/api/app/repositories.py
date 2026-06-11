@@ -10,11 +10,16 @@ from .db_models import (
     ApprovalRecord,
     AgentGoalRecord,
     AssetLaneRecord,
+    BaselineRecord as BaselineRow,
     ConversationMessageRecord,
     ConversationRecord,
     ConversationSummaryCheckpointRecord,
+    ContextObjectOverlayRecord,
+    ContextRelationshipRecord,
     KnowledgeObjectRecord,
     ProjectRecord,
+    QualityMetricSnapshotRecord,
+    RawAssetRecord as RawAssetRow,
     ReleaseReadinessRecord,
     RunRecord,
     SessionKnowledgeBindingRecord,
@@ -29,13 +34,18 @@ from .models import (
     ApprovalDetail,
     ApprovalSummary,
     AssetLane,
+    BaselineRecord,
     ConversationMessage,
     ConversationSession,
     ConversationSummaryCheckpoint,
+    ContextObjectOverlay,
+    ContextRelationship,
     CustomModelConfig,
     KnowledgeObject,
     MessageBlock,
     ProjectCard,
+    QualityMetricSnapshot,
+    RawAssetRecord,
     ReleaseReadiness,
     RunDetail,
     RunSummary,
@@ -458,6 +468,65 @@ class ProjectRepository:
             grouped.setdefault(row.project_id, []).append(self._to_knowledge_object(row))
         return grouped
 
+    def load_raw_assets(self) -> dict[str, list[RawAssetRecord]]:
+        with session_scope() as session:
+            rows = session.scalars(
+                select(RawAssetRow).order_by(RawAssetRow.project_id, RawAssetRow.sort_order)
+            ).all()
+        grouped: dict[str, list[RawAssetRecord]] = {}
+        for row in rows:
+            grouped.setdefault(row.project_id, []).append(self._to_raw_asset(row))
+        return grouped
+
+    def load_baselines(self) -> dict[str, list[BaselineRecord]]:
+        with session_scope() as session:
+            rows = session.scalars(
+                select(BaselineRow).order_by(BaselineRow.project_id, BaselineRow.sort_order)
+            ).all()
+        grouped: dict[str, list[BaselineRecord]] = {}
+        for row in rows:
+            grouped.setdefault(row.project_id, []).append(self._to_baseline(row))
+        return grouped
+
+    def load_context_relationships(self) -> dict[str, list[ContextRelationship]]:
+        with session_scope() as session:
+            rows = session.scalars(
+                select(ContextRelationshipRecord).order_by(
+                    ContextRelationshipRecord.project_id,
+                    ContextRelationshipRecord.sort_order,
+                )
+            ).all()
+        grouped: dict[str, list[ContextRelationship]] = {}
+        for row in rows:
+            grouped.setdefault(row.project_id, []).append(self._to_context_relationship(row))
+        return grouped
+
+    def load_context_object_overlays(self) -> dict[str, list[ContextObjectOverlay]]:
+        with session_scope() as session:
+            rows = session.scalars(
+                select(ContextObjectOverlayRecord).order_by(
+                    ContextObjectOverlayRecord.project_id,
+                    ContextObjectOverlayRecord.sort_order,
+                )
+            ).all()
+        grouped: dict[str, list[ContextObjectOverlay]] = {}
+        for row in rows:
+            grouped.setdefault(row.project_id, []).append(self._to_context_object_overlay(row))
+        return grouped
+
+    def load_quality_metric_snapshots(self) -> dict[str, list[QualityMetricSnapshot]]:
+        with session_scope() as session:
+            rows = session.scalars(
+                select(QualityMetricSnapshotRecord).order_by(
+                    QualityMetricSnapshotRecord.project_id,
+                    QualityMetricSnapshotRecord.sort_order,
+                )
+            ).all()
+        grouped: dict[str, list[QualityMetricSnapshot]] = {}
+        for row in rows:
+            grouped.setdefault(row.project_id, []).append(self._to_quality_metric_snapshot(row))
+        return grouped
+
     def load_release_readiness(self) -> dict[str, ReleaseReadiness]:
         with session_scope() as session:
             rows = session.scalars(select(ReleaseReadinessRecord)).all()
@@ -624,6 +693,106 @@ class ProjectRepository:
                     )
                 )
 
+    def replace_system_image(
+        self,
+        project_id: str,
+        *,
+        sources: list[RawAssetRecord],
+        baselines: list[BaselineRecord],
+        relationships: list[ContextRelationship],
+        overlays: list[ContextObjectOverlay],
+        metric_snapshots: list[QualityMetricSnapshot],
+    ) -> None:
+        with session_scope() as session:
+            session.execute(delete(RawAssetRow).where(RawAssetRow.project_id == project_id))
+            session.execute(delete(BaselineRow).where(BaselineRow.project_id == project_id))
+            session.execute(delete(ContextRelationshipRecord).where(ContextRelationshipRecord.project_id == project_id))
+            session.execute(delete(ContextObjectOverlayRecord).where(ContextObjectOverlayRecord.project_id == project_id))
+            session.execute(delete(QualityMetricSnapshotRecord).where(QualityMetricSnapshotRecord.project_id == project_id))
+
+            for sort_order, source in enumerate(sources):
+                session.add(
+                    RawAssetRow(
+                        id=source.id,
+                        project_id=source.project_id,
+                        version_id=source.version_id,
+                        source_type=source.source_type,
+                        source_uri=source.source_uri,
+                        ingestion_status=source.ingestion_status,
+                        content_hash=source.content_hash,
+                        content_ref=source.content_ref,
+                        evidence_refs=source.evidence_refs,
+                        last_ingested_at=source.last_ingested_at,
+                        sort_order=sort_order,
+                    )
+                )
+
+            for sort_order, baseline in enumerate(baselines):
+                session.add(
+                    BaselineRow(
+                        id=baseline.id,
+                        project_id=baseline.project_id,
+                        kind=baseline.kind,
+                        status=baseline.status,
+                        source_version_id=baseline.source_version_id,
+                        parent_baseline_id=baseline.parent_baseline_id,
+                        fork_strategy=baseline.fork_strategy,
+                        object_count=baseline.object_count,
+                        relationship_count=baseline.relationship_count,
+                        metric_snapshot_count=baseline.metric_snapshot_count,
+                        updated_at=baseline.updated_at,
+                        sort_order=sort_order,
+                    )
+                )
+
+            for sort_order, relationship in enumerate(relationships):
+                session.add(
+                    ContextRelationshipRecord(
+                        id=relationship.id,
+                        project_id=relationship.project_id,
+                        baseline_id=relationship.baseline_id,
+                        from_object_id=relationship.from_object_id,
+                        relationship_type=relationship.relationship_type,
+                        to_object_id=relationship.to_object_id,
+                        confidence=relationship.confidence,
+                        source_refs=relationship.source_refs,
+                        sort_order=sort_order,
+                    )
+                )
+
+            for sort_order, overlay in enumerate(overlays):
+                session.add(
+                    ContextObjectOverlayRecord(
+                        id=overlay.id,
+                        project_id=overlay.project_id,
+                        baseline_id=overlay.baseline_id,
+                        object_id=overlay.object_id,
+                        field_path=overlay.field_path,
+                        operation=overlay.operation,
+                        value_ref=overlay.value_ref,
+                        source_refs=overlay.source_refs,
+                        status=overlay.status,
+                        sort_order=sort_order,
+                    )
+                )
+
+            for sort_order, metric in enumerate(metric_snapshots):
+                session.add(
+                    QualityMetricSnapshotRecord(
+                        id=metric.id,
+                        project_id=metric.project_id,
+                        baseline_id=metric.baseline_id,
+                        version_id=metric.version_id,
+                        us_id=metric.us_id,
+                        task_id=metric.task_id,
+                        metric_group=metric.metric_group,
+                        metrics=metric.metrics,
+                        evidence_refs=metric.evidence_refs,
+                        captured_at=metric.captured_at,
+                        sort_order=sort_order,
+                    )
+                )
+
     def upsert_release_readiness(self, project_id: str, readiness: ReleaseReadiness) -> None:
         with session_scope() as session:
             row = session.get(ReleaseReadinessRecord, readiness.version_id)
@@ -750,6 +919,79 @@ class ProjectRepository:
             relations=row.relations or [],
             evidence=row.evidence or [],
             freshness=row.freshness,
+        )
+
+    @staticmethod
+    def _to_raw_asset(row: RawAssetRow) -> RawAssetRecord:
+        return RawAssetRecord(
+            id=row.id,
+            project_id=row.project_id,
+            version_id=row.version_id,
+            source_type=row.source_type,  # type: ignore[arg-type]
+            source_uri=row.source_uri,
+            ingestion_status=row.ingestion_status,  # type: ignore[arg-type]
+            content_hash=row.content_hash,
+            content_ref=row.content_ref,
+            evidence_refs=row.evidence_refs or [],
+            last_ingested_at=row.last_ingested_at,
+        )
+
+    @staticmethod
+    def _to_baseline(row: BaselineRow) -> BaselineRecord:
+        return BaselineRecord(
+            id=row.id,
+            project_id=row.project_id,
+            kind=row.kind,  # type: ignore[arg-type]
+            status=row.status,  # type: ignore[arg-type]
+            source_version_id=row.source_version_id,
+            parent_baseline_id=row.parent_baseline_id,
+            fork_strategy=row.fork_strategy,  # type: ignore[arg-type]
+            object_count=row.object_count,
+            relationship_count=row.relationship_count,
+            metric_snapshot_count=row.metric_snapshot_count,
+            updated_at=row.updated_at,
+        )
+
+    @staticmethod
+    def _to_context_relationship(row: ContextRelationshipRecord) -> ContextRelationship:
+        return ContextRelationship(
+            id=row.id,
+            project_id=row.project_id,
+            baseline_id=row.baseline_id,
+            from_object_id=row.from_object_id,
+            relationship_type=row.relationship_type,  # type: ignore[arg-type]
+            to_object_id=row.to_object_id,
+            confidence=row.confidence,
+            source_refs=row.source_refs or [],
+        )
+
+    @staticmethod
+    def _to_context_object_overlay(row: ContextObjectOverlayRecord) -> ContextObjectOverlay:
+        return ContextObjectOverlay(
+            id=row.id,
+            project_id=row.project_id,
+            baseline_id=row.baseline_id,
+            object_id=row.object_id,
+            field_path=row.field_path,
+            operation=row.operation,  # type: ignore[arg-type]
+            value_ref=row.value_ref,
+            source_refs=row.source_refs or [],
+            status=row.status,  # type: ignore[arg-type]
+        )
+
+    @staticmethod
+    def _to_quality_metric_snapshot(row: QualityMetricSnapshotRecord) -> QualityMetricSnapshot:
+        return QualityMetricSnapshot(
+            id=row.id,
+            project_id=row.project_id,
+            baseline_id=row.baseline_id,
+            version_id=row.version_id,
+            us_id=row.us_id,
+            task_id=row.task_id,
+            metric_group=row.metric_group,  # type: ignore[arg-type]
+            metrics=row.metrics or {},
+            evidence_refs=row.evidence_refs or [],
+            captured_at=row.captured_at,
         )
 
     @staticmethod

@@ -18,6 +18,7 @@ def _default_sqlite_path() -> Path:
 
 
 DATABASE_URL = os.getenv("NASUS_DATABASE_URL", f"sqlite+pysqlite:///{_default_sqlite_path()}")
+AUTO_CREATE_TABLES = os.getenv("NASUS_AUTO_CREATE_TABLES", "true").lower() not in {"0", "false", "no"}
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 
@@ -37,5 +38,8 @@ def get_database_url() -> str:
 
 def init_database() -> None:
     from . import db_models  # noqa: F401
+
+    if not AUTO_CREATE_TABLES:
+        return
 
     Base.metadata.create_all(bind=engine)

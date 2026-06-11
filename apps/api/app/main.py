@@ -180,6 +180,14 @@ def get_project_knowledge(project_id: str) -> Any:
         raise _error_response("not_found", f"project {project_id} was not found", 404) from exc
 
 
+@app.get("/v1/projects/{project_id}/system-image")
+def get_project_system_image(project_id: str) -> Any:
+    try:
+        return store.get_system_image(project_id)
+    except KeyError as exc:
+        raise _error_response("not_found", f"system image for project {project_id} was not found", 404) from exc
+
+
 @app.get("/v1/projects/{project_id}/knowledge/{object_id}")
 def get_knowledge_detail(project_id: str, object_id: str) -> Any:
     try:

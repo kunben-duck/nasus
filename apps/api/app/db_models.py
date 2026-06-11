@@ -220,6 +220,84 @@ class KnowledgeObjectRecord(Base):
     sort_order: Mapped[int] = mapped_column(default=0)
 
 
+class RawAssetRecord(Base):
+    __tablename__ = "raw_assets"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(index=True)
+    version_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    source_type: Mapped[str] = mapped_column(index=True)
+    source_uri: Mapped[str]
+    ingestion_status: Mapped[str] = mapped_column(default="pending", index=True)
+    content_hash: Mapped[str] = mapped_column(default="")
+    content_ref: Mapped[Optional[str]] = mapped_column(nullable=True)
+    evidence_refs: Mapped[list] = mapped_column(JSON, default=list)
+    last_ingested_at: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    sort_order: Mapped[int] = mapped_column(default=0)
+
+
+class BaselineRecord(Base):
+    __tablename__ = "baselines"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(index=True)
+    kind: Mapped[str] = mapped_column(index=True)
+    status: Mapped[str] = mapped_column(default="draft", index=True)
+    source_version_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    parent_baseline_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    fork_strategy: Mapped[str] = mapped_column(default="copy_on_write")
+    object_count: Mapped[int] = mapped_column(default=0)
+    relationship_count: Mapped[int] = mapped_column(default=0)
+    metric_snapshot_count: Mapped[int] = mapped_column(default=0)
+    updated_at: Mapped[str] = mapped_column(index=True)
+    sort_order: Mapped[int] = mapped_column(default=0)
+
+
+class ContextRelationshipRecord(Base):
+    __tablename__ = "context_relationships"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(index=True)
+    baseline_id: Mapped[str] = mapped_column(index=True)
+    from_object_id: Mapped[str] = mapped_column(index=True)
+    relationship_type: Mapped[str] = mapped_column(index=True)
+    to_object_id: Mapped[str] = mapped_column(index=True)
+    confidence: Mapped[float] = mapped_column(default=0)
+    source_refs: Mapped[list] = mapped_column(JSON, default=list)
+    sort_order: Mapped[int] = mapped_column(default=0)
+
+
+class ContextObjectOverlayRecord(Base):
+    __tablename__ = "context_object_overlays"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(index=True)
+    baseline_id: Mapped[str] = mapped_column(index=True)
+    object_id: Mapped[str] = mapped_column(index=True)
+    field_path: Mapped[str]
+    operation: Mapped[str] = mapped_column(index=True)
+    value_ref: Mapped[Optional[str]] = mapped_column(nullable=True)
+    source_refs: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(default="candidate", index=True)
+    sort_order: Mapped[int] = mapped_column(default=0)
+
+
+class QualityMetricSnapshotRecord(Base):
+    __tablename__ = "quality_metric_snapshots"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(index=True)
+    baseline_id: Mapped[str] = mapped_column(index=True)
+    version_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    us_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    task_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    metric_group: Mapped[str] = mapped_column(index=True)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    evidence_refs: Mapped[list] = mapped_column(JSON, default=list)
+    captured_at: Mapped[str] = mapped_column(index=True)
+    sort_order: Mapped[int] = mapped_column(default=0)
+
+
 class ReleaseReadinessRecord(Base):
     __tablename__ = "release_readiness"
 
