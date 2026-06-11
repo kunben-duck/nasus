@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../features/api'
-import type { ProjectCard, StudioSettings } from '../features/types'
+import type { ConversationSession, ProjectCard, StudioSettings, SystemImageData } from '../features/types'
+import { useConversation } from '../hooks/useConversation'
 
 type StudioView = 'build' | 'dashboard' | 'documentation' | 'project'
 type AgentMode = 'planning' | 'sources' | 'quality'
+type MessageRow = { role: 'assistant' | 'user' | 'system' | 'tool'; text: string }
 
 const starterProjects: ProjectCard[] = [
   {
@@ -98,14 +100,19 @@ export function NasusStudio() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
   const [prompt, setPrompt] = useState('')
   const [agentMode, setAgentMode] = useState<AgentMode>('planning')
-  const [localMessages, setLocalMessages] = useState<string[]>([
-    'Tell me what you want to ship. I can create the project, connect sources, build the system image, and start the quality loop.',
+  const [fallbackMessages, setFallbackMessages] = useState<MessageRow[]>([
+    {
+      role: 'assistant',
+      text: 'Tell me what you want to ship. I can create the project, connect sources, build the system image, and start the quality loop.',
+    },
   ])
+  const [isPromptRunning, setIsPromptRunning] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.getSettings })
   const dashboardQuery = useQuery({ queryKey: ['dashboard'], queryFn: api.getDashboard })
   const buildQuery = useQuery({ queryKey: ['build'], queryFn: api.getBuild })
+  const buildConversation = useConversation('build', 'build', 'Build')
   useTheme(settingsQuery.data)
 
   const projects = useMemo(() => {
@@ -114,20 +121,18 @@ export function NasusStudio() {
   }, [buildQuery.data?.drafts, dashboardQuery.data?.projects])
 
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? projects[0]
-
-  const createProject = useMutation({
-    mutationFn: (name: string) => api.createProject(name),
-    onSuccess: (project) => {
-      setActiveProjectId(project.id)
-      setView('project')
-      setLocalMessages((messages) => [
-        ...messages,
-        `Created ${project.name}. Next I need Git, US documents, and historical test assets to initialize the system image.`,
-      ])
-      void queryClient.invalidateQueries({ queryKey: ['dashboard'] })
-      void queryClient.invalidateQueries({ queryKey: ['build'] })
-    },
+  const projectConversation = useConversation('project', activeProject?.id ?? 'project', activeProject?.name ?? 'Project')
+  const systemImageQuery = useQuery({
+    queryKey: ['system-image', activeProject?.id],
+    queryFn: () => api.getSystemImage(activeProject!.id),
+    enabled: Boolean(activeProject?.id),
   })
+
+  const visibleMessages = useMemo(() => {
+    const conversation = view === 'project' ? projectConversation.conversation : buildConversation.conversation
+    const rows = toMessageRows(conversation)
+    return rows.length ? rows : fallbackMessages
+  }, [buildConversation.conversation, fallbackMessages, projectConversation.conversation, view])
 
   const updateSettings = useMutation({
     mutationFn: (payload: Record<string, unknown>) => api.updateSettings(payload),
@@ -136,32 +141,96 @@ export function NasusStudio() {
     },
   })
 
+  const initializeSystemImage = useMutation({
+    mutationFn: async () => {
+      if (!activeProject) return null
+      const conversation = await api.ensureConversation('project', activeProject.id, activeProject.name)
+      return api.invokeTool({
+        conversation_id: conversation.id,
+        tool_id: 'baseline.initialize',
+        input: { project_id: activeProject.id },
+        initiator_surface: 'ui',
+        initiator_actor: 'user',
+      })
+    },
+    onSuccess: async () => {
+      if (!activeProject) return
+      await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      await queryClient.invalidateQueries({ queryKey: ['build'] })
+      await queryClient.invalidateQueries({ queryKey: ['project', activeProject.id] })
+      await queryClient.invalidateQueries({ queryKey: ['system-image', activeProject.id] })
+      await queryClient.invalidateQueries({ queryKey: ['conversation', projectConversation.conversationId] })
+    },
+  })
+
   async function runPrompt() {
     const text = prompt.trim()
     if (!text) return
 
-    setLocalMessages((messages) => [...messages, text])
     setPrompt('')
+    setFallbackMessages((messages) => [...messages, { role: 'user', text }])
+    setIsPromptRunning(true)
 
-    const lower = text.toLowerCase()
-    if (lower.includes('create') || text.includes('创建') || view === 'build') {
-      createProject.mutate(normalizeProjectName(text))
-      return
+    try {
+      if (view === 'project') {
+        await projectConversation.sendMessage(text)
+        if (activeProject) {
+          await queryClient.invalidateQueries({ queryKey: ['system-image', activeProject.id] })
+          await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+        }
+        return
+      }
+
+      await buildConversation.sendMessage(text)
+      await queryClient.invalidateQueries({ queryKey: ['build'] })
+      await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+
+      const dashboard = await queryClient.fetchQuery({ queryKey: ['dashboard'], queryFn: api.getDashboard })
+      const requestedName = normalizeProjectName(text).toLowerCase()
+      const created = dashboard.projects.find((project) => project.name.toLowerCase() === requestedName)
+      if (created) {
+        setActiveProjectId(created.id)
+        setView('project')
+      }
+    } catch {
+      setFallbackMessages((messages) => [
+        ...messages,
+        {
+          role: 'assistant',
+          text: 'The API is not reachable, so this screen is staying in visual preview mode. Once the backend is running, this prompt will go through Conversation → Tool Invocation → Domain Object.',
+        },
+      ])
+    } finally {
+      setIsPromptRunning(false)
     }
-
-    setLocalMessages((messages) => [
-      ...messages,
-      'I mapped this request to the tool catalog. The next implementation step will route it through Conversation → Tool Invocation → Domain Object.',
-    ])
   }
 
   function openProject(project: ProjectCard) {
     setActiveProjectId(project.id)
     setView('project')
-    setLocalMessages((messages) => [
+    setFallbackMessages((messages) => [
       ...messages,
-      `Opened ${project.name}. I can inspect system image freshness, quality loop progress, runs, and release readiness here.`,
+      {
+        role: 'assistant',
+        text: `Opened ${project.name}. I can inspect system image freshness, quality loop progress, runs, and release readiness here.`,
+      },
     ])
+  }
+
+  async function askProject(promptText: string) {
+    setPrompt(promptText)
+    if (view !== 'project') return
+    setIsPromptRunning(true)
+    try {
+      await projectConversation.sendMessage(promptText)
+      if (activeProject) {
+        await queryClient.invalidateQueries({ queryKey: ['system-image', activeProject.id] })
+        await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      }
+    } finally {
+      setPrompt('')
+      setIsPromptRunning(false)
+    }
   }
 
   const isProjectSpace = view === 'project'
@@ -220,23 +289,27 @@ export function NasusStudio() {
             prompt={prompt}
             setPrompt={setPrompt}
             runPrompt={runPrompt}
-            loading={createProject.isPending}
+            loading={isPromptRunning || buildConversation.isSending}
           />
         ) : null}
         {isProjectSpace && activeProject ? (
           <ProjectWorkspace
             project={activeProject}
+            systemImage={systemImageQuery.data}
             mode={agentMode}
             setMode={setAgentMode}
-            messages={localMessages}
+            messages={visibleMessages}
             prompt={prompt}
             setPrompt={setPrompt}
             runPrompt={runPrompt}
+            askProject={askProject}
+            initializeSystemImage={() => initializeSystemImage.mutate()}
+            loading={isPromptRunning || projectConversation.isSending || initializeSystemImage.isPending}
           />
         ) : null}
       </main>
 
-      {isProjectSpace ? <RunSettingsPanel project={activeProject} /> : null}
+      {isProjectSpace ? <RunSettingsPanel project={activeProject} systemImage={systemImageQuery.data} /> : null}
       {settingsOpen ? (
         <SettingsPopover
           settings={settingsQuery.data}
@@ -246,6 +319,17 @@ export function NasusStudio() {
       ) : null}
     </div>
   )
+}
+
+function toMessageRows(conversation?: ConversationSession): MessageRow[] {
+  if (!conversation) return []
+  return conversation.messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => ({
+      role: message.role,
+      text: message.blocks.map((block) => block.text).filter(Boolean).join('\n'),
+    }))
+    .filter((message) => message.text.trim().length > 0)
 }
 
 function GlobalNav({ view, setView }: { view: StudioView; setView: (view: StudioView) => void }) {
@@ -385,6 +469,7 @@ function BuildComposer({
   return (
     <div className="hero-composer">
       <textarea
+        data-testid="build-agent-input"
         value={prompt}
         onChange={(event) => setPrompt(event.target.value)}
         placeholder="Describe a quality project and let Nasus do the rest"
@@ -399,7 +484,7 @@ function BuildComposer({
           <button className="round-icon">⌕</button>
           <button className="round-icon">＋</button>
         </div>
-        <button className="lucky-button" onClick={runPrompt} disabled={loading}>
+        <button className="lucky-button" data-testid="build-agent-submit" onClick={runPrompt} disabled={loading}>
           ✦ {loading ? 'Building...' : "I'm feeling lucky"}
         </button>
       </div>
@@ -409,23 +494,38 @@ function BuildComposer({
 
 function ProjectWorkspace({
   project,
+  systemImage,
   mode,
   setMode,
   messages,
   prompt,
   setPrompt,
   runPrompt,
+  askProject,
+  initializeSystemImage,
+  loading,
 }: {
   project: ProjectCard
+  systemImage?: SystemImageData
   mode: AgentMode
   setMode: (mode: AgentMode) => void
-  messages: string[]
+  messages: MessageRow[]
   prompt: string
   setPrompt: (value: string) => void
   runPrompt: () => void
+  askProject: (promptText: string) => void
+  initializeSystemImage: () => void
+  loading: boolean
 }) {
+  const cardActions: Record<string, () => void> = {
+    'System Image Builder': initializeSystemImage,
+    'Quality Loop Agent': () => askProject('Summarize the current quality loop status and recommend the next best action.'),
+    'Release Assessor': () => askProject('Assess release readiness based on current evidence, open risks, and governance status.'),
+    'Repo Maintainer': () => askProject('Inspect system image code quality and changed module risk for this project.'),
+  }
+
   return (
-    <section className="agent-workspace">
+    <section className="agent-workspace" data-testid="agent-workspace">
       <div className="workspace-toolbar">
         <button className="collapse-button">☰</button>
         <strong>{project.name}</strong>
@@ -445,40 +545,77 @@ function ProjectWorkspace({
       </div>
       <div className="agent-card-grid">
         {agentCards.map((card) => (
-          <button className="agent-card" key={card.title}>
+          <button className="agent-card" data-testid={`agent-card-${card.title.toLowerCase().replaceAll(' ', '-')}`} key={card.title} onClick={cardActions[card.title]}>
             <span className={`agent-icon ${card.tone}`}>{card.icon}</span>
             <strong>{card.title}</strong>
             <p>{card.copy}</p>
           </button>
         ))}
       </div>
+      <SystemImageStrip systemImage={systemImage} project={project} />
       <div className="agent-log">
         {messages.slice(-5).map((message, index) => (
-          <div className={`message-row ${index % 2 ? 'user' : 'agent'}`} key={`${message}-${index}`}>
-            <span>{index % 2 ? 'You' : 'Nasus'}</span>
-            <p>{message}</p>
+          <div className={`message-row ${message.role}`} key={`${message.role}-${message.text}-${index}`}>
+            <span>{message.role === 'user' ? 'You' : message.role === 'tool' ? 'Tool' : 'Nasus'}</span>
+            <p>{message.text}</p>
           </div>
         ))}
       </div>
       <div className="task-composer">
         <textarea
+          data-testid="project-agent-input"
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
           placeholder="Start typing a prompt to see what our agents can do"
         />
         <div className="task-chip-row">
           <button className="tool-chip">Tools</button>
-          <button className="tool-chip active">System image ×</button>
-          <button className="tool-chip active">Quality loop ×</button>
-          <button className="tool-chip">Release gate</button>
-          <button className="round-icon" onClick={runPrompt}>↵</button>
+          <button className="tool-chip active" data-testid="tool-system-image" onClick={initializeSystemImage}>System image ×</button>
+          <button className="tool-chip active" onClick={() => askProject('Continue the quality loop for the riskiest open US.')}>Quality loop ×</button>
+          <button className="tool-chip" onClick={() => askProject('Assess release gate readiness and list blockers.')}>Release gate</button>
+          <button className="round-icon" data-testid="project-agent-submit" onClick={runPrompt} disabled={loading}>↵</button>
         </div>
       </div>
     </section>
   )
 }
 
-function RunSettingsPanel({ project }: { project?: ProjectCard }) {
+function SystemImageStrip({ systemImage, project }: { systemImage?: SystemImageData; project: ProjectCard }) {
+  const sourceCount = systemImage?.sources.length ?? 0
+  const indexed = systemImage?.sources.filter((source) => source.ingestion_status === 'indexed').length ?? 0
+  const metricGroups = systemImage?.metric_snapshots.map((metric) => metric.metric_group) ?? []
+
+  return (
+    <div className="system-image-strip" data-testid="system-image-strip">
+      <div>
+        <span className="eyebrow">System image</span>
+        <strong>{project.system_image_status}</strong>
+        <p>{systemImage?.summary ?? 'Waiting for source ingestion and baseline initialization.'}</p>
+      </div>
+      <div className="source-stat-grid">
+        <MetricMini label="Sources indexed" value={`${indexed}/${sourceCount || 3}`} />
+        <MetricMini label="Objects" value={`${systemImage?.objects.length ?? 0}`} />
+        <MetricMini label="Relations" value={`${systemImage?.relationships.length ?? 0}`} />
+        <MetricMini label="Metrics" value={`${metricGroups.length}`} />
+      </div>
+    </div>
+  )
+}
+
+function MetricMini({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="metric-mini">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  )
+}
+
+function RunSettingsPanel({ project, systemImage }: { project?: ProjectCard; systemImage?: SystemImageData }) {
+  const codeSource = systemImage?.sources.find((source) => source.source_type === 'code')
+  const usSource = systemImage?.sources.find((source) => source.source_type === 'us_doc')
+  const testSource = systemImage?.sources.find((source) => source.source_type === 'test_asset')
+
   return (
     <aside className="run-panel">
       <div className="run-panel-header">
@@ -497,14 +634,23 @@ function RunSettingsPanel({ project }: { project?: ProjectCard }) {
       </div>
       <div className="panel-section">
         <div className="panel-section-title">Tools</div>
-        <ToggleRow label="Code analysis" active />
-        <ToggleRow label="US document parser" active />
-        <ToggleRow label="Test asset ingestion" active />
+        <ToggleRow label="Code analysis" active={codeSource?.ingestion_status === 'indexed'} />
+        <ToggleRow label="US document parser" active={usSource?.ingestion_status === 'indexed'} />
+        <ToggleRow label="Test asset ingestion" active={testSource?.ingestion_status === 'indexed'} />
         <ToggleRow label="Release gate" active={false} />
       </div>
       <div className="panel-section">
         <div className="panel-section-title">Project</div>
         <p className="panel-copy">{project?.name ?? 'No project selected'} · System image {project?.system_image_status ?? 'draft'}</p>
+      </div>
+      <div className="panel-section">
+        <div className="panel-section-title">Quality metrics</div>
+        {(systemImage?.metric_snapshots ?? []).map((metric) => (
+          <div className="metric-row" key={metric.id}>
+            <span>{metric.metric_group.replaceAll('_', ' ')}</span>
+            <strong>{Object.keys(metric.metrics).length}</strong>
+          </div>
+        ))}
       </div>
     </aside>
   )
@@ -541,7 +687,7 @@ function ProjectGallery({ projects, openProject }: { projects: ProjectCard[]; op
   return (
     <div className="project-gallery">
       {projects.map((project) => (
-        <button className="project-card-ai" key={project.id} onClick={() => openProject(project)}>
+        <button className="project-card-ai" data-testid="project-card" key={project.id} onClick={() => openProject(project)}>
           <div className="project-card-top">
             <span className="project-code">{project.code}</span>
             <span className={`risk-pill ${project.risk}`}>{project.risk}</span>

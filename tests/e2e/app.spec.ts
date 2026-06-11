@@ -1,28 +1,24 @@
 import { expect, test } from '@playwright/test'
 
-test('build to workspace vertical slice works end-to-end', async ({ page }) => {
-  await page.goto('/build')
+test('agent-first build to project workspace path works end-to-end', async ({ page }) => {
+  const projectName = `E2E Quality Hub ${Date.now()}`
 
-  await expect(page.locator('.input-textarea')).toBeVisible()
-  await page.locator('.input-textarea').fill('Help me create a new project called Loyalty Hub')
-  await page.locator('.send-btn').click()
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: /Build quality projects with agents/i })).toBeVisible()
 
-  await expect(page.getByText(/I created the draft project.*Loyalty Hub/i).first()).toBeVisible()
+  await page.getByTestId('build-agent-input').fill(`Help me create a new project called ${projectName}`)
+  await page.getByTestId('build-agent-submit').click()
 
-  await page.goto('/dashboard')
-  await expect(page.locator('.collection-card').first()).toBeVisible()
-  await expect(page.getByText('Loyalty Hub', { exact: true }).first()).toBeVisible()
+  await expect(page.getByTestId('agent-workspace')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText(projectName).first()).toBeVisible()
+  await expect(page.getByRole('heading', { name: /Build with Agents/i })).toBeVisible()
 
-  await page.locator('[data-action="open_project"][data-project="proj_payment"]').click()
-  await expect(page.getByText(/Payment System/i).first()).toBeVisible()
+  await page.getByTestId('agent-card-system-image-builder').click()
+  await expect(page.getByTestId('system-image-strip')).toContainText(/ready/i, { timeout: 15_000 })
+  await expect(page.getByText(/Sources indexed/i)).toBeVisible()
+  await expect(page.getByText(/Code analysis/i)).toBeVisible()
 
-  await page.goto('/projects/proj_payment/versions')
-  await page.locator('[data-action="open_us_workspace"][data-us-id="us_123"]').first().click()
-  await expect(page.getByText(/US quality closure snapshot/i).first()).toBeVisible()
-
-  await page.locator('[data-action="generate_scenarios"]').first().click()
-
-  await expect(page.getByText(/Scenario generation is complete/i).first()).toBeVisible({ timeout: 10_000 })
-  await expect(page.getByText(/Quality Asset Pack lanes/i).first()).toBeVisible()
-  await expect(page.getByText(/8\/8 done/i).first()).toBeVisible()
+  await page.getByTestId('project-agent-input').fill('Show me the current system image freshness and baseline status')
+  await page.getByTestId('project-agent-submit').click()
+  await expect(page.getByText(/source groups are indexed|system image is/i).first()).toBeVisible({ timeout: 15_000 })
 })

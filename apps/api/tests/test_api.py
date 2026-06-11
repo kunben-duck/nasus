@@ -360,6 +360,45 @@ def test_created_project_has_draft_system_image_and_can_initialize_via_tool():
     assert len(ready["metric_snapshots"]) == 4
 
 
+def test_project_conversation_can_initialize_system_image_from_natural_language():
+    project = client.post("/v1/projects", json={"name": "Conversation System Image"}).json()
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": "Initialize the system image from code, US docs, and test assets"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tool_invocations"][0]["tool_id"] == "baseline.initialize"
+    invocation_id = body["tool_invocations"][0]["id"]
+    wait_until(lambda: client.get(f"/v1/tool-invocations/{invocation_id}").json()["status"] == "completed")
+
+    image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    assert image["project"]["system_image_status"] == "ready"
+    assert all(source["ingestion_status"] == "indexed" for source in image["sources"])
+
+
+def test_project_conversation_routes_system_image_query_to_canonical_tool():
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": "proj_payment", "title": "Payment System"},
+    ).json()
+
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": "Show me the current system image freshness and baseline status"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tool_invocations"][0]["tool_id"] == "query.system_image.status"
+
+
 def test_project_and_version_are_persisted_across_store_restart():
     project = client.post("/v1/projects", json={"name": "Persistent Project"}).json()
     version = client.post(f"/v1/projects/{project['id']}/versions", json={"name": "2026.Q4"}).json()

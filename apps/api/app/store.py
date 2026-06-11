@@ -721,12 +721,13 @@ class ApplicationStore:
         else:
             self.context_relationships[project_id] = []
 
+        overlay_object_id = self.knowledge_objects[project_id][0].id if self.knowledge_objects.get(project_id) else "context:pending"
         self.context_object_overlays[project_id] = [
             ContextObjectOverlay(
                 id=f"overlay_{project_id}_version_risk",
                 project_id=project_id,
                 baseline_id=baseline_id,
-                object_id="OBJ-CHECKOUT",
+                object_id=overlay_object_id,
                 field_path="risk_patterns.checkout_redirect",
                 operation="add",
                 value_ref="candidate:risk-pattern:checkout-redirect",
@@ -791,9 +792,10 @@ class ApplicationStore:
     def _initialize_system_image(self, project_id: str) -> SystemImageResponse:
         project = self.projects[project_id]
         if not self.knowledge_objects.get(project_id):
+            object_prefix = f"OBJ-{project_id.upper().replace('-', '_')}"
             self.knowledge_objects[project_id] = [
                 KnowledgeObject(
-                    id=f"OBJ-{project.code}-CORE",
+                    id=f"{object_prefix}-CORE",
                     name=f"{project.name} Core",
                     type="System",
                     branch="Official",
@@ -803,7 +805,7 @@ class ApplicationStore:
                     freshness="just now",
                 ),
                 KnowledgeObject(
-                    id=f"OBJ-{project.code}-US",
+                    id=f"{object_prefix}-US",
                     name="Historical US Baseline",
                     type="Feature",
                     branch="Official",
@@ -813,7 +815,7 @@ class ApplicationStore:
                     freshness="just now",
                 ),
                 KnowledgeObject(
-                    id=f"OBJ-{project.code}-TESTS",
+                    id=f"{object_prefix}-TESTS",
                     name="Regression Quality Pack",
                     type="QualityAssetPack",
                     branch="Official",

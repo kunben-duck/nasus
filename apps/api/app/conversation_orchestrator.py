@@ -72,6 +72,12 @@ class ConversationOrchestrator:
                 ),
             )
 
+        if self._looks_like_system_image_initialization(conversation, lowered, user_message):
+            return self._system_image_initialization_plan(conversation)
+
+        if self._looks_like_system_image_query(conversation, lowered, user_message):
+            return self._system_image_query_plan(conversation)
+
         if self._looks_like_quality_goal(conversation, lowered, user_message):
             return self._quality_loop_goal(conversation, user_message)
 
@@ -183,6 +189,42 @@ class ConversationOrchestrator:
             ),
         )
 
+    def _system_image_initialization_plan(self, conversation: ConversationSession) -> OrchestratorDecision:
+        project_id = conversation.project_id or conversation.space_id
+        return OrchestratorDecision(
+            kind="tool_plan",
+            tool_plan=ToolInvocationPlan(
+                intent_kind="system_image_initialization",
+                confidence=0.9,
+                steps=[
+                    ToolPlanStep(
+                        tool_id="baseline.initialize",
+                        input_payload={"project_id": project_id},
+                        reason="Initialize the Official System Image from the three first-class sources.",
+                    )
+                ],
+                recommended_next_tools=["query.system_image.status", "version.create"],
+            ),
+        )
+
+    def _system_image_query_plan(self, conversation: ConversationSession) -> OrchestratorDecision:
+        project_id = conversation.project_id or conversation.space_id
+        return OrchestratorDecision(
+            kind="tool_plan",
+            tool_plan=ToolInvocationPlan(
+                intent_kind="system_image_query",
+                confidence=0.88,
+                steps=[
+                    ToolPlanStep(
+                        tool_id="query.system_image.status",
+                        input_payload={"project_id": project_id},
+                        reason="Summarize source freshness, baseline readiness, relationships, and quality metrics.",
+                    )
+                ],
+                recommended_next_tools=["baseline.initialize"] if conversation.space_type == "project" else [],
+            ),
+        )
+
     def _quality_loop_goal(self, conversation: ConversationSession, user_message: str) -> OrchestratorDecision:
         project_id = conversation.project_id or ""
         us_id = conversation.us_id or conversation.space_id
@@ -234,6 +276,29 @@ class ConversationOrchestrator:
             needle in lowered
             for needle in ["create version", "new version", "version branch", "release branch"]
         ) or "版本" in raw
+
+    def _looks_like_system_image_initialization(self, conversation: ConversationSession, lowered: str, raw: str) -> bool:
+        if conversation.space_type not in {"project", "knowledge"}:
+            return False
+        return (
+            any(
+                needle in lowered
+                for needle in ["initialize system image", "init system image", "build baseline", "initialize baseline"]
+            )
+            or ("initialize" in lowered and ("system image" in lowered or "baseline" in lowered))
+            or ("build" in lowered and "system image" in lowered)
+            or ("初始化" in raw and ("系统画像" in raw or "基线" in raw))
+            or ("构建" in raw and "系统画像" in raw)
+        )
+
+    def _looks_like_system_image_query(self, conversation: ConversationSession, lowered: str, raw: str) -> bool:
+        if conversation.space_type not in {"project", "knowledge"}:
+            return False
+        return (
+            any(needle in lowered for needle in ["system image", "baseline", "knowledge state", "source freshness"])
+            or "系统画像" in raw
+            or "基线" in raw
+        )
 
     def _looks_like_quality_goal(self, conversation: ConversationSession, lowered: str, raw: str) -> bool:
         if conversation.space_type != "workspace":
