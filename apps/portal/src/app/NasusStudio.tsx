@@ -242,10 +242,11 @@ export function NasusStudio() {
     const rows = toMessageRows(conversation)
     return rows.length ? rows : fallbackMessages
   }, [buildConversation.conversation, fallbackMessages, projectConversation.conversation, view])
-  const pendingProjectGoal = useMemo(
-    () => projectConversation.conversation?.agent_goals.find((goal) => goal.status === 'paused' && goal.pause_reason === 'waiting_confirmation'),
+  const pausedProjectGoal = useMemo(
+    () => projectConversation.conversation?.agent_goals.find((goal) => goal.status === 'paused'),
     [projectConversation.conversation],
   )
+  const latestProjectGoal = projectConversation.conversation?.agent_goals.at(-1)
 
   const updateSettings = useMutation({
     mutationFn: (payload: Record<string, unknown>) => api.updateSettings(payload),
@@ -261,13 +262,10 @@ export function NasusStudio() {
     mutationFn: async () => {
       if (!activeProject) return null
       const conversation = await api.ensureConversation('project', activeProject.id, activeProject.name)
-      return api.invokeTool({
-        conversation_id: conversation.id,
-        tool_id: 'system_image.baseline.initialize',
-        input: { project_id: activeProject.id },
-        initiator_surface: 'ui',
-        initiator_actor: 'user',
-      })
+      return api.postMessage(
+        conversation.id,
+        'Build the official system image from code, historical US documents, and historical test assets.',
+      )
     },
     onSuccess: async () => {
       if (!activeProject) return
@@ -373,7 +371,7 @@ export function NasusStudio() {
   }
 
   async function confirmPendingGoal() {
-    if (!pendingProjectGoal) return
+    if (!pausedProjectGoal || pausedProjectGoal.pause_reason !== 'waiting_confirmation') return
     setIsPromptRunning(true)
     try {
       await projectConversation.sendMessage('确认，继续执行')
@@ -458,7 +456,8 @@ export function NasusStudio() {
             mode={agentMode}
             setMode={setAgentMode}
             messages={visibleMessages}
-            pendingGoal={pendingProjectGoal}
+            agentGoal={latestProjectGoal}
+            pendingGoal={pausedProjectGoal}
             prompt={prompt}
             setPrompt={setPrompt}
             runPrompt={runPrompt}
@@ -745,6 +744,7 @@ function ProjectWorkspace({
   mode,
   setMode,
   messages,
+  agentGoal,
   pendingGoal,
   prompt,
   setPrompt,
@@ -761,6 +761,7 @@ function ProjectWorkspace({
   mode: AgentMode
   setMode: (mode: AgentMode) => void
   messages: MessageRow[]
+  agentGoal?: AgentGoal
   pendingGoal?: AgentGoal
   prompt: string
   setPrompt: (value: string) => void
@@ -816,16 +817,25 @@ function ProjectWorkspace({
         ))}
       </div>
       <SystemImageStrip systemImage={systemImage} project={project} />
+      <AgentGoalPanel goal={agentGoal} />
       {pendingGoal ? (
         <div className="confirmation-gate-card" data-testid="agent-confirmation-gate">
           <div>
-            <span className="confirmation-kicker">Confirmation required</span>
+            <span className="confirmation-kicker">
+              {pendingGoal.pause_reason === 'missing_source_binding' ? 'Source bindings required' : 'Confirmation required'}
+            </span>
             <strong>{pendingGoal.title}</strong>
-            <p>The agent paused before a high-risk tool. Confirm in conversation to continue the same audited tool chain.</p>
+            <p>
+              {pendingGoal.pause_reason === 'missing_source_binding'
+                ? 'Provide code path, historical US documents path, and historical test assets path to continue the same audited tool chain.'
+                : 'The agent paused before a high-risk tool. Confirm in conversation to continue the same audited tool chain.'}
+            </p>
           </div>
-          <button className="composer-action-button build-submit-button" data-testid="confirm-agent-goal" onClick={confirmPendingGoal} disabled={loading}>
-            {loading ? 'Continuing...' : 'Confirm and continue'}
-          </button>
+          {pendingGoal.pause_reason === 'waiting_confirmation' ? (
+            <button className="composer-action-button build-submit-button" data-testid="confirm-agent-goal" onClick={confirmPendingGoal} disabled={loading}>
+              {loading ? 'Continuing...' : 'Confirm and continue'}
+            </button>
+          ) : null}
         </div>
       ) : null}
       <div className="agent-log">
@@ -855,16 +865,49 @@ function ProjectWorkspace({
   )
 }
 
+function AgentGoalPanel({ goal }: { goal?: AgentGoal }) {
+  if (!goal) return null
+
+  const visibleSteps = goal.steps
+    .filter((step) => step.phase || step.selected_tool_id || step.status !== 'pending')
+    .slice(-9)
+  const totalSteps = goal.steps.length || goal.max_steps || 1
+  const completedSteps = goal.steps.filter((step) => step.status === 'completed').length
+
+  return (
+    <div className="agent-goal-panel" data-testid="agent-goal-panel">
+      <div className="agent-goal-summary">
+        <span className={`agent-goal-status ${goal.status}`}>{goal.status}</span>
+        <div>
+          <strong>{goal.title}</strong>
+          <p>{goal.summary}</p>
+        </div>
+        <span className="agent-goal-progress">{completedSteps}/{totalSteps}</span>
+      </div>
+      <div className="agent-step-rail">
+        {visibleSteps.map((step) => (
+          <div className={`agent-step-pill ${step.status}`} key={step.id}>
+            <span className="agent-step-dot" />
+            <span className="agent-step-label">{step.selected_tool_id ?? step.phase ?? step.title}</span>
+            <span className="agent-step-status">{step.status}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function SystemImageStrip({ systemImage, project }: { systemImage?: SystemImageData; project: ProjectCard }) {
   const sourceCount = systemImage?.sources.length ?? 0
   const indexed = systemImage?.sources.filter((source) => source.ingestion_status === 'indexed').length ?? 0
   const metricGroups = systemImage?.metric_snapshots.map((metric) => metric.metric_group) ?? []
+  const status = systemImage?.project.system_image_status ?? project.system_image_status
 
   return (
     <div className="system-image-strip" data-testid="system-image-strip">
       <div>
         <span className="eyebrow">System image</span>
-        <strong>{project.system_image_status}</strong>
+        <strong>{status}</strong>
         <p>{systemImage?.summary ?? 'Waiting for source ingestion and baseline initialization.'}</p>
       </div>
       <div className="source-stat-grid">
@@ -951,23 +994,33 @@ function SettingsPopover({
   onTestModel: (payload: StudioSettingsConnectionTestRequest) => void
 }) {
   type SettingsPanel = 'theme' | 'language' | 'model' | 'notifications' | 'account' | 'status'
+  type ModelDraft = {
+    modelPreset: StudioSettings['model_preset']
+    providerKind: CustomModelConfig['provider_kind']
+    baseUrl: string
+    modelName: string
+    apiKey: string
+  }
   const [activePanel, setActivePanel] = useState<SettingsPanel>('theme')
   const [activeRoute, setActiveRoute] = useState<ModelRoute>('chat')
+  const [modelDrafts, setModelDrafts] = useState<Partial<Record<ModelRoute, Partial<ModelDraft>>>>({})
   const activeProfile = profileFor(settings, activeRoute)
-  const [modelPreset, setModelPreset] = useState(activeProfile.model_preset)
-  const [providerKind, setProviderKind] = useState<CustomModelConfig['provider_kind']>(activeProfile.custom_model.provider_kind)
-  const [baseUrl, setBaseUrl] = useState(activeProfile.custom_model.base_url ?? '')
-  const [modelName, setModelName] = useState(activeProfile.custom_model.model_name)
-  const [apiKey, setApiKey] = useState('')
+  const modelDraft = modelDrafts[activeRoute]
+  const modelPreset = modelDraft?.modelPreset ?? activeProfile.model_preset
+  const providerKind = modelDraft?.providerKind ?? activeProfile.custom_model.provider_kind
+  const baseUrl = modelDraft?.baseUrl ?? activeProfile.custom_model.base_url ?? ''
+  const modelName = modelDraft?.modelName ?? activeProfile.custom_model.model_name
+  const apiKey = modelDraft?.apiKey ?? ''
 
-  useEffect(() => {
-    const profile = profileFor(settings, activeRoute)
-    setModelPreset(profile.model_preset)
-    setProviderKind(profile.custom_model.provider_kind)
-    setBaseUrl(profile.custom_model.base_url ?? '')
-    setModelName(profile.custom_model.model_name)
-    setApiKey('')
-  }, [activeRoute, settings])
+  function updateModelDraft(patch: Partial<ModelDraft>) {
+    setModelDrafts((current) => ({
+      ...current,
+      [activeRoute]: {
+        ...current[activeRoute],
+        ...patch,
+      },
+    }))
+  }
 
   const maskedKey = activeProfile.custom_model.api_key_masked
   const status = activeProfile.active_provider_status
@@ -1100,14 +1153,14 @@ function SettingsPopover({
         <div className="model-config-form">
           <label className="settings-field">
             <span className="settings-field-label">Route mode</span>
-            <select className="settings-field-control" value={modelPreset} onChange={(event) => setModelPreset(event.target.value as 'system_default' | 'custom')}>
+            <select className="settings-field-control" value={modelPreset} onChange={(event) => updateModelDraft({ modelPreset: event.target.value as 'system_default' | 'custom' })}>
               <option value="system_default">System default</option>
               <option value="custom">Custom provider</option>
             </select>
           </label>
           <label className="settings-field">
             <span className="settings-field-label">Provider</span>
-            <select className="settings-field-control" value={providerKind} onChange={(event) => setProviderKind(event.target.value as CustomModelConfig['provider_kind'])}>
+            <select className="settings-field-control" value={providerKind} onChange={(event) => updateModelDraft({ providerKind: event.target.value as CustomModelConfig['provider_kind'] })}>
               <option value="openai_compatible">OpenAI compatible</option>
               <option value="openai">OpenAI</option>
               <option value="gemini">Gemini</option>
@@ -1116,15 +1169,15 @@ function SettingsPopover({
           </label>
           <label className="settings-field">
             <span className="settings-field-label">Base URL</span>
-            <input className="settings-field-control" placeholder="https://api.example.com/v1" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
+            <input className="settings-field-control" placeholder="https://api.example.com/v1" value={baseUrl} onChange={(event) => updateModelDraft({ baseUrl: event.target.value })} />
           </label>
           <label className="settings-field">
             <span className="settings-field-label">Model</span>
-            <input className="settings-field-control" placeholder={activeRoute === 'embedding' ? 'text-embedding-3-large' : activeRoute === 'rerank' ? 'rerank-model' : 'gpt-5.4'} value={modelName} onChange={(event) => setModelName(event.target.value)} />
+            <input className="settings-field-control" placeholder={activeRoute === 'embedding' ? 'text-embedding-3-large' : activeRoute === 'rerank' ? 'rerank-model' : 'gpt-5.4'} value={modelName} onChange={(event) => updateModelDraft({ modelName: event.target.value })} />
           </label>
           <label className="settings-field">
             <span className="settings-field-label">API Key</span>
-            <input className="settings-field-control" type="password" placeholder={maskedKey ? `Saved ${maskedKey}` : 'Paste API key'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
+            <input className="settings-field-control" type="password" placeholder={maskedKey ? `Saved ${maskedKey}` : 'Paste API key'} value={apiKey} onChange={(event) => updateModelDraft({ apiKey: event.target.value })} />
           </label>
           <div className="settings-form-actions">
             <button className="settings-save-button secondary" disabled={testing} onClick={() => onTestModel(testPayload)} type="button">

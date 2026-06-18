@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Optional
 
 from .context_extraction import ContextExtractionService
 from .models import (
+    AssetLane,
     BaselineRecord,
     ContextObjectOverlay,
     ContextRelationship,
@@ -13,6 +14,7 @@ from .models import (
     QualityMetricSnapshot,
     RawAssetRecord,
     SystemImageResponse,
+    USItem,
 )
 from .source_ingestion import SourceIngestionService, SourceSpec
 
@@ -486,6 +488,8 @@ class SystemImageService:
             self.ensure_context_objects(project_id)
             self._materialize_fallback_context(project_id, baseline_id=baseline_id, version_id=version_id, captured_at=now)
 
+        self._sync_us_work_items_from_context(project_id, version_id=version_id)
+
         if self.store.baselines.get(project_id):
             self.store.baselines[project_id][0].object_count = len(self.store.knowledge_objects[project_id])
             self.store.baselines[project_id][0].relationship_count = len(self.store.context_relationships[project_id])
@@ -502,6 +506,74 @@ class SystemImageService:
         self._persist_system_image(project_id)
         self.store._refresh_project_read_models(project_id)
         return self.get(project_id)
+
+    def _sync_us_work_items_from_context(self, project_id: str, *, version_id: str | None) -> None:
+        if self.store.us_items.get(project_id):
+            return
+
+        us_objects = [
+            item for item in self.store.knowledge_objects.get(project_id, [])
+            if item.type == "USWorkItem"
+        ]
+        if not us_objects:
+            us_objects = [
+                item for item in self.store.knowledge_objects.get(project_id, [])
+                if item.type in {"Feature", "RequirementSection", "RequirementDocument"}
+            ]
+        if not us_objects:
+            return
+
+        us_items: list[USItem] = []
+        for index, item in enumerate(us_objects[:8], start=1):
+            us_id_match = re.search(r"\bUS[-_ ]?(\d+)\b", item.name, re.IGNORECASE)
+            us_code = f"US-{us_id_match.group(1)}" if us_id_match else f"US-{index:03d}"
+            us_items.append(
+                USItem(
+                    id=f"us_{_slugify(us_code)}_{project_id[-6:]}",
+                    title=item.name[:96],
+                    owner="Nasus Agent",
+                    status="analysis",
+                    risk="medium",
+                    progress=18,
+                    next_action="Generate scenarios",
+                )
+            )
+
+        self.store.us_items[project_id] = us_items
+        self.store.project_repository.replace_us_items(project_id, version_id, us_items)
+        for us_item in us_items:
+            lanes = [
+                AssetLane(
+                    id=f"{us_item.id}_lane_scenarios",
+                    label="Scenarios",
+                    status="not_started",
+                    summary="Waiting for scenario generation from system image, US, and test evidence.",
+                    updated_at=_now_iso(),
+                ),
+                AssetLane(
+                    id=f"{us_item.id}_lane_cases",
+                    label="Cases",
+                    status="not_started",
+                    summary="Waiting for approved scenario structure.",
+                    updated_at=_now_iso(),
+                ),
+                AssetLane(
+                    id=f"{us_item.id}_lane_automation",
+                    label="Automation",
+                    status="not_started",
+                    summary="Waiting for reviewed cases before script generation.",
+                    updated_at=_now_iso(),
+                ),
+                AssetLane(
+                    id=f"{us_item.id}_lane_release",
+                    label="Release Assessment",
+                    status="not_started",
+                    summary="Waiting for execution evidence and quality scoring.",
+                    updated_at=_now_iso(),
+                ),
+            ]
+            self.store.asset_lanes[us_item.id] = lanes
+            self.store.project_repository.replace_asset_lanes(project_id, us_item.id, lanes)
 
     def initialize_baseline(self, project_id: str) -> SystemImageResponse:
         self.materialize_context(project_id)

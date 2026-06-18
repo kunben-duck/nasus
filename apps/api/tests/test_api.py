@@ -12,6 +12,7 @@ os.environ["NASUS_STATE_DIR"] = STATE_DIR
 from fastapi.testclient import TestClient
 
 from apps.api.app.main import app
+from apps.api.app.conversation_orchestrator import ConversationOrchestrator
 from apps.api.app.store import InMemoryStore, store
 
 
@@ -43,6 +44,31 @@ def create_system_image_source_dirs(prefix: str):
 
 def system_image_source_prompt(code_dir: Path, us_dir: Path, tests_dir: Path) -> str:
     return f"code path {code_dir}, US docs path {us_dir}, tests path {tests_dir}"
+
+
+def test_system_image_source_prompt_parser_does_not_match_us_inside_absolute_path():
+    prompt = (
+        "code path /Users/uben/project/project/Nasus/tests/fixtures/system-image/code, "
+        "US docs path /Users/uben/project/project/Nasus/tests/fixtures/system-image/us, "
+        "tests path /Users/uben/project/project/Nasus/tests/fixtures/system-image/tests"
+    )
+
+    specs = ConversationOrchestrator._extract_system_image_source_specs(prompt)
+
+    assert specs == [
+        {
+            "source_type": "code",
+            "source_uri": "/Users/uben/project/project/Nasus/tests/fixtures/system-image/code",
+        },
+        {
+            "source_type": "us_doc",
+            "source_uri": "/Users/uben/project/project/Nasus/tests/fixtures/system-image/us",
+        },
+        {
+            "source_type": "test_asset",
+            "source_uri": "/Users/uben/project/project/Nasus/tests/fixtures/system-image/tests",
+        },
+    ]
 
 
 def test_welcome_payload_has_recent_projects():

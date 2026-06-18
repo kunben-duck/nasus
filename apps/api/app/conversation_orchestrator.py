@@ -438,6 +438,7 @@ class ConversationOrchestrator:
         for source_type, labels in source_label_groups.items():
             label_pattern = "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
             pattern = re.compile(
+                rf"(?:^|[\s,，;；])"
                 rf"(?:{label_pattern})"
                 rf"(?:\s*(?:path|dir|directory|url|uri|地址|路径|目录|位置|为|是|在))?"
                 rf"\s*(?:=|:|：|->|=>)?\s*"

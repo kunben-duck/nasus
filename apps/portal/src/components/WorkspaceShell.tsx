@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useState } from 'react'
 import type { PropsWithChildren, ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 
@@ -52,13 +52,9 @@ export function WorkspaceShell({
   const location = useLocation()
   const navItems = mode === 'global' ? globalNav : projectNav(projectId)
   const isActive = (href: string) => location.pathname === href || location.pathname.startsWith(`${href}/`)
-  const tabIds = useMemo(() => inspector.tabs.map((tab) => tab.id).join('|'), [inspector.tabs])
-  const [activeTabId, setActiveTabId] = useState(inspector.defaultTabId ?? inspector.tabs[0]?.id ?? '')
-
-  useEffect(() => {
-    setActiveTabId(inspector.defaultTabId ?? inspector.tabs[0]?.id ?? '')
-  }, [inspector.defaultTabId, location.pathname, tabIds])
-
+  const [selectedTabId, setSelectedTabId] = useState<string | null>(null)
+  const defaultTabId = inspector.defaultTabId ?? inspector.tabs[0]?.id ?? ''
+  const activeTabId = inspector.tabs.some((tab) => tab.id === selectedTabId) ? selectedTabId : defaultTabId
   const activeTab = inspector.tabs.find((tab) => tab.id === activeTabId) ?? inspector.tabs[0]
 
   return (
@@ -103,7 +99,7 @@ export function WorkspaceShell({
                     className={`panel-tab ${tab.id === activeTab?.id ? 'active' : ''}`}
                     key={tab.id}
                     type="button"
-                    onClick={() => setActiveTabId(tab.id)}
+                    onClick={() => setSelectedTabId(tab.id)}
                   >
                     {tab.label}
                   </button>

@@ -497,7 +497,7 @@ button {
 }
 
 .studio-main.with-right-panel {
-  padding-right: 32px;
+  padding-right: 300px;
 }
 
 .terms-bar {
@@ -1295,13 +1295,131 @@ button {
   line-height: 1.55;
 }
 
+.agent-goal-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(122, 162, 255, 0.08), transparent 34%),
+    var(--surface);
+}
+
+.agent-goal-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.agent-goal-summary strong {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.agent-goal-summary p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.agent-goal-status,
+.agent-goal-progress {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 68px;
+  min-height: 28px;
+  border-radius: 999px;
+  background: rgba(122, 162, 255, 0.12);
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.agent-goal-status.paused,
+.agent-goal-status.blocked {
+  background: rgba(229, 183, 77, 0.14);
+  color: var(--yellow);
+}
+
+.agent-goal-status.completed {
+  background: rgba(69, 196, 111, 0.13);
+  color: var(--green);
+}
+
+.agent-goal-status.failed {
+  background: rgba(240, 115, 115, 0.14);
+  color: var(--red);
+}
+
+.agent-step-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-step-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 7px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-step-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--subtle);
+}
+
+.agent-step-pill.completed .agent-step-dot {
+  background: var(--green);
+}
+
+.agent-step-pill.running .agent-step-dot {
+  background: var(--blue);
+  box-shadow: 0 0 0 4px rgba(122, 162, 255, 0.12);
+}
+
+.agent-step-pill.blocked .agent-step-dot {
+  background: var(--yellow);
+}
+
+.agent-step-label {
+  overflow: hidden;
+  max-width: 260px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-step-status {
+  color: var(--subtle);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
 .confirmation-gate-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   margin-top: 14px;
-  max-width: 900px;
+  width: 100%;
+  max-width: 100%;
   padding: 14px 16px;
   border: 1px solid transparent;
   border-radius: 18px;
