@@ -26,8 +26,14 @@ class UserProfile(BaseModel):
     role: str
 
 
+ModelRoute = Literal["chat", "embedding", "rerank"]
+ProviderName = Literal["mock", "openai", "gemini", "anthropic", "openai_compatible"]
+ModelPreset = Literal["system_default", "custom"]
+CustomProviderKind = Literal["openai_compatible", "openai", "gemini", "anthropic"]
+
+
 class ProviderStatus(BaseModel):
-    provider: Literal["mock", "openai", "gemini", "anthropic", "openai_compatible"]
+    provider: ProviderName
     available: bool
     configured_via: Literal["builtin", "system_default", "custom"]
     mode: Literal["live", "fallback"] = "fallback"
@@ -36,20 +42,18 @@ class ProviderStatus(BaseModel):
 
 
 class CustomModelConfig(BaseModel):
-    provider_kind: Literal["openai_compatible", "openai", "gemini", "anthropic"] = "openai_compatible"
+    provider_kind: CustomProviderKind = "openai_compatible"
     base_url: Optional[str] = None
     model_name: str = ""
     has_api_key: bool = False
     api_key_masked: Optional[str] = None
 
 
-class StudioSettings(BaseModel):
-    language: Literal["en", "zh"] = "en"
-    theme: Literal["dark", "light", "system"] = "dark"
-    model_preset: Literal["system_default", "custom"] = "system_default"
-    notification_mode: Literal["important", "all", "muted"] = "important"
-    model_provider: Literal["mock", "openai", "gemini", "anthropic", "openai_compatible"] = "openai"
-    model_name: str = "gpt-5.4"
+class ModelProviderProfile(BaseModel):
+    route: ModelRoute
+    model_preset: ModelPreset = "system_default"
+    model_provider: ProviderName = "openai"
+    model_name: str = ""
     runtime_mode: Literal["live", "fallback"] = "fallback"
     fallback_provider: Literal["mock"] = "mock"
     provider_statuses: List[ProviderStatus] = Field(default_factory=list)
@@ -66,20 +70,46 @@ class StudioSettings(BaseModel):
     custom_model: CustomModelConfig = Field(default_factory=CustomModelConfig)
 
 
+class StudioSettings(BaseModel):
+    language: Literal["en", "zh"] = "en"
+    theme: Literal["dark", "light", "system"] = "dark"
+    model_preset: ModelPreset = "system_default"
+    notification_mode: Literal["important", "all", "muted"] = "important"
+    model_provider: ProviderName = "openai"
+    model_name: str = "gpt-5.4"
+    runtime_mode: Literal["live", "fallback"] = "fallback"
+    fallback_provider: Literal["mock"] = "mock"
+    provider_statuses: List[ProviderStatus] = Field(default_factory=list)
+    active_provider_status: ProviderStatus = Field(
+        default_factory=lambda: ProviderStatus(
+            provider="openai",
+            available=False,
+            configured_via="system_default",
+            mode="fallback",
+            fallback_provider="mock",
+            reason="System default provider is not configured.",
+        )
+    )
+    custom_model: CustomModelConfig = Field(default_factory=CustomModelConfig)
+    model_profiles: Dict[ModelRoute, ModelProviderProfile] = Field(default_factory=dict)
+
+
 class StudioSettingsPatch(BaseModel):
     language: Optional[Literal["en", "zh"]] = None
     theme: Optional[Literal["dark", "light", "system"]] = None
-    model_preset: Optional[Literal["system_default", "custom"]] = None
+    model_route: Optional[ModelRoute] = None
+    model_preset: Optional[ModelPreset] = None
     notification_mode: Optional[Literal["important", "all", "muted"]] = None
-    custom_provider_kind: Optional[Literal["openai_compatible", "openai", "gemini", "anthropic"]] = None
+    custom_provider_kind: Optional[CustomProviderKind] = None
     custom_base_url: Optional[str] = None
     custom_model_name: Optional[str] = None
     custom_api_key: Optional[str] = None
 
 
 class StudioSettingsConnectionTestRequest(BaseModel):
-    model_preset: Optional[Literal["system_default", "custom"]] = None
-    custom_provider_kind: Optional[Literal["openai_compatible", "openai", "gemini", "anthropic"]] = None
+    model_route: Optional[ModelRoute] = None
+    model_preset: Optional[ModelPreset] = None
+    custom_provider_kind: Optional[CustomProviderKind] = None
     custom_base_url: Optional[str] = None
     custom_model_name: Optional[str] = None
     custom_api_key: Optional[str] = None
@@ -87,7 +117,8 @@ class StudioSettingsConnectionTestRequest(BaseModel):
 
 class StudioSettingsConnectionTestResponse(BaseModel):
     ok: bool
-    provider: Literal["mock", "openai", "gemini", "anthropic", "openai_compatible"]
+    model_route: ModelRoute = "chat"
+    provider: ProviderName
     model_name: str
     runtime_mode: Literal["live", "fallback"]
     fallback_provider: Optional[Literal["mock"]] = None
@@ -302,7 +333,14 @@ class AgentStep(BaseModel):
     status: Literal["pending", "running", "completed", "blocked"]
     phase: Optional[Literal["thinking", "acting", "observing", "deciding"]] = None
     reasoning: Optional[str] = None
+    memory_context_hash: Optional[str] = None
+    memory_context_summary: Optional[str] = None
+    memory_recent_turn_count: int = 0
+    memory_checkpoint_count: int = 0
+    available_tool_ids: List[str] = Field(default_factory=list)
     selected_tool_id: Optional[str] = None
+    tool_input_payload: Dict[str, Any] = Field(default_factory=dict)
+    tool_target_scope: Literal["central", "edge"] = "central"
     tool_invocation_id: Optional[str] = None
     observation_summary: Optional[str] = None
     decision: Optional[Literal["continue", "pause", "complete", "fail", "escalate"]] = None
@@ -324,6 +362,37 @@ class AgentGoal(BaseModel):
     steps_completed: int = 0
     pause_reason: Optional[str] = None
     workflow_id: Optional[str] = None
+
+
+class AgentWorkerAssignment(BaseModel):
+    id: str
+    swarm_run_id: str
+    worker_agent_kind: Literal["context", "impact", "scenario", "case", "execution", "failure", "release"]
+    target_refs: List[str] = Field(default_factory=list)
+    input_context_refs: List[str] = Field(default_factory=list)
+    status: Literal["pending", "running", "completed", "failed", "cancelled"] = "pending"
+    agent_goal_id: Optional[str] = None
+    tool_invocation_refs: List[str] = Field(default_factory=list)
+    candidate_result_ref: Optional[str] = None
+    confidence: float = Field(default=0, ge=0, le=1)
+    summary: str = ""
+    created_at: str
+    completed_at: Optional[str] = None
+
+
+class AgentSwarmRun(BaseModel):
+    id: str
+    parent_goal_id: str
+    conversation_id: str
+    swarm_kind: Literal["impact", "scenario", "case", "failure", "release", "ingestion"]
+    status: Literal["pending", "running", "merging", "completed", "failed", "cancelled"] = "pending"
+    max_parallel_agents: int = Field(default=3, ge=1)
+    merge_strategy: str = "confidence_weighted"
+    target_refs: List[str] = Field(default_factory=list)
+    result_summary: str = ""
+    assignments: List[AgentWorkerAssignment] = Field(default_factory=list)
+    created_at: str
+    completed_at: Optional[str] = None
 
 
 class MessageBlock(BaseModel):
@@ -415,6 +484,9 @@ class ToolResult(BaseModel):
     summary: str
     object_refs: List[str] = Field(default_factory=list)
     evidence_refs: List[str] = Field(default_factory=list)
+    requires_followup: bool = False
+    followup_reason: Optional[str] = None
+    followup_prompt: Optional[str] = None
     next_recommended_tools: List[str] = Field(default_factory=list)
 
 
@@ -487,6 +559,36 @@ class ToolInvocation(BaseModel):
     result: Optional[ToolResult] = None
 
 
+class AuditEvent(BaseModel):
+    id: str
+    occurred_at: str
+    actor: str
+    actor_kind: Literal["user", "agent", "system"] = "system"
+    action: str
+    entity_type: str
+    entity_id: str
+    status: Literal[
+        "accepted",
+        "draft",
+        "pending",
+        "running",
+        "paused",
+        "blocked",
+        "waiting_confirmation",
+        "waiting_approval",
+        "completed",
+        "failed",
+        "cancelled",
+    ] = "accepted"
+    summary: str
+    conversation_id: Optional[str] = None
+    tool_invocation_id: Optional[str] = None
+    agent_goal_id: Optional[str] = None
+    object_refs: List[str] = Field(default_factory=list)
+    evidence_refs: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ToolInvocationRequest(BaseModel):
     conversation_id: Optional[str] = None
     tool_id: str
@@ -502,6 +604,7 @@ class AgentGoalCreateRequest(BaseModel):
     title: str
     summary: str
     autonomy_level: Literal["full_auto", "semi_auto", "step_by_step"] = "semi_auto"
+    max_steps: int = 50
     project_id: Optional[str] = None
     us_id: Optional[str] = None
     steps: Optional[List[AgentStep]] = None
@@ -511,12 +614,39 @@ class AgentGoalFeedbackRequest(BaseModel):
     feedback: str
 
 
+class AgentMemoryCheckpointRequest(BaseModel):
+    conversation_id: Optional[str] = None
+    agent_goal_id: Optional[str] = None
+    space_ref: Optional[str] = None
+    created_by: Literal["system", "user"] = "user"
+
+
+class AgentSwarmCreateRequest(BaseModel):
+    parent_goal_id: str
+    swarm_kind: Literal["impact", "scenario", "case", "failure", "release", "ingestion"]
+    target_refs: List[str] = Field(default_factory=list)
+    max_parallel_agents: int = Field(default=3, ge=1)
+    merge_strategy: str = "confidence_weighted"
+
+
 class EventPayload(BaseModel):
     event_id: str
     event_type: str
+    occurred_at: str
+    correlation_id: str
+    conversation_id: Optional[str] = None
+    tool_invocation_id: Optional[str] = None
+    agent_goal_id: Optional[str] = None
+    agent_step_id: Optional[str] = None
+    swarm_run_id: Optional[str] = None
+    assignment_id: Optional[str] = None
+    task_id: Optional[str] = None
+    run_id: Optional[str] = None
     entity_type: str
     entity_id: str
     entity_version: int
     mutation_kind: Literal["replace", "patch", "append", "invalidate"]
     patch: Dict[str, Any] = Field(default_factory=dict)
     query_keys: List[List[str]] = Field(default_factory=list)
+    snapshot_hint: bool = False
+    payload: Dict[str, Any] = Field(default_factory=dict)

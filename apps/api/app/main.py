@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from .models import (
     AgentGoalCreateRequest,
     AgentGoalFeedbackRequest,
+    AgentMemoryCheckpointRequest,
     ConversationArchiveRequest,
     ConversationCreateRequest,
     ConversationMergeRequest,
@@ -111,15 +112,51 @@ def get_tools() -> Any:
     return store.tools
 
 
+@app.get("/v1/audit-events")
+def list_audit_events(
+    conversation_id: Optional[str] = None,
+    tool_invocation_id: Optional[str] = None,
+    agent_goal_id: Optional[str] = None,
+) -> Any:
+    return store.list_audit_events(
+        conversation_id=conversation_id,
+        tool_invocation_id=tool_invocation_id,
+        agent_goal_id=agent_goal_id,
+    )
+
+
 @app.post("/v1/tool-invocations")
 async def create_tool_invocation(payload: ToolInvocationRequest) -> Any:
     return await store.create_tool_invocation(payload)
+
+
+@app.get("/v1/tool-invocations")
+def list_tool_invocations(
+    conversation_id: Optional[str] = None,
+    agent_goal_id: Optional[str] = None,
+    tool_id: Optional[str] = None,
+    status: Optional[str] = None,
+) -> Any:
+    return store.list_tool_invocations(
+        conversation_id=conversation_id,
+        agent_goal_id=agent_goal_id,
+        tool_id=tool_id,
+        status=status,
+    )
 
 
 @app.get("/v1/tool-invocations/{invocation_id}")
 def get_tool_invocation(invocation_id: str) -> Any:
     try:
         return store.get_tool_invocation(invocation_id)
+    except KeyError as exc:
+        raise _error_response("not_found", f"tool invocation {invocation_id} was not found", 404) from exc
+
+
+@app.post("/v1/tool-invocations/{invocation_id}/confirm")
+async def confirm_tool_invocation(invocation_id: str) -> Any:
+    try:
+        return await store.confirm_tool_invocation(invocation_id)
     except KeyError as exc:
         raise _error_response("not_found", f"tool invocation {invocation_id} was not found", 404) from exc
 
@@ -309,7 +346,7 @@ async def conversation_events(conversation_id: str) -> StreamingResponse:
 @app.post("/v1/agent-goals")
 def create_agent_goal(payload: AgentGoalCreateRequest) -> Any:
     try:
-        return store.create_agent_goal(payload)
+        return store.agent_service.create_manual_goal(payload)
     except KeyError as exc:
         raise _error_response("not_found", "conversation was not found", 404) from exc
 
@@ -322,6 +359,45 @@ def get_agent_goal(goal_id: str) -> Any:
         raise _error_response("not_found", f"agent goal {goal_id} was not found", 404) from exc
 
 
+@app.get("/v1/agent-goals/{goal_id}/checkpoint")
+def get_agent_goal_checkpoint(goal_id: str) -> Any:
+    try:
+        return store.get_agent_goal_checkpoint(goal_id)
+    except KeyError as exc:
+        raise _error_response("not_found", f"agent goal {goal_id} was not found", 404) from exc
+
+
+@app.get("/v1/agent-memory/context")
+def get_agent_memory_context(
+    conversation_id: Optional[str] = None,
+    agent_goal_id: Optional[str] = None,
+    space_ref: Optional[str] = None,
+) -> Any:
+    try:
+        return store.get_agent_memory_context(
+            conversation_id=conversation_id,
+            agent_goal_id=agent_goal_id,
+            space_ref=space_ref,
+        )
+    except KeyError as exc:
+        raise _error_response("not_found", "agent memory context target was not found", 404) from exc
+
+
+@app.post("/v1/agent-memory/checkpoints")
+async def create_agent_memory_checkpoint(payload: AgentMemoryCheckpointRequest) -> Any:
+    try:
+        return await store.create_agent_memory_checkpoint(
+            conversation_id=payload.conversation_id,
+            agent_goal_id=payload.agent_goal_id,
+            space_ref=payload.space_ref,
+            created_by=payload.created_by,
+        )
+    except KeyError as exc:
+        raise _error_response("not_found", "agent memory checkpoint target was not found", 404) from exc
+    except ValueError as exc:
+        raise _error_response("validation_error", str(exc), 400) from exc
+
+
 @app.get("/v1/agent-goals/{goal_id}/events")
 async def agent_goal_events(goal_id: str) -> StreamingResponse:
     try:
@@ -331,6 +407,29 @@ async def agent_goal_events(goal_id: str) -> StreamingResponse:
 
     async def event_generator():
         async for event in store.stream_goal_events(goal_id):
+            yield f"event: {event.event_type}\n"
+            yield f"data: {json.dumps(event.model_dump())}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/v1/agent-swarms/{swarm_id}")
+def get_agent_swarm(swarm_id: str) -> Any:
+    try:
+        return store.get_agent_swarm(swarm_id)
+    except KeyError as exc:
+        raise _error_response("not_found", f"agent swarm {swarm_id} was not found", 404) from exc
+
+
+@app.get("/v1/agent-swarms/{swarm_id}/events")
+async def agent_swarm_events(swarm_id: str) -> StreamingResponse:
+    try:
+        store.get_agent_swarm(swarm_id)
+    except KeyError as exc:
+        raise _error_response("not_found", f"agent swarm {swarm_id} was not found", 404) from exc
+
+    async def event_generator():
+        async for event in store.stream_swarm_events(swarm_id):
             yield f"event: {event.event_type}\n"
             yield f"data: {json.dumps(event.model_dump())}\n\n"
 

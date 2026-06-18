@@ -100,6 +100,40 @@ class AgentGoalRecord(Base):
     workflow_id: Mapped[Optional[str]] = mapped_column(nullable=True)
 
 
+class AgentSwarmRunRecord(Base):
+    __tablename__ = "agent_swarm_runs"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    parent_goal_id: Mapped[str] = mapped_column(index=True)
+    conversation_id: Mapped[str] = mapped_column(index=True)
+    swarm_kind: Mapped[str] = mapped_column(index=True)
+    status: Mapped[str] = mapped_column(default="pending", index=True)
+    max_parallel_agents: Mapped[int] = mapped_column(default=3)
+    merge_strategy: Mapped[str] = mapped_column(default="confidence_weighted")
+    target_refs: Mapped[list] = mapped_column(JSON, default=list)
+    result_summary: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[str] = mapped_column(index=True)
+    completed_at: Mapped[Optional[str]] = mapped_column(nullable=True)
+
+
+class AgentWorkerAssignmentRecord(Base):
+    __tablename__ = "agent_worker_assignments"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    swarm_run_id: Mapped[str] = mapped_column(index=True)
+    worker_agent_kind: Mapped[str] = mapped_column(index=True)
+    target_refs: Mapped[list] = mapped_column(JSON, default=list)
+    input_context_refs: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(default="pending", index=True)
+    agent_goal_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    tool_invocation_refs: Mapped[list] = mapped_column(JSON, default=list)
+    candidate_result_ref: Mapped[Optional[str]] = mapped_column(nullable=True)
+    confidence: Mapped[float] = mapped_column(default=0)
+    summary: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[str] = mapped_column(index=True)
+    completed_at: Mapped[Optional[str]] = mapped_column(nullable=True)
+
+
 class ToolInvocationRecord(Base):
     __tablename__ = "tool_invocations"
 
@@ -113,6 +147,26 @@ class ToolInvocationRecord(Base):
     target_scope: Mapped[str] = mapped_column(default="central")
     input_payload: Mapped[dict] = mapped_column(JSON, default=dict)
     result_payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+
+class AuditEventRecord(Base):
+    __tablename__ = "audit_events"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    occurred_at: Mapped[str] = mapped_column(index=True)
+    actor: Mapped[str] = mapped_column(index=True)
+    actor_kind: Mapped[str] = mapped_column(default="system", index=True)
+    action: Mapped[str] = mapped_column(index=True)
+    entity_type: Mapped[str] = mapped_column(index=True)
+    entity_id: Mapped[str] = mapped_column(index=True)
+    status: Mapped[str] = mapped_column(default="accepted", index=True)
+    summary: Mapped[str]
+    conversation_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    tool_invocation_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    agent_goal_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    object_refs: Mapped[list] = mapped_column(JSON, default=list)
+    evidence_refs: Mapped[list] = mapped_column(JSON, default=list)
+    event_metadata: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
 
 
 class ProjectRecord(Base):

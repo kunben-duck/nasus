@@ -169,7 +169,7 @@ export interface MessageBlock {
 
 export interface ConversationMessage {
   id: string
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   created_at: string
   blocks: MessageBlock[]
   metadata?: Record<string, unknown>
@@ -181,7 +181,14 @@ export interface AgentStep {
   status: 'pending' | 'running' | 'completed' | 'blocked'
   phase?: 'thinking' | 'acting' | 'observing' | 'deciding' | null
   reasoning?: string | null
+  memory_context_hash?: string | null
+  memory_context_summary?: string | null
+  memory_recent_turn_count?: number
+  memory_checkpoint_count?: number
+  available_tool_ids?: string[]
   selected_tool_id?: string | null
+  tool_input_payload?: Record<string, unknown>
+  tool_target_scope?: 'central' | 'edge'
   tool_invocation_id?: string | null
   observation_summary?: string | null
   decision?: 'continue' | 'pause' | 'complete' | 'fail' | 'escalate' | null
@@ -203,6 +210,37 @@ export interface AgentGoal {
   steps_completed: number
   pause_reason?: string | null
   workflow_id?: string | null
+}
+
+export interface AgentWorkerAssignment {
+  id: string
+  swarm_run_id: string
+  worker_agent_kind: 'context' | 'impact' | 'scenario' | 'case' | 'execution' | 'failure' | 'release'
+  target_refs: string[]
+  input_context_refs: string[]
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  agent_goal_id?: string | null
+  tool_invocation_refs: string[]
+  candidate_result_ref?: string | null
+  confidence: number
+  summary: string
+  created_at: string
+  completed_at?: string | null
+}
+
+export interface AgentSwarmRun {
+  id: string
+  parent_goal_id: string
+  conversation_id: string
+  swarm_kind: 'impact' | 'scenario' | 'case' | 'failure' | 'release' | 'ingestion'
+  status: 'pending' | 'running' | 'merging' | 'completed' | 'failed' | 'cancelled'
+  max_parallel_agents: number
+  merge_strategy: string
+  target_refs: string[]
+  result_summary: string
+  assignments: AgentWorkerAssignment[]
+  created_at: string
+  completed_at?: string | null
 }
 
 export interface ConversationSession {
@@ -275,6 +313,9 @@ export interface ToolResult {
   summary: string
   object_refs: string[]
   evidence_refs: string[]
+  requires_followup: boolean
+  followup_reason?: string | null
+  followup_prompt?: string | null
   next_recommended_tools: string[]
 }
 
@@ -286,7 +327,7 @@ export interface ToolInvocation {
   summary: string
   initiator_surface: 'chat' | 'ui' | 'api' | 'agent_loop'
   initiator_actor: 'user' | 'agent'
-  target_scope: 'central'
+  target_scope: 'central' | 'edge'
   input_payload: Record<string, unknown>
   result?: ToolResult | null
 }
@@ -319,6 +360,7 @@ export interface DocumentationEntry {
 
 export type ProviderName = 'mock' | 'openai' | 'gemini' | 'anthropic' | 'openai_compatible'
 export type ModelPreset = 'system_default' | 'custom'
+export type ModelRoute = 'chat' | 'embedding' | 'rerank'
 
 export interface ProviderStatus {
   provider: ProviderName
@@ -349,9 +391,11 @@ export interface StudioSettings {
   provider_statuses: ProviderStatus[]
   active_provider_status: ProviderStatus
   custom_model: CustomModelConfig
+  model_profiles: Record<ModelRoute, ModelProviderProfile>
 }
 
 export interface StudioSettingsConnectionTestRequest {
+  model_route?: ModelRoute
   model_preset: ModelPreset
   custom_provider_kind?: CustomModelConfig['provider_kind']
   custom_base_url?: string
@@ -361,6 +405,7 @@ export interface StudioSettingsConnectionTestRequest {
 
 export interface SettingsConnectionResult {
   ok: boolean
+  model_route?: ModelRoute
   provider: ProviderName
   model_name: string
   runtime_mode: 'live' | 'fallback'
@@ -369,13 +414,66 @@ export interface SettingsConnectionResult {
   message: string
 }
 
+export interface ModelProviderProfile {
+  route: ModelRoute
+  model_preset: ModelPreset
+  model_provider: ProviderName
+  model_name: string
+  runtime_mode: 'live' | 'fallback'
+  fallback_provider: 'mock'
+  provider_statuses: ProviderStatus[]
+  active_provider_status: ProviderStatus
+  custom_model: CustomModelConfig
+}
+
+export interface AgentMemoryContextView {
+  conversation_id: string
+  agent_goal_id?: string | null
+  context_hash: string
+  context_summary: string
+  recent_turn_count: number
+  checkpoint_count: number
+  working_memory: Record<string, unknown>
+  conversation_memory: Record<string, unknown>
+  project_long_term_memory: Record<string, unknown>
+  candidate_memory: Record<string, unknown>
+  tool_catalog: {
+    tool_count: number
+    tool_ids: string[]
+  }
+}
+
+export interface ConversationSummaryCheckpoint {
+  id: string
+  conversation_id: string
+  message_range_start?: string | null
+  message_range_end?: string | null
+  summary_text: string
+  summary_object_refs: string[]
+  summary_token_count: number
+  created_by: 'system' | 'user'
+  created_at: string
+}
+
 export interface EventPayload {
   event_id: string
   event_type: string
+  occurred_at: string
+  correlation_id: string
+  conversation_id?: string | null
+  tool_invocation_id?: string | null
+  agent_goal_id?: string | null
+  agent_step_id?: string | null
+  swarm_run_id?: string | null
+  assignment_id?: string | null
+  task_id?: string | null
+  run_id?: string | null
   entity_type: string
   entity_id: string
   entity_version: number
   mutation_kind: 'replace' | 'patch' | 'append' | 'invalidate'
   patch: Record<string, unknown>
   query_keys: string[][]
+  snapshot_hint: boolean
+  payload: Record<string, unknown>
 }

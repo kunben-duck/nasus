@@ -9,6 +9,7 @@
 | 文档 | 作用 | 优先级 |
 | --- | --- | --- |
 | 本说明书 | 定义产品能力真相、核心对象、用户旅程、默认规则 | 最高 |
+| `docs/product-requirements.md` | 定义首个正式版本的需求范围、模块需求和验收标准 | 与本说明书一致，作为 V1 交付口径 |
 | `docs/system-architecture.md` | 解释系统分层、运行平面、部署单元和实现约束 | 次级 |
 | `docs/implementation-overview.md` | 解释实现总蓝图、模块边界和工程落地建议 | 次级 |
 | `docs/nasus_assurance_studio_implementation_plan.md` | 提供原始规划、背景材料和阶段性输入 | 参考 |
@@ -16,6 +17,7 @@
 约束：
 
 - 本说明书定义“产品应该如何工作”，不展开数据库表、具体 API 参数或消息体结构。
+- 首个正式版本的 Must / Should / Later 范围和验收口径以 `docs/product-requirements.md` 为准。
 - 若架构文档或前后端方案文档与本说明书冲突，以本说明书为准。
 - 本说明书覆盖最终形态，不以 MVP 为组织方式。
 

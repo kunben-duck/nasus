@@ -2,12 +2,30 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../features/api'
-import type { ConversationSession, ProjectCard, StudioSettings, SystemImageData } from '../features/types'
+import type {
+  AgentGoal,
+  ConversationSession,
+  CustomModelConfig,
+  ModelRoute,
+  ProjectCard,
+  SettingsConnectionResult,
+  StudioSettings,
+  StudioSettingsConnectionTestRequest,
+  SystemImageData,
+} from '../features/types'
 import { useConversation } from '../hooks/useConversation'
 
 type StudioView = 'build' | 'dashboard' | 'documentation' | 'project'
 type AgentMode = 'planning' | 'sources' | 'quality'
 type MessageRow = { role: 'assistant' | 'user' | 'system' | 'tool'; text: string }
+type SidebarIconName = 'notifications' | 'settings' | 'search' | 'key'
+type BuildSkillCard = {
+  id: string
+  title: string
+  copy: string
+  icon: 'git' | 'doc' | 'test' | 'graph' | 'loop' | 'shield'
+  promptHint: string
+}
 
 const starterProjects: ProjectCard[] = [
   {
@@ -38,14 +56,67 @@ const starterProjects: ProjectCard[] = [
   },
 ]
 
-const sourceChips = [
-  'Import Git repository',
-  'Import US documents',
-  'Import test cases',
-  'Import automation scripts',
-  'Initialize system image',
-  'Assess release quality',
+const buildSkillCards: BuildSkillCard[] = [
+  {
+    id: 'git',
+    title: 'Import Git repository',
+    copy: 'Read code modules and changed areas',
+    icon: 'git',
+    promptHint: 'import the Git repository',
+  },
+  {
+    id: 'us',
+    title: 'Import US documents',
+    copy: 'Extract features and acceptance criteria',
+    icon: 'doc',
+    promptHint: 'import historical and current US documents',
+  },
+  {
+    id: 'tests',
+    title: 'Import test assets',
+    copy: 'Reuse cases and automation scripts',
+    icon: 'test',
+    promptHint: 'import historical test cases and automation scripts',
+  },
+  {
+    id: 'baseline',
+    title: 'Initialize system image',
+    copy: 'Build the first official baseline',
+    icon: 'graph',
+    promptHint: 'initialize the system image baseline',
+  },
+  {
+    id: 'quality',
+    title: 'Start quality loop',
+    copy: 'Generate scenarios and release evidence',
+    icon: 'loop',
+    promptHint: 'start the quality loop for the first version',
+  },
+  {
+    id: 'release',
+    title: 'Assess release quality',
+    copy: 'Score readiness and blockers',
+    icon: 'shield',
+    promptHint: 'assess release quality and open blockers',
+  },
 ]
+
+function SidebarIcon({ name }: { name: SidebarIconName }) {
+  return <span className="material-symbols-outlined" aria-hidden="true">{name}</span>
+}
+
+function BuildSkillIcon({ icon }: { icon: BuildSkillCard['icon'] }) {
+  const iconName: Record<BuildSkillCard['icon'], string> = {
+    git: 'account_tree',
+    doc: 'description',
+    test: 'fact_check',
+    graph: 'hub',
+    loop: 'sync',
+    shield: 'verified_user',
+  }
+
+  return <span className="material-symbols-outlined build-skill-symbol" aria-hidden="true">{iconName[icon]}</span>
+}
 
 const agentCards = [
   {
@@ -87,10 +158,32 @@ function normalizeProjectName(prompt: string) {
   return 'New Quality Project'
 }
 
+function composeBuildPrompt(skillIds: string[]) {
+  const selected = buildSkillCards.filter((skill) => skillIds.includes(skill.id))
+  if (!selected.length) {
+    return 'Create a new quality project and guide me through the missing setup before any high-risk action.'
+  }
+  const actions = selected.map((skill) => skill.promptHint).join(' and ')
+  return `Create a new quality project. Please ${actions}, then ask for the missing setup before any high-risk action.`
+}
+
 function useTheme(settings?: StudioSettings) {
   useEffect(() => {
     const root = document.documentElement
-    root.dataset.theme = settings?.theme ?? 'dark'
+    const theme = settings?.theme ?? 'dark'
+    const media = window.matchMedia('(prefers-color-scheme: light)')
+
+    function applyTheme() {
+      root.dataset.theme = theme === 'system'
+        ? (media.matches ? 'light' : 'dark')
+        : theme
+    }
+
+    applyTheme()
+    if (theme !== 'system') return
+
+    media.addEventListener('change', applyTheme)
+    return () => media.removeEventListener('change', applyTheme)
   }, [settings?.theme])
 }
 
@@ -106,14 +199,30 @@ export function NasusStudio() {
       text: 'Tell me what you want to ship. I can create the project, connect sources, build the system image, and start the quality loop.',
     },
   ])
+  const [selectedBuildSkillIds, setSelectedBuildSkillIds] = useState<string[]>([])
   const [isPromptRunning, setIsPromptRunning] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.getSettings })
   const dashboardQuery = useQuery({ queryKey: ['dashboard'], queryFn: api.getDashboard })
   const buildQuery = useQuery({ queryKey: ['build'], queryFn: api.getBuild })
   const buildConversation = useConversation('build', 'build', 'Build')
   useTheme(settingsQuery.data)
+
+  useEffect(() => {
+    if (!settingsOpen) return
+
+    function closeSettingsOnOutsidePointer(event: PointerEvent) {
+      const target = event.target as Element | null
+      if (!target) return
+      if (target.closest('.settings-pop') || target.closest('[data-settings-toggle]')) return
+      setSettingsOpen(false)
+    }
+
+    document.addEventListener('pointerdown', closeSettingsOnOutsidePointer)
+    return () => document.removeEventListener('pointerdown', closeSettingsOnOutsidePointer)
+  }, [settingsOpen])
 
   const projects = useMemo(() => {
     const remote = dashboardQuery.data?.projects ?? buildQuery.data?.drafts ?? []
@@ -133,12 +242,19 @@ export function NasusStudio() {
     const rows = toMessageRows(conversation)
     return rows.length ? rows : fallbackMessages
   }, [buildConversation.conversation, fallbackMessages, projectConversation.conversation, view])
+  const pendingProjectGoal = useMemo(
+    () => projectConversation.conversation?.agent_goals.find((goal) => goal.status === 'paused' && goal.pause_reason === 'waiting_confirmation'),
+    [projectConversation.conversation],
+  )
 
   const updateSettings = useMutation({
     mutationFn: (payload: Record<string, unknown>) => api.updateSettings(payload),
     onSuccess: (settings) => {
       queryClient.setQueryData(['settings'], settings)
     },
+  })
+  const testSettingsConnection = useMutation({
+    mutationFn: (payload: StudioSettingsConnectionTestRequest) => api.testSettingsConnection(payload),
   })
 
   const initializeSystemImage = useMutation({
@@ -147,7 +263,7 @@ export function NasusStudio() {
       const conversation = await api.ensureConversation('project', activeProject.id, activeProject.name)
       return api.invokeTool({
         conversation_id: conversation.id,
-        tool_id: 'baseline.initialize',
+        tool_id: 'system_image.baseline.initialize',
         input: { project_id: activeProject.id },
         initiator_surface: 'ui',
         initiator_actor: 'user',
@@ -205,6 +321,24 @@ export function NasusStudio() {
     }
   }
 
+  function toggleBuildSkill(skillId: string) {
+    setSelectedBuildSkillIds((current) => {
+      const next = current.includes(skillId)
+        ? current.filter((item) => item !== skillId)
+        : [...current, skillId]
+      if (prompt.trim()) {
+        setPrompt(composeBuildPrompt(next))
+      }
+      return next
+    })
+  }
+
+  function guessBuildPrompt() {
+    const recommended = ['git', 'us']
+    setSelectedBuildSkillIds(recommended)
+    setPrompt(composeBuildPrompt(recommended))
+  }
+
   function openProject(project: ProjectCard) {
     setActiveProjectId(project.id)
     setView('project')
@@ -215,6 +349,11 @@ export function NasusStudio() {
         text: `Opened ${project.name}. I can inspect system image freshness, quality loop progress, runs, and release readiness here.`,
       },
     ])
+  }
+
+  function toggleSidebar() {
+    setSettingsOpen(false)
+    setSidebarCollapsed((value) => !value)
   }
 
   async function askProject(promptText: string) {
@@ -233,16 +372,29 @@ export function NasusStudio() {
     }
   }
 
+  async function confirmPendingGoal() {
+    if (!pendingProjectGoal) return
+    setIsPromptRunning(true)
+    try {
+      await projectConversation.sendMessage('确认，继续执行')
+      if (activeProject) {
+        await queryClient.invalidateQueries({ queryKey: ['system-image', activeProject.id] })
+        await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      }
+    } finally {
+      setIsPromptRunning(false)
+    }
+  }
+
   const isProjectSpace = view === 'project'
 
   return (
-    <div className="nasus-app">
+    <div className={`nasus-app ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <aside className="studio-sidebar">
         <div className="brand-row">
-          <div className="brand-mark">N</div>
+          <img className="brand-mark" src="/nasus.png" alt="Nasus" />
           <div>
             <div className="brand-name">Nasus Studio</div>
-            <div className="brand-kicker">Agent-first QA</div>
           </div>
           {isProjectSpace ? (
             <button className="round-icon subtle" onClick={() => setView('dashboard')} aria-label="Back to dashboard">
@@ -263,10 +415,12 @@ export function NasusStudio() {
           <span>All product actions are tools. Chat and buttons share the same command surface.</span>
         </div>
         <div className="sidebar-actions">
-          <button className="icon-tile">⌁</button>
-          <button className="icon-tile" onClick={() => setSettingsOpen((value) => !value)}>⚙</button>
-          <button className="icon-tile">⌕</button>
-          <button className="icon-tile">⌘</button>
+          <button className="icon-tile" aria-label="Notifications"><SidebarIcon name="notifications" /></button>
+          <button className="icon-tile" aria-label="Settings" data-settings-toggle onClick={() => setSettingsOpen((value) => !value)}>
+            <SidebarIcon name="settings" />
+          </button>
+          <button className="icon-tile" aria-label="Search"><SidebarIcon name="search" /></button>
+          <button className="icon-tile" aria-label="API key"><SidebarIcon name="key" /></button>
         </div>
         <div className="account-pill">
           <span className="avatar">u</span>
@@ -290,6 +444,11 @@ export function NasusStudio() {
             setPrompt={setPrompt}
             runPrompt={runPrompt}
             loading={isPromptRunning || buildConversation.isSending}
+            selectedSkillIds={selectedBuildSkillIds}
+            onToggleSkill={toggleBuildSkill}
+            onGuessYou={guessBuildPrompt}
+            sidebarCollapsed={sidebarCollapsed}
+            toggleSidebar={toggleSidebar}
           />
         ) : null}
         {isProjectSpace && activeProject ? (
@@ -299,12 +458,16 @@ export function NasusStudio() {
             mode={agentMode}
             setMode={setAgentMode}
             messages={visibleMessages}
+            pendingGoal={pendingProjectGoal}
             prompt={prompt}
             setPrompt={setPrompt}
             runPrompt={runPrompt}
             askProject={askProject}
+            confirmPendingGoal={confirmPendingGoal}
             initializeSystemImage={() => initializeSystemImage.mutate()}
             loading={isPromptRunning || projectConversation.isSending || initializeSystemImage.isPending}
+            sidebarCollapsed={sidebarCollapsed}
+            toggleSidebar={toggleSidebar}
           />
         ) : null}
       </main>
@@ -313,8 +476,13 @@ export function NasusStudio() {
       {settingsOpen ? (
         <SettingsPopover
           settings={settingsQuery.data}
+          testing={testSettingsConnection.isPending}
+          testResult={testSettingsConnection.data}
           onTheme={(theme) => updateSettings.mutate({ theme })}
           onLanguage={(language) => updateSettings.mutate({ language })}
+          onNotification={(notification_mode) => updateSettings.mutate({ notification_mode })}
+          onSaveModel={(payload) => updateSettings.mutate(payload)}
+          onTestModel={(payload) => testSettingsConnection.mutate(payload)}
         />
       ) : null}
     </div>
@@ -387,6 +555,11 @@ function TopLevelContent({
   setPrompt,
   runPrompt,
   loading,
+  selectedSkillIds,
+  onToggleSkill,
+  onGuessYou,
+  sidebarCollapsed,
+  toggleSidebar,
 }: {
   view: StudioView
   projects: ProjectCard[]
@@ -395,6 +568,11 @@ function TopLevelContent({
   setPrompt: (value: string) => void
   runPrompt: () => void
   loading: boolean
+  selectedSkillIds: string[]
+  onToggleSkill: (skillId: string) => void
+  onGuessYou: () => void
+  sidebarCollapsed: boolean
+  toggleSidebar: () => void
 }) {
   if (view === 'dashboard') {
     return (
@@ -433,15 +611,44 @@ function TopLevelContent({
 
   return (
     <section className="build-hero">
-      <button className="collapse-button">☰</button>
+      <button
+        className="collapse-button"
+        aria-expanded={!sidebarCollapsed}
+        aria-label={sidebarCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+        onClick={toggleSidebar}
+        type="button"
+      >
+        <span className="material-symbols-outlined" aria-hidden="true">{sidebarCollapsed ? 'menu' : 'menu_open'}</span>
+      </button>
       <div className="hero-title">
-        <h1>Build quality projects with agents</h1>
-        <div className="sparkle" />
+        <h1>Build quality projects with Nasus</h1>
       </div>
-      <BuildComposer prompt={prompt} setPrompt={setPrompt} runPrompt={runPrompt} loading={loading} />
-      <div className="source-chip-row">
-        {sourceChips.map((chip) => (
-          <button className="source-chip" key={chip}>{chip}</button>
+      <BuildComposer
+        prompt={prompt}
+        setPrompt={setPrompt}
+        runPrompt={runPrompt}
+        loading={loading}
+        selectedSkillIds={selectedSkillIds}
+        onToggleSkill={onToggleSkill}
+        onGuessYou={onGuessYou}
+      />
+      <div className="source-chip-row" aria-label="Build skills">
+        {buildSkillCards.map((skill) => (
+          <button
+            className={`build-skill-card ${selectedSkillIds.includes(skill.id) ? 'active' : ''}`}
+            key={skill.id}
+            onClick={() => onToggleSkill(skill.id)}
+            type="button"
+          >
+            <span className={`build-skill-icon tone-${skill.icon}`}>
+              <BuildSkillIcon icon={skill.icon} />
+            </span>
+            <span>
+              <strong>{skill.title}</strong>
+              <small>{skill.copy}</small>
+            </span>
+            {selectedSkillIds.includes(skill.id) ? <i>×</i> : null}
+          </button>
         ))}
       </div>
       <div className="gallery-panel">
@@ -460,33 +667,73 @@ function BuildComposer({
   setPrompt,
   runPrompt,
   loading,
+  selectedSkillIds,
+  onToggleSkill,
+  onGuessYou,
 }: {
   prompt: string
   setPrompt: (value: string) => void
   runPrompt: () => void
   loading: boolean
+  selectedSkillIds: string[]
+  onToggleSkill: (skillId: string) => void
+  onGuessYou: () => void
 }) {
+  const selectedSkills = buildSkillCards.filter((skill) => selectedSkillIds.includes(skill.id))
+  const hasPrompt = prompt.trim().length > 0
+
   return (
     <div className="hero-composer">
-      <textarea
-        data-testid="build-agent-input"
-        value={prompt}
-        onChange={(event) => setPrompt(event.target.value)}
-        placeholder="Describe a quality project and let Nasus do the rest"
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-            runPrompt()
-          }
-        }}
-      />
-      <div className="composer-actions">
-        <div className="composer-left">
-          <button className="round-icon">⌕</button>
-          <button className="round-icon">＋</button>
+      <div className="hero-composer-content">
+        {selectedSkills.length ? (
+          <div className="selected-skill-grid">
+            {selectedSkills.map((skill) => (
+              <button className="selected-skill-card" key={skill.id} onClick={() => onToggleSkill(skill.id)} type="button">
+                <span className={`build-skill-icon tone-${skill.icon}`}>
+                  <BuildSkillIcon icon={skill.icon} />
+                </span>
+                <span>
+                  <strong>{skill.title}</strong>
+                  <small>{skill.copy}</small>
+                </span>
+                <i>×</i>
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <textarea
+          data-testid="build-agent-input"
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          placeholder="Describe a quality project and let Nasus do the rest"
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+              runPrompt()
+            }
+          }}
+        />
+        <div className="composer-actions">
+          <div className="composer-left">
+            <button className="round-icon" aria-label="Speech to text" type="button">
+              <span className="material-symbols-outlined composer-symbol" aria-hidden="true">mic</span>
+            </button>
+            <button className="round-icon" aria-label="Insert files" type="button">
+              <span className="material-symbols-outlined composer-symbol" aria-hidden="true">add_circle</span>
+            </button>
+          </div>
+          <div className="composer-right">
+            <button className="composer-action-button guess-button" data-testid="build-agent-guess" onClick={onGuessYou} type="button">
+              <span className="material-symbols-outlined action-spark" aria-hidden="true">auto_awesome</span>
+              <span>I guess you</span>
+            </button>
+            {hasPrompt ? (
+              <button className="composer-action-button build-submit-button" data-testid="build-agent-submit" onClick={runPrompt} disabled={loading}>
+                <span>{loading ? 'Building...' : 'Build'}</span>
+                {!loading ? <span className="action-shortcut">⌘↵</span> : null}
+              </button>
+            ) : null}
+          </div>
         </div>
-        <button className="lucky-button" data-testid="build-agent-submit" onClick={runPrompt} disabled={loading}>
-          ✦ {loading ? 'Building...' : "I'm feeling lucky"}
-        </button>
       </div>
     </div>
   )
@@ -498,24 +745,32 @@ function ProjectWorkspace({
   mode,
   setMode,
   messages,
+  pendingGoal,
   prompt,
   setPrompt,
   runPrompt,
   askProject,
+  confirmPendingGoal,
   initializeSystemImage,
   loading,
+  sidebarCollapsed,
+  toggleSidebar,
 }: {
   project: ProjectCard
   systemImage?: SystemImageData
   mode: AgentMode
   setMode: (mode: AgentMode) => void
   messages: MessageRow[]
+  pendingGoal?: AgentGoal
   prompt: string
   setPrompt: (value: string) => void
   runPrompt: () => void
   askProject: (promptText: string) => void
+  confirmPendingGoal: () => void
   initializeSystemImage: () => void
   loading: boolean
+  sidebarCollapsed: boolean
+  toggleSidebar: () => void
 }) {
   const cardActions: Record<string, () => void> = {
     'System Image Builder': initializeSystemImage,
@@ -527,7 +782,15 @@ function ProjectWorkspace({
   return (
     <section className="agent-workspace" data-testid="agent-workspace">
       <div className="workspace-toolbar">
-        <button className="collapse-button">☰</button>
+        <button
+          className="collapse-button"
+          aria-expanded={!sidebarCollapsed}
+          aria-label={sidebarCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+          onClick={toggleSidebar}
+          type="button"
+        >
+          <span className="material-symbols-outlined" aria-hidden="true">{sidebarCollapsed ? 'menu' : 'menu_open'}</span>
+        </button>
         <strong>{project.name}</strong>
         <div className="toolbar-actions">
           <button>Share</button>
@@ -553,6 +816,18 @@ function ProjectWorkspace({
         ))}
       </div>
       <SystemImageStrip systemImage={systemImage} project={project} />
+      {pendingGoal ? (
+        <div className="confirmation-gate-card" data-testid="agent-confirmation-gate">
+          <div>
+            <span className="confirmation-kicker">Confirmation required</span>
+            <strong>{pendingGoal.title}</strong>
+            <p>The agent paused before a high-risk tool. Confirm in conversation to continue the same audited tool chain.</p>
+          </div>
+          <button className="composer-action-button build-submit-button" data-testid="confirm-agent-goal" onClick={confirmPendingGoal} disabled={loading}>
+            {loading ? 'Continuing...' : 'Confirm and continue'}
+          </button>
+        </div>
+      ) : null}
       <div className="agent-log">
         {messages.slice(-5).map((message, index) => (
           <div className={`message-row ${message.role}`} key={`${message.role}-${message.text}-${index}`}>
@@ -658,29 +933,266 @@ function RunSettingsPanel({ project, systemImage }: { project?: ProjectCard; sys
 
 function SettingsPopover({
   settings,
+  testing,
+  testResult,
   onTheme,
   onLanguage,
+  onNotification,
+  onSaveModel,
+  onTestModel,
 }: {
   settings?: StudioSettings
+  testing: boolean
+  testResult?: SettingsConnectionResult
   onTheme: (theme: 'dark' | 'light' | 'system') => void
   onLanguage: (language: 'en' | 'zh') => void
+  onNotification: (notificationMode: 'important' | 'all' | 'muted') => void
+  onSaveModel: (payload: Record<string, unknown>) => void
+  onTestModel: (payload: StudioSettingsConnectionTestRequest) => void
 }) {
+  type SettingsPanel = 'theme' | 'language' | 'model' | 'notifications' | 'account' | 'status'
+  const [activePanel, setActivePanel] = useState<SettingsPanel>('theme')
+  const [activeRoute, setActiveRoute] = useState<ModelRoute>('chat')
+  const activeProfile = profileFor(settings, activeRoute)
+  const [modelPreset, setModelPreset] = useState(activeProfile.model_preset)
+  const [providerKind, setProviderKind] = useState<CustomModelConfig['provider_kind']>(activeProfile.custom_model.provider_kind)
+  const [baseUrl, setBaseUrl] = useState(activeProfile.custom_model.base_url ?? '')
+  const [modelName, setModelName] = useState(activeProfile.custom_model.model_name)
+  const [apiKey, setApiKey] = useState('')
+
+  useEffect(() => {
+    const profile = profileFor(settings, activeRoute)
+    setModelPreset(profile.model_preset)
+    setProviderKind(profile.custom_model.provider_kind)
+    setBaseUrl(profile.custom_model.base_url ?? '')
+    setModelName(profile.custom_model.model_name)
+    setApiKey('')
+  }, [activeRoute, settings])
+
+  const maskedKey = activeProfile.custom_model.api_key_masked
+  const status = activeProfile.active_provider_status
+  const savePayload = {
+    model_route: activeRoute,
+    model_preset: modelPreset,
+    custom_provider_kind: providerKind,
+    custom_base_url: baseUrl,
+    custom_model_name: modelName,
+    ...(apiKey.trim() ? { custom_api_key: apiKey.trim() } : {}),
+  }
+  const testPayload: StudioSettingsConnectionTestRequest = {
+    model_route: activeRoute,
+    model_preset: modelPreset,
+    custom_provider_kind: providerKind,
+    custom_base_url: baseUrl,
+    custom_model_name: modelName,
+    ...(apiKey.trim() ? { custom_api_key: apiKey.trim() } : {}),
+  }
+
+  const menuItems: Array<{
+    id?: SettingsPanel
+    icon: string
+    label: string
+    value?: string
+    separator?: boolean
+  }> = [
+    { id: 'theme', icon: '◌', label: 'Theme', value: settings?.theme ?? 'dark' },
+    { id: 'language', icon: 'A', label: 'Language', value: settings?.language === 'zh' ? '中文' : 'English' },
+    { id: 'model', icon: '◇', label: 'Model configuration', value: activeRoute === 'chat' ? 'LLM' : activeRoute },
+    { id: 'notifications', icon: '◍', label: 'Applet notifications', value: settings?.notification_mode ?? 'important' },
+    { id: 'account', icon: '◎', label: 'Account status', separator: true },
+    { id: 'status', icon: '≋', label: 'View status' },
+    { icon: '□', label: 'Terms of service' },
+    { icon: '▱', label: 'Privacy policy' },
+    { icon: '↗', label: 'Send feedback' },
+    { icon: '◉', label: 'Billing Support' },
+  ]
+
+  function renderPanel() {
+    if (activePanel === 'theme') {
+      return (
+        <div className="settings-submenu settings-submenu-compact">
+          {(['light', 'dark', 'system'] as const).map((theme) => (
+            <button className={settings?.theme === theme ? 'selected' : ''} key={theme} onClick={() => onTheme(theme)} type="button">
+              <span>{settings?.theme === theme ? '●' : '○'}</span>
+              <span>{theme === 'light' ? 'Light' : theme === 'dark' ? 'Dark' : 'System'}</span>
+            </button>
+          ))}
+        </div>
+      )
+    }
+
+    if (activePanel === 'language') {
+      return (
+        <div className="settings-submenu settings-submenu-compact">
+          {(['en', 'zh'] as const).map((language) => (
+            <button className={settings?.language === language ? 'selected' : ''} key={language} onClick={() => onLanguage(language)} type="button">
+              <span>{settings?.language === language ? '●' : '○'}</span>
+              <span>{language === 'en' ? 'English' : '中文'}</span>
+            </button>
+          ))}
+        </div>
+      )
+    }
+
+    if (activePanel === 'notifications') {
+      return (
+        <div className="settings-submenu settings-submenu-compact">
+          {(['important', 'all', 'muted'] as const).map((mode) => (
+            <button className={settings?.notification_mode === mode ? 'selected' : ''} key={mode} onClick={() => onNotification(mode)} type="button">
+              <span>{settings?.notification_mode === mode ? '●' : '○'}</span>
+              <span>{mode === 'important' ? 'Important only' : mode === 'all' ? 'All notifications' : 'Muted'}</span>
+            </button>
+          ))}
+        </div>
+      )
+    }
+
+    if (activePanel === 'account') {
+      return (
+        <div className="settings-submenu settings-submenu-info">
+          <div className="settings-submenu-title">Account status</div>
+          <div className="settings-info-card">
+            <strong>uben@example.com</strong>
+            <span>Local development workspace</span>
+          </div>
+          <div className="settings-info-card">
+            <strong>Agent-first mode</strong>
+            <span>All write actions should route through tool invocations.</span>
+          </div>
+        </div>
+      )
+    }
+
+    if (activePanel === 'status') {
+      return (
+        <div className="settings-submenu settings-submenu-info">
+          <div className="settings-submenu-title">Provider status</div>
+          {(['chat', 'embedding', 'rerank'] as ModelRoute[]).map((route) => {
+            const profile = profileFor(settings, route)
+            return (
+              <div className="settings-info-card" key={route}>
+                <strong>{route === 'chat' ? 'LLM' : route}</strong>
+                <span>{profile.model_provider} · {profile.model_name}</span>
+                <span className={`settings-provider-pill ${profile.runtime_mode === 'live' ? 'live' : 'fallback'}`}>{profile.runtime_mode}</span>
+              </div>
+            )
+          })}
+        </div>
+      )
+    }
+
+    return (
+      <div className="settings-submenu settings-model-submenu">
+        <div className="settings-submenu-title">Model configuration</div>
+        <div className="model-route-tabs">
+          {(['chat', 'embedding', 'rerank'] as ModelRoute[]).map((route) => (
+            <button className={activeRoute === route ? 'active' : ''} key={route} onClick={() => setActiveRoute(route)} type="button">
+              {route === 'chat' ? 'LLM' : route}
+            </button>
+          ))}
+        </div>
+        <div className="settings-provider-banner compact">
+          <span className={`settings-provider-pill ${activeProfile.runtime_mode === 'live' ? 'live' : 'fallback'}`}>
+            {activeProfile.runtime_mode}
+          </span>
+          <span className="settings-provider-copy">{status.reason}</span>
+        </div>
+        <div className="model-config-form">
+          <label className="settings-field">
+            <span className="settings-field-label">Route mode</span>
+            <select className="settings-field-control" value={modelPreset} onChange={(event) => setModelPreset(event.target.value as 'system_default' | 'custom')}>
+              <option value="system_default">System default</option>
+              <option value="custom">Custom provider</option>
+            </select>
+          </label>
+          <label className="settings-field">
+            <span className="settings-field-label">Provider</span>
+            <select className="settings-field-control" value={providerKind} onChange={(event) => setProviderKind(event.target.value as CustomModelConfig['provider_kind'])}>
+              <option value="openai_compatible">OpenAI compatible</option>
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </label>
+          <label className="settings-field">
+            <span className="settings-field-label">Base URL</span>
+            <input className="settings-field-control" placeholder="https://api.example.com/v1" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
+          </label>
+          <label className="settings-field">
+            <span className="settings-field-label">Model</span>
+            <input className="settings-field-control" placeholder={activeRoute === 'embedding' ? 'text-embedding-3-large' : activeRoute === 'rerank' ? 'rerank-model' : 'gpt-5.4'} value={modelName} onChange={(event) => setModelName(event.target.value)} />
+          </label>
+          <label className="settings-field">
+            <span className="settings-field-label">API Key</span>
+            <input className="settings-field-control" type="password" placeholder={maskedKey ? `Saved ${maskedKey}` : 'Paste API key'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
+          </label>
+          <div className="settings-form-actions">
+            <button className="settings-save-button secondary" disabled={testing} onClick={() => onTestModel(testPayload)} type="button">
+              {testing ? 'Testing...' : 'Test connection'}
+            </button>
+            <button className="settings-save-button" onClick={() => onSaveModel(savePayload)} type="button">
+              Save {activeRoute}
+            </button>
+          </div>
+        </div>
+        {testResult ? (
+          <div className={`settings-test-result ${testResult.ok ? 'success' : 'warning'}`}>
+            <strong>{testResult.model_route ?? activeRoute} · {testResult.runtime_mode}</strong>
+            <span>{testResult.message}</span>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
   return (
     <div className="settings-pop">
-      <div className="settings-line"><span>Theme</span><strong>{settings?.theme ?? 'dark'}</strong></div>
-      <div className="settings-options">
-        <button onClick={() => onTheme('light')}>○ Light</button>
-        <button onClick={() => onTheme('dark')}>● Dark</button>
-        <button onClick={() => onTheme('system')}>○ System</button>
+      <div className="settings-menu">
+        {menuItems.map((item) => (
+          <button
+            className={`${item.id === activePanel ? 'active' : ''} ${item.separator ? 'with-separator' : ''}`}
+            key={item.label}
+            onClick={() => item.id ? setActivePanel(item.id) : undefined}
+            type="button"
+          >
+            <span className="settings-menu-icon">{item.icon}</span>
+            <span className="settings-menu-label">{item.label}</span>
+            {item.value ? <span className="settings-menu-value">{item.value}</span> : null}
+            {item.id ? <span className="settings-menu-chevron">›</span> : null}
+          </button>
+        ))}
       </div>
-      <div className="settings-line"><span>Language</span><strong>{settings?.language ?? 'zh'}</strong></div>
-      <div className="settings-options">
-        <button onClick={() => onLanguage('en')}>English</button>
-        <button onClick={() => onLanguage('zh')}>中文</button>
-      </div>
-      <div className="settings-line muted"><span>Model</span><strong>{settings?.runtime_mode ?? 'fallback'}</strong></div>
+      {renderPanel()}
     </div>
   )
+}
+
+function profileFor(settings: StudioSettings | undefined, route: ModelRoute) {
+  const fallback = {
+    route,
+    model_preset: 'system_default' as const,
+    model_provider: 'openai' as const,
+    model_name: route === 'embedding' ? 'text-embedding-3-large' : route === 'rerank' ? 'nasus-rerank-system-default' : 'gpt-5.4',
+    runtime_mode: 'fallback' as const,
+    fallback_provider: 'mock' as const,
+    provider_statuses: [],
+    active_provider_status: {
+      provider: 'openai' as const,
+      available: false,
+      configured_via: 'system_default' as const,
+      mode: 'fallback' as const,
+      fallback_provider: 'mock' as const,
+      reason: 'Settings are loading.',
+    },
+    custom_model: {
+      provider_kind: 'openai_compatible' as const,
+      base_url: null,
+      model_name: '',
+      has_api_key: false,
+      api_key_masked: null,
+    },
+  }
+  return settings?.model_profiles?.[route] ?? fallback
 }
 
 function ProjectGallery({ projects, openProject }: { projects: ProjectCard[]; openProject: (project: ProjectCard) => void }) {

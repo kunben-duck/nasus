@@ -4,7 +4,7 @@ test('agent-first build to project workspace path works end-to-end', async ({ pa
   const projectName = `E2E Quality Hub ${Date.now()}`
 
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: /Build quality projects with agents/i })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /Build quality projects with Nasus/i })).toBeVisible()
 
   await page.getByTestId('build-agent-input').fill(`Help me create a new project called ${projectName}`)
   await page.getByTestId('build-agent-submit').click()

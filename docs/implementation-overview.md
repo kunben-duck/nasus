@@ -5,9 +5,10 @@
 文档优先级说明：
 
 - 本文用于定义当前推荐的工程实现方案和模块边界。
+- 当前需求对应的生产准入、P0 纵切、开发顺序和技术契约冻结要求，以 [技术方案设计基线](./technical-solution-baseline.md) 为准。
 - 若本文与 [最终特性说明书](./final-feature-spec.md) 存在冲突，以最终特性说明书定义的产品能力和默认规则为准。
 - 尤其在 Agent 能力边界上，本文保留当前工程视角下的实现建议；最终产品能力以“Agent 可原生触发检索与执行，但必须经过策略、审计与回放约束”为准。
-- 更细的前端目录结构、路由、状态管理分层、页面级蓝图、右栏面板映射和 Agent Goal UI 组件规范以 [Portal 前端架构](./implementation/frontend/portal-architecture.md) 为准。
+- 更细的前端目录结构、路由、状态管理分层、页面级蓝图、右栏面板映射和 Agent Goal UI 组件规范以 [Portal 前端架构](./design/frontend/portal-architecture.md) 为准。
 
 ## 1 目标与范围
 - 目标：把《实施计划书》中定义的“质量保障与上线防护工作台”做实成一套前后台协作明确、角色职责清晰、执行可落地的实施方案。
@@ -37,9 +38,9 @@ Nasus 的实现组织遵循两条同时成立的原则：
 
 | 产品模块 | 工程落位 | 主要实现文档 |
 | --- | --- | --- |
-| 系统画像构建模块 | `modules/system-image/` + `implementation/backend/` 中的上下文、基线、摄入与存储实现 | `modules/system-image/*`、`implementation/backend/system-design.md` |
-| Agent 主体模块 | `modules/agent/` + `implementation/backend/` 中的 Agent Service、会话、工具、记忆、Swarm、LLM、Goal runtime 实现 | `modules/agent/*`、`implementation/backend/runtime-and-tool-protocol.md` |
-| 质量闭环主体模块 | `modules/quality-loop/` + `implementation/frontend/`、`implementation/backend/` 中的工作台、执行、治理实现 | `modules/quality-loop/*`、`implementation/frontend/portal-architecture.md`、`implementation/backend/*` |
+| 系统画像构建模块 | `design/system-image/` + `design/backend/` 中的上下文、基线、摄入与存储实现 | `design/system-image/*`、`design/backend/system-design.md` |
+| Agent 主体模块 | `design/agent/` + `design/backend/` 中的 Agent Service、会话、工具、记忆、Swarm、LLM、Goal runtime 实现 | `design/agent/*`、`design/backend/runtime-and-tool-protocol.md` |
+| 质量闭环主体模块 | `design/quality-loop/` + `design/frontend/`、`design/backend/` 中的工作台、执行、治理实现 | `design/quality-loop/*`、`design/frontend/portal-architecture.md`、`design/backend/*` |
 
 工程上不再把 `frontend / backend / platform` 当成产品模块；它们只是实现承载层。
 
@@ -70,9 +71,9 @@ Nasus 的实现组织遵循两条同时成立的原则：
 - **Web 前端**：`React + TypeScript + Tailwind + Zustand/Redux Toolkit + TanStack Query`（§14.1、§13）。这个组合支持 Prompt-first、Workspace-oriented 的复杂工作台，Tailwind 负责快速构建三列工作台与结构化侧栏，样式实现必须以 `ux/` 目录中的原型为基线抽象出 design tokens 和共享组件，而不是回退到通用后台模板。
 - **执行层**：`Node.js/TypeScript + Playwright Test`（§14.1、§9.6），作为脱离推理层的确定性 runner，专门执行 `automation.generate` 产出的 Playwright 资产并返送 Logs/断言/痕迹。
 - **存储**：`PostgreSQL` 存对象模型、版本/会话/审批状态、Agent 目标、记忆、Swarm 与审计元数据；`MinIO` 存 Raw Assets、UX/文档/执行产物和证据等大文件（§4.1、§7.3、§14.1）。
-- **索引/解析**：`OpenGrok`（代码导航）+ `Tree-sitter`（AST/增量解析）支撑 Code Intelligence，Knowledge Intelligence 通过文档切块+元数据索引完成（§7.3）。首轮建设不把向量层作为核心依赖，后续只在召回质量出现明确瓶颈时再引入语义检索增强层。
+- **索引/解析/检索**：`OpenGrok`（代码导航）+ `Tree-sitter`（AST/增量解析）支撑 Code Intelligence；Knowledge Intelligence 从 V1 起必须包含文档切块、PostgreSQL FTS、pgvector embedding、hybrid retrieval、RerankService adapter 和降级记录。独立 Weaviate / OpenSearch / Qdrant / Milvus 集群不是 P0 必需，但检索 adapter、embedding/rerank 模型配置和运行审计必须在第一个正式版本落地。
 
-前端视觉与交互实现以 [UX 原型 HTML](../ux/index.html)、[UX 原型样式](../ux/styles.css)、[UX 原型脚本](../ux/app.js) 为直接实现基线，[前端视觉与交互规范](./implementation/frontend/visual-style.md) 作为高层视觉说明补充。后续正式前端必须保留 `ux/` 原型确立的三列壳层、深色 token、对话优先和结构化右侧面板语言，并将其工程化为 React 组件、主题变量和状态模型。与此同时，前后端交互必须采用 `agent-first + tool-first` 模式：主会话是第一入口，页面按钮、快捷 chip 和右侧卡片动作都只是同一套 `ToolInvocation` 的不同触发方式。
+前端视觉与交互实现以 [UX 原型 HTML](../ux/index.html)、[UX 原型样式](../ux/styles.css)、[UX 原型脚本](../ux/app.js) 为直接实现基线，[前端视觉与交互规范](./design/frontend/visual-style.md) 作为高层视觉说明补充。后续正式前端必须保留 `ux/` 原型确立的三列壳层、深色 token、对话优先和结构化右侧面板语言，并将其工程化为 React 组件、主题变量和状态模型。与此同时，前后端交互必须采用 `agent-first + tool-first` 模式：主会话是第一入口，页面按钮、快捷 chip 和右侧卡片动作都只是同一套 `ToolInvocation` 的不同触发方式。
 
 ## 3 产品模块到前后端实现层的映射
 
@@ -114,7 +115,7 @@ Nasus 的实现组织遵循两条同时成立的原则：
 - **Build**：项目创建与初始化入口，主屏突出 AI Studio 式 `Project Creation Composer` 大输入卡、能力 chip row、导入入口和对话式引导。它不承担项目组合浏览职责。
 - **Dashboard**：全量项目仪表盘，显示项目卡片、全局进展、风险、待审批项和失败趋势。点击项目卡后下钻到独立 `Project Space`，左侧导航整体替换为项目空间菜单。
 - **Documentation**：一级产品区，承接平台说明、概念、方法论、模板和帮助，不是低频 footer 链接。
-- **Project Space**：项目内工作区集合，包含 `Project Overview`、`Version Space`、`Version Create`、`Personal Workspace`、`Knowledge Gallery`、`Knowledge Detail`、`Runs`、`Run Detail`、`Governance`、`Approval Detail`、`Release Readiness`。这些页面的布局、组件和右栏映射详见 [Portal 前端架构](./implementation/frontend/portal-architecture.md)。
+- **Project Space**：项目内工作区集合，包含 `Project Overview`、`Version Space`、`Version Create`、`Personal Workspace`、`Knowledge Gallery`、`Knowledge Detail`、`Runs`、`Run Detail`、`Governance`、`Approval Detail`、`Release Readiness`。这些页面的布局、组件和右栏映射详见 [Portal 前端架构](./design/frontend/portal-architecture.md)。
 - **Personal Workspace / Task Workspace**：最核心的 `agent-first` 质量工作台，样式参考 AI Studio `Build with Agents` 页面。它承接 `Task Context Workspace`、`Quality Assurance Profile`、`QualityAssetPack` 和 `Agent Goal`，界面必须同时展示任务模板卡片、Agent 运行状态、对话流、结构化资产、工具进度、冲突状态和右侧 Run Settings。
 - **Agent Goal UI**：不再是一行补充要求，而是正式页面组件。前端必须实现：
   - 目标状态 badge
@@ -142,8 +143,8 @@ Nasus 的实现组织遵循两条同时成立的原则：
 
 - `ux/` 目录中的原型和 AI Studio Apps Build 参考是后续前端开发的样式和布局基线，不是一次性演示稿。正式实现必须先抽取其 CSS 变量、布局尺度、组件模式和状态行为，再映射到 React 组件与主题系统。
 - 视觉 token 必须至少覆盖以下语义层：`bg-base`、`bg-surface`、`bg-elevated`、`bg-hover`、`border-subtle`、`border-default`、`text-primary`、`text-secondary`、`text-tertiary`、`accent-blue`、`accent-purple`、`accent-green`、`accent-amber`、`accent-red` 以及输入框渐变边框使用的 `gradient-start / mid / end`。这些 token 应沉淀到设计系统主题，而不是散落为 Tailwind arbitrary values。
-- 风格基调固定为 dark-first、低对比 chrome、轻量发光 accent、细边框和中等圆角。通用组件基准值沿用原型与 AI Studio Apps：顶层输入卡 `20px - 24px` 圆角，顶层 chip `34px` 高度，项目工作区主卡片 `10px - 12px` 圆角、常规卡片 `12px - 14px` 内边距、图标按钮 `32px`、消息头像/Agent 图标 `28px`、资产图标 `22px`。
-- 页面信息组织固定为 agent-first + conversation-supported：顶层页以 composer 驱动项目创建和问询；任务模块以 Agent/Task 模板卡片、运行状态和底部 composer 驱动；消息流、结构化结果卡、建议动作 chip 和 typing/progress 状态作为过程呈现。右侧面板作为“上下文侧车”，但 tab 配置必须按页面定义。完整映射表以 [Portal 前端架构](./implementation/frontend/portal-architecture.md) 为准，不允许所有页面强行复用同一组 tab。
+- 风格基调固定为 dark-first、低对比 chrome、轻量发光 accent、细边框和中等圆角。通用组件基准值沿用原型与 AI Studio Apps：顶层输入卡 `20px - 24px` 圆角，顶层 chip `34px` 高度，项目工作区主卡片 `10px - 12px` 圆角、常规卡片 `12px - 14px` 内边距、左栏底部工具按钮外框 `45px x 32px` 且保留 `1px rgb(38,38,38)` 低对比边框，内部使用 `Material Symbols Outlined` 的 `18px / wght 300 / opsz 30` 线性图标、消息头像/Agent 图标 `28px`、资产图标 `22px`。
+- 页面信息组织固定为 agent-first + conversation-supported：顶层页以 composer 驱动项目创建和问询；任务模块以 Agent/Task 模板卡片、运行状态和底部 composer 驱动；消息流、结构化结果卡、建议动作 chip 和 typing/progress 状态作为过程呈现。右侧面板作为“上下文侧车”，但 tab 配置必须按页面定义。完整映射表以 [Portal 前端架构](./design/frontend/portal-architecture.md) 为准，不允许所有页面强行复用同一组 tab。
 - 消息流必须支持混合内容：自然语言段落、内嵌 impact/scenario 卡片、状态 badge、进度条、建议动作 chip、代码或术语高亮、后续动作按钮。Agent 输出不能退化为纯文本列表。
 - 交互细节必须保留：消息进入动画、typing dots、输入区 focus 渐变、pill chip hover/active、右侧 tab active 态、进度条渐进更新、自定义 scrollbar 和轻量 tooltip。
 - 工程实现上禁止沿用原型中的 inline CSS 和直接 DOM 操作。正式前端必须将样式收敛为设计 token、共享 class 或组件封装；交互行为收敛为 React state/store，而不是在页面里散落 `querySelector` 与 `style.display` 逻辑。
@@ -286,7 +287,7 @@ Nasus 的实现组织遵循两条同时成立的原则：
 ## 7 存储/索引/解析方案
 - **PostgreSQL**：存 Raw Assets 元数据、Context Objects、Baseline Snapshots、Version/Session 状态、Conversation/ToolInvocation、AgentGoal、AgentMemory、AgentSwarm、Candidate/Approval 记录、Run Result、Patch/Healing 记录，满足结构化查询与审批逻辑（§4.2、§6.1、§14.2）。
 - **MinIO**：存 Raw Assets（代码仓、文档、UX、OpenAPI、历史验证资产、临时材料）和执行产物（Playwright 日志、截图、trace、patch 附件），保证 append-only（§4.1、§12.1）。
-- **OpenGrok + Tree-sitter**：OpenGrok 负责代码搜索与跨文件引用，Tree-sitter 负责 AST、符号提取与增量解析，组成 Code Intelligence Backend（§7.3）。Knowledge Intelligence Backend 则通过文档切块 + 元数据索引（可基于 PostgreSQL）支撑文档理解与检索索引（§7.3）。
+- **OpenGrok + Tree-sitter + Hybrid Retrieval**：OpenGrok 负责代码搜索与跨文件引用，Tree-sitter 负责 AST、符号提取与增量解析，组成 Code Intelligence Backend（§7.3）。Knowledge Intelligence Backend 通过文档切块、PostgreSQL FTS、pgvector、RerankService 和检索运行记录支撑文档理解与上下文召回。
 - **上下文对象存储**：Context Object Store 保存 Candidate/Trusted Objects、Baseline Snapshots、Version Working Baselines（§7.3）；API 调用 `Context Assembler` 时，总是附带证据/置信度/状态，便于前端审计。
 
 ### 7.1 数据模型建议

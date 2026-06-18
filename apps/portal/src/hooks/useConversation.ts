@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../features/api'
 import type { ConversationSession, EventPayload, SpaceType } from '../features/types'
+import { reduceConversationEvent } from './conversation-event-reducer'
 
 export function useConversation(spaceType: SpaceType, spaceId: string, title: string) {
   const queryClient = useQueryClient()
@@ -30,10 +31,20 @@ export function useConversation(spaceType: SpaceType, spaceId: string, title: st
     }
     const typedHandler = (event: MessageEvent<string>) => {
       const payload = JSON.parse(event.data) as EventPayload
-      payload.query_keys.forEach((key) => {
-        queryClient.invalidateQueries({ queryKey: key })
+      let reduced = false
+      queryClient.setQueryData<ConversationSession | undefined>(['conversation', conversationId], (current) => {
+        const next = reduceConversationEvent(current, payload)
+        reduced = next !== current
+        return next
       })
-      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+      payload.query_keys.forEach((key) => {
+        if (key[0] !== 'conversation' || key[1] !== conversationId) {
+          queryClient.invalidateQueries({ queryKey: key })
+        }
+      })
+      if (!reduced || payload.snapshot_hint) {
+        queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+      }
     }
     source.addEventListener('conversation.message.created', typedHandler)
     source.addEventListener('agent.goal.updated', typedHandler)
@@ -59,4 +70,3 @@ export function useConversation(spaceType: SpaceType, spaceId: string, title: st
     isSending: sendMutation.isPending,
   }
 }
-

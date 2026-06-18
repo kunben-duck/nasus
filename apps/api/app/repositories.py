@@ -8,7 +8,10 @@ from sqlalchemy import delete, select
 from .database import SessionLocal
 from .db_models import (
     ApprovalRecord,
+    AuditEventRecord,
     AgentGoalRecord,
+    AgentSwarmRunRecord,
+    AgentWorkerAssignmentRecord,
     AssetLaneRecord,
     BaselineRecord as BaselineRow,
     ConversationMessageRecord,
@@ -30,9 +33,12 @@ from .db_models import (
 )
 from .models import (
     AgentGoal,
+    AgentSwarmRun,
     AgentStep,
+    AgentWorkerAssignment,
     ApprovalDetail,
     ApprovalSummary,
+    AuditEvent,
     AssetLane,
     BaselineRecord,
     ConversationMessage,
@@ -43,6 +49,7 @@ from .models import (
     CustomModelConfig,
     KnowledgeObject,
     MessageBlock,
+    ModelProviderProfile,
     ProjectCard,
     QualityMetricSnapshot,
     RawAssetRecord,
@@ -72,14 +79,17 @@ def session_scope() -> Iterator:
 
 
 class SettingsRepository:
-    def load(self) -> tuple[dict[str, Any], str]:
+    def load(self) -> tuple[dict[str, Any], dict[str, str]]:
         with session_scope() as session:
             record = session.get(SettingsRecord, 1)
             if record is None:
-                return self._defaults(), ""
+                return self._defaults(), {}
 
             custom = record.custom_model or {}
-            encrypted_secret = record.custom_api_key_encrypted or ""
+            encrypted_keys = custom.get("_model_profile_api_keys_encrypted") or {}
+            legacy_secret = record.custom_api_key_encrypted or ""
+            if legacy_secret and "chat" not in encrypted_keys:
+                encrypted_keys["chat"] = legacy_secret
             loaded = {
                 "language": record.language,
                 "theme": record.theme,
@@ -89,13 +99,14 @@ class SettingsRepository:
                     "provider_kind": custom.get("provider_kind", "openai_compatible"),
                     "base_url": custom.get("base_url"),
                     "model_name": custom.get("model_name", ""),
-                    "has_api_key": bool(encrypted_secret),
+                    "has_api_key": bool(encrypted_keys.get("chat")),
                     "api_key_masked": custom.get("api_key_masked"),
                 },
+                "model_profiles": self._load_profiles(custom.get("model_profiles") or {}, encrypted_keys, custom),
             }
-            return loaded, encrypted_secret
+            return loaded, encrypted_keys
 
-    def save(self, settings: StudioSettings, encrypted_custom_api_key: str) -> None:
+    def save(self, settings: StudioSettings, encrypted_custom_api_keys: dict[str, str]) -> None:
         with session_scope() as session:
             record = session.get(SettingsRecord, 1)
             if record is None:
@@ -111,17 +122,62 @@ class SettingsRepository:
                 "base_url": settings.custom_model.base_url,
                 "model_name": settings.custom_model.model_name,
                 "api_key_masked": settings.custom_model.api_key_masked,
+                "model_profiles": {
+                    route: {
+                        "route": profile.route,
+                        "model_preset": profile.model_preset,
+                        "custom_model": {
+                            "provider_kind": profile.custom_model.provider_kind,
+                            "base_url": profile.custom_model.base_url,
+                            "model_name": profile.custom_model.model_name,
+                            "api_key_masked": profile.custom_model.api_key_masked,
+                        },
+                    }
+                    for route, profile in settings.model_profiles.items()
+                },
+                "_model_profile_api_keys_encrypted": {
+                    key: value for key, value in encrypted_custom_api_keys.items() if value
+                },
             }
-            record.custom_api_key_encrypted = encrypted_custom_api_key or None
+            record.custom_api_key_encrypted = encrypted_custom_api_keys.get("chat") or None
+
+    @staticmethod
+    def _load_profiles(
+        payload_profiles: dict[str, Any],
+        encrypted_keys: dict[str, str],
+        legacy_custom: dict[str, Any],
+    ) -> dict[str, ModelProviderProfile]:
+        profiles: dict[str, ModelProviderProfile] = {}
+        for route in ("chat", "embedding", "rerank"):
+            raw = payload_profiles.get(route) or {}
+            raw_custom = raw.get("custom_model") or (legacy_custom if route == "chat" else {})
+            custom = CustomModelConfig(
+                provider_kind=raw_custom.get("provider_kind", "openai_compatible"),
+                base_url=raw_custom.get("base_url"),
+                model_name=raw_custom.get("model_name", ""),
+                has_api_key=bool(encrypted_keys.get(route)),
+                api_key_masked=raw_custom.get("api_key_masked"),
+            )
+            profiles[route] = ModelProviderProfile(
+                route=route,  # type: ignore[arg-type]
+                model_preset="custom" if raw.get("model_preset") == "custom" else "system_default",
+                custom_model=custom,
+            )
+        return profiles
 
     @staticmethod
     def _defaults() -> dict[str, Any]:
+        model_profiles = {
+            route: ModelProviderProfile(route=route, custom_model=CustomModelConfig())  # type: ignore[arg-type]
+            for route in ("chat", "embedding", "rerank")
+        }
         return {
             "language": "zh",
             "theme": "dark",
             "notification_mode": "important",
             "model_preset": "system_default",
             "custom_model": CustomModelConfig().model_dump(),
+            "model_profiles": model_profiles,
         }
 
 
@@ -245,6 +301,61 @@ class ConversationRepository:
             rows = session.scalars(select(ToolInvocationRecord)).all()
         return [self._to_tool_invocation(row) for row in rows]
 
+    def load_audit_events(self) -> list[AuditEvent]:
+        with session_scope() as session:
+            rows = session.scalars(select(AuditEventRecord).order_by(AuditEventRecord.occurred_at)).all()
+        return [self._to_audit_event(row) for row in rows]
+
+    def load_agent_swarms(self) -> list[AgentSwarmRun]:
+        with session_scope() as session:
+            swarm_rows = session.scalars(select(AgentSwarmRunRecord)).all()
+            assignment_rows = session.scalars(select(AgentWorkerAssignmentRecord)).all()
+
+        assignments_by_swarm: dict[str, list[AgentWorkerAssignment]] = {}
+        for row in assignment_rows:
+            assignments_by_swarm.setdefault(row.swarm_run_id, []).append(self._to_assignment(row))
+
+        return [
+            self._to_swarm(row, assignments_by_swarm.get(row.id, []))
+            for row in swarm_rows
+        ]
+
+    def upsert_agent_swarm(self, swarm: AgentSwarmRun) -> None:
+        with session_scope() as session:
+            record = session.get(AgentSwarmRunRecord, swarm.id)
+            if record is None:
+                record = AgentSwarmRunRecord(id=swarm.id)
+                session.add(record)
+
+            record.parent_goal_id = swarm.parent_goal_id
+            record.conversation_id = swarm.conversation_id
+            record.swarm_kind = swarm.swarm_kind
+            record.status = swarm.status
+            record.max_parallel_agents = swarm.max_parallel_agents
+            record.merge_strategy = swarm.merge_strategy
+            record.target_refs = swarm.target_refs
+            record.result_summary = swarm.result_summary
+            record.created_at = swarm.created_at
+            record.completed_at = swarm.completed_at
+
+            for assignment in swarm.assignments:
+                assignment_record = session.get(AgentWorkerAssignmentRecord, assignment.id)
+                if assignment_record is None:
+                    assignment_record = AgentWorkerAssignmentRecord(id=assignment.id, swarm_run_id=swarm.id)
+                    session.add(assignment_record)
+                assignment_record.swarm_run_id = assignment.swarm_run_id
+                assignment_record.worker_agent_kind = assignment.worker_agent_kind
+                assignment_record.target_refs = assignment.target_refs
+                assignment_record.input_context_refs = assignment.input_context_refs
+                assignment_record.status = assignment.status
+                assignment_record.agent_goal_id = assignment.agent_goal_id
+                assignment_record.tool_invocation_refs = assignment.tool_invocation_refs
+                assignment_record.candidate_result_ref = assignment.candidate_result_ref
+                assignment_record.confidence = assignment.confidence
+                assignment_record.summary = assignment.summary
+                assignment_record.created_at = assignment.created_at
+                assignment_record.completed_at = assignment.completed_at
+
     def load_summary_checkpoints(self) -> list[ConversationSummaryCheckpoint]:
         with session_scope() as session:
             rows = session.scalars(
@@ -303,6 +414,28 @@ class ConversationRepository:
             record.target_scope = invocation.target_scope
             record.input_payload = invocation.input_payload
             record.result_payload = invocation.result.model_dump() if invocation.result else None
+
+    def upsert_audit_event(self, event: AuditEvent) -> None:
+        with session_scope() as session:
+            record = session.get(AuditEventRecord, event.id)
+            if record is None:
+                record = AuditEventRecord(id=event.id)
+                session.add(record)
+
+            record.occurred_at = event.occurred_at
+            record.actor = event.actor
+            record.actor_kind = event.actor_kind
+            record.action = event.action
+            record.entity_type = event.entity_type
+            record.entity_id = event.entity_id
+            record.status = event.status
+            record.summary = event.summary
+            record.conversation_id = event.conversation_id
+            record.tool_invocation_id = event.tool_invocation_id
+            record.agent_goal_id = event.agent_goal_id
+            record.object_refs = event.object_refs
+            record.evidence_refs = event.evidence_refs
+            record.event_metadata = event.metadata
 
     def _to_conversation(
         self,
@@ -379,6 +512,62 @@ class ConversationRepository:
             target_scope=row.target_scope,  # type: ignore[arg-type]
             input_payload=row.input_payload or {},
             result=result,
+        )
+
+    @staticmethod
+    def _to_audit_event(row: AuditEventRecord) -> AuditEvent:
+        return AuditEvent(
+            id=row.id,
+            occurred_at=row.occurred_at,
+            actor=row.actor,
+            actor_kind=row.actor_kind,  # type: ignore[arg-type]
+            action=row.action,
+            entity_type=row.entity_type,
+            entity_id=row.entity_id,
+            status=row.status,  # type: ignore[arg-type]
+            summary=row.summary,
+            conversation_id=row.conversation_id,
+            tool_invocation_id=row.tool_invocation_id,
+            agent_goal_id=row.agent_goal_id,
+            object_refs=row.object_refs or [],
+            evidence_refs=row.evidence_refs or [],
+            metadata=row.event_metadata or {},
+        )
+
+    @staticmethod
+    def _to_swarm(row: AgentSwarmRunRecord, assignments: list[AgentWorkerAssignment]) -> AgentSwarmRun:
+        assignments.sort(key=lambda item: item.created_at)
+        return AgentSwarmRun(
+            id=row.id,
+            parent_goal_id=row.parent_goal_id,
+            conversation_id=row.conversation_id,
+            swarm_kind=row.swarm_kind,  # type: ignore[arg-type]
+            status=row.status,  # type: ignore[arg-type]
+            max_parallel_agents=row.max_parallel_agents,
+            merge_strategy=row.merge_strategy,
+            target_refs=row.target_refs or [],
+            result_summary=row.result_summary or "",
+            assignments=assignments,
+            created_at=row.created_at,
+            completed_at=row.completed_at,
+        )
+
+    @staticmethod
+    def _to_assignment(row: AgentWorkerAssignmentRecord) -> AgentWorkerAssignment:
+        return AgentWorkerAssignment(
+            id=row.id,
+            swarm_run_id=row.swarm_run_id,
+            worker_agent_kind=row.worker_agent_kind,  # type: ignore[arg-type]
+            target_refs=row.target_refs or [],
+            input_context_refs=row.input_context_refs or [],
+            status=row.status,  # type: ignore[arg-type]
+            agent_goal_id=row.agent_goal_id,
+            tool_invocation_refs=row.tool_invocation_refs or [],
+            candidate_result_ref=row.candidate_result_ref,
+            confidence=row.confidence,
+            summary=row.summary or "",
+            created_at=row.created_at,
+            completed_at=row.completed_at,
         )
 
     @staticmethod

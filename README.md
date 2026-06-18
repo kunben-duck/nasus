@@ -53,7 +53,7 @@ Nasus 是一个面向 AI coding 时代的**功能验收与上线决策控制平�
 - 失败到底是脚本问题、环境问题，还是功能问题
 - 版本结束后，哪些知识应该成为组织的长期质量记忆
 
-存量系统尤其如此。Git、US、设计文档、UX 图、接口文档、历史测试资产和执行证据通常是分散的，导致每个版本都在重复理解系统、重复组织验证、重复承担上线不确定性。
+存量系统尤其如此。代码仓库、历史 US、历史测试资产、设计文档、UX 图、接口文档和执行证据通常是分散的，导致每个版本都在重复理解系统、重复组织验证、重复承担上线不确定性。
 
 Nasus 的意义，就是在 AI coding 时代，为组织补上一层专门面向**功能验收与上线判断**的控制系统。
 
@@ -128,7 +128,8 @@ README 里的“模块”只指产品应用架构模块，不把前端、后端�
 
 它承载的关键能力包括：
 
-- Git、US、UX、接口文档、历史测试资产等原料接入
+- 代码、历史 US 文档、历史测试用例和自动化脚本三类一等 source 接入
+- UX、OpenAPI、缺陷和执行日志等增强 source 接入
 - 系统画像初始化
 - 正式系统基线建立与维护
 - 版本工作基线与正式基线的关系管理
@@ -244,9 +245,11 @@ Nasus 不是“页面里加一个聊天框”，而是一个 **agent-first** 产
 
 - [项目计划书](./docs/nasus_assurance_studio_implementation_plan.md)
 - [文档总览](./docs/README.md)
+- [产品需求基线](./docs/product-requirements.md)
 - [最终特性说明书](./docs/final-feature-spec.md)
 - [系统架构与部署设计](./docs/system-architecture.md)
 - [实现总览](./docs/implementation-overview.md)
+- [统一设计文档总览](./docs/design/README.md)
 
 ### 产品模块与空间承载面
 
@@ -256,13 +259,13 @@ Nasus 不是“页面里加一个聊天框”，而是一个 **agent-first** 产
 - 这些能力落在哪些工作空间里
 - 研发实现如何分层落地
 
-- [模块地图](./docs/modules/README.md)
-- [系统画像构建模块](./docs/modules/system-image/README.md)
-- [Agent 主体模块](./docs/modules/agent/README.md)
-- [质量闭环主体模块](./docs/modules/quality-loop/README.md)
-- [Studio Entry 空间](./docs/spaces/studio-entry.md)
-- [Project Foundation 空间](./docs/spaces/project-foundation.md)
-- [平台能力总览](./docs/implementation/platform/README.md)
+- [模块地图](./docs/design/product-modules.md)
+- [系统画像构建模块](./docs/design/system-image/README.md)
+- [Agent 主体模块](./docs/design/agent/README.md)
+- [质量闭环主体模块](./docs/design/quality-loop/README.md)
+- [Studio Entry 空间](./docs/design/spaces/studio-entry.md)
+- [Project Foundation 空间](./docs/design/spaces/project-foundation.md)
+- [平台能力总览](./docs/design/platform/README.md)
 
 ### 原型基线
 

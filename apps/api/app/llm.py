@@ -9,6 +9,8 @@ import httpx
 
 from .models import (
     CustomModelConfig,
+    ModelProviderProfile,
+    ModelRoute,
     ProviderStatus,
     StudioSettings,
     StudioSettingsConnectionTestResponse,
@@ -37,37 +39,66 @@ class LLMGateway:
         notification_mode: str,
         model_preset: ModelPreset,
         custom_model: CustomModelConfig | None = None,
+        model_profiles: dict[ModelRoute, ModelProviderProfile] | None = None,
     ) -> StudioSettings:
-        custom = custom_model or CustomModelConfig()
-        provider, model_name = self.resolve_settings(model_preset, custom)
-        statuses = self.provider_statuses(custom)
-        active_status = self._active_status(model_preset, statuses)
-        runtime_mode: Literal["live", "fallback"] = "live" if active_status.available else "fallback"
+        profiles = self.build_model_profiles(model_preset=model_preset, custom_model=custom_model, model_profiles=model_profiles)
+        chat_profile = profiles["chat"]
         return StudioSettings(
             language=language,  # type: ignore[arg-type]
             theme=theme,  # type: ignore[arg-type]
-            model_preset=model_preset,
+            model_preset=chat_profile.model_preset,
             notification_mode=notification_mode,  # type: ignore[arg-type]
-            model_provider=provider,
-            model_name=model_name,
-            runtime_mode=runtime_mode,
-            fallback_provider="mock",
-            provider_statuses=statuses,
-            active_provider_status=active_status,
-            custom_model=custom,
+            model_provider=chat_profile.model_provider,
+            model_name=chat_profile.model_name,
+            runtime_mode=chat_profile.runtime_mode,
+            fallback_provider=chat_profile.fallback_provider,
+            provider_statuses=chat_profile.provider_statuses,
+            active_provider_status=chat_profile.active_provider_status,
+            custom_model=chat_profile.custom_model,
+            model_profiles=profiles,
         )
 
-    def resolve_settings(self, model_preset: ModelPreset, custom_model: CustomModelConfig) -> tuple[ProviderName, str]:
+    def build_model_profiles(
+        self,
+        *,
+        model_preset: ModelPreset,
+        custom_model: CustomModelConfig | None = None,
+        model_profiles: dict[ModelRoute, ModelProviderProfile] | None = None,
+    ) -> dict[ModelRoute, ModelProviderProfile]:
+        profiles: dict[ModelRoute, ModelProviderProfile] = {}
+        for route in ("chat", "embedding", "rerank"):
+            existing = (model_profiles or {}).get(route)  # type: ignore[arg-type]
+            preset = existing.model_preset if existing else ("system_default" if route != "chat" else model_preset)
+            custom = existing.custom_model.model_copy(deep=True) if existing else CustomModelConfig()
+            if route == "chat" and custom_model is not None and existing is None:
+                custom = custom_model
+            provider, model_name = self.resolve_settings(route, preset, custom)
+            statuses = self.provider_statuses(route, custom)
+            active_status = self._active_status(preset, statuses)
+            profiles[route] = ModelProviderProfile(
+                route=route,  # type: ignore[arg-type]
+                model_preset=preset,
+                model_provider=provider,
+                model_name=model_name,
+                runtime_mode="live" if active_status.available else "fallback",
+                fallback_provider="mock",
+                provider_statuses=statuses,
+                active_provider_status=active_status,
+                custom_model=custom,
+            )
+        return profiles
+
+    def resolve_settings(self, route: ModelRoute, model_preset: ModelPreset, custom_model: CustomModelConfig) -> tuple[ProviderName, str]:
         if model_preset == "custom":
             return custom_model.provider_kind, custom_model.model_name or "custom-model"
-        provider = self._resolve_default_provider()
-        model_name = self._resolve_default_model(provider)
+        provider = self._resolve_default_provider(route)
+        model_name = self._resolve_default_model(route, provider)
         return provider, model_name
 
-    def provider_statuses(self, custom_model: CustomModelConfig | None = None) -> list[ProviderStatus]:
+    def provider_statuses(self, route: ModelRoute = "chat", custom_model: CustomModelConfig | None = None) -> list[ProviderStatus]:
         custom = custom_model or CustomModelConfig()
         return [
-            self._system_default_status(),
+            self._system_default_status(route),
             self._custom_provider_status(custom),
             self._mock_status(),
         ]
@@ -125,28 +156,78 @@ class LLMGateway:
         self,
         *,
         settings: StudioSettings,
+        route: ModelRoute = "chat",
         custom_api_key: str | None = None,
     ) -> StudioSettingsConnectionTestResponse:
         started = time.perf_counter()
-        provider = settings.model_provider
-        model_name = settings.model_name
+        profile = settings.model_profiles.get(route) or settings.model_profiles.get("chat")
+        provider = profile.model_provider if profile else settings.model_provider
+        model_name = profile.model_name if profile else settings.model_name
+        runtime_mode = profile.runtime_mode if profile else settings.runtime_mode
+        fallback_provider = profile.fallback_provider if profile else settings.fallback_provider
+        active_status = profile.active_provider_status if profile else settings.active_provider_status
+        custom_model = profile.custom_model if profile else settings.custom_model
 
-        if settings.runtime_mode == "fallback":
+        if runtime_mode == "fallback":
             return StudioSettingsConnectionTestResponse(
                 ok=False,
+                model_route=route,
                 provider=provider,
                 model_name=model_name,
                 runtime_mode="fallback",
-                fallback_provider=settings.fallback_provider,
+                fallback_provider=fallback_provider,
                 latency_ms=int((time.perf_counter() - started) * 1000),
-                message=settings.active_provider_status.reason,
+                message=active_status.reason,
+            )
+
+        if route == "embedding" and provider in {"openai", "openai_compatible"}:
+            try:
+                await self._probe_embedding_provider(
+                    provider=provider,
+                    model_name=model_name,
+                    custom_model=custom_model,
+                    custom_api_key=custom_api_key,
+                )
+            except Exception as exc:
+                return StudioSettingsConnectionTestResponse(
+                    ok=False,
+                    model_route=route,
+                    provider=provider,
+                    model_name=model_name,
+                    runtime_mode="fallback",
+                    fallback_provider=fallback_provider,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    message=f"Embedding connection failed: {exc}",
+                )
+
+            return StudioSettingsConnectionTestResponse(
+                ok=True,
+                model_route=route,
+                provider=provider,
+                model_name=model_name,
+                runtime_mode="live",
+                fallback_provider=None,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                message="Embedding connection succeeded.",
+            )
+
+        if route != "chat":
+            return StudioSettingsConnectionTestResponse(
+                ok=True,
+                model_route=route,
+                provider=provider,
+                model_name=model_name,
+                runtime_mode="live",
+                fallback_provider=None,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                message=f"{route} provider configuration is live. Runtime adapter probe will execute during retrieval jobs.",
             )
 
         try:
             await self._call_provider(
                 provider=provider,
                 model_name=model_name,
-                custom_model=settings.custom_model,
+                custom_model=custom_model,
                 custom_api_key=custom_api_key,
                 system_prompt="Reply with exactly READY.",
                 user_message="Connection test",
@@ -156,16 +237,18 @@ class LLMGateway:
         except Exception as exc:
             return StudioSettingsConnectionTestResponse(
                 ok=False,
+                model_route=route,
                 provider=provider,
                 model_name=model_name,
                 runtime_mode="fallback",
-                fallback_provider=settings.fallback_provider,
+                fallback_provider=fallback_provider,
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 message=f"Connection failed: {exc}",
             )
 
         return StudioSettingsConnectionTestResponse(
             ok=True,
+            model_route=route,
             provider=provider,
             model_name=model_name,
             runtime_mode="live",
@@ -173,6 +256,37 @@ class LLMGateway:
             latency_ms=int((time.perf_counter() - started) * 1000),
             message="Connection succeeded.",
         )
+
+    async def _probe_embedding_provider(
+        self,
+        *,
+        provider: ProviderName,
+        model_name: str,
+        custom_model: CustomModelConfig,
+        custom_api_key: str | None,
+    ) -> None:
+        if provider == "openai":
+            base_url = "https://api.openai.com/v1"
+            api_key = os.environ["OPENAI_API_KEY"]
+        else:
+            base_url = (custom_model.base_url or "").rstrip("/")
+            api_key = custom_api_key or ""
+            if not base_url:
+                raise RuntimeError("missing custom base url")
+            if not api_key:
+                raise RuntimeError("missing custom api key")
+
+        payload = {
+            "model": model_name,
+            "input": "Nasus embedding connection test",
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{base_url}/embeddings",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json=payload,
+            )
+            response.raise_for_status()
 
     def _active_status(self, model_preset: ModelPreset, statuses: list[ProviderStatus]) -> ProviderStatus:
         configured_via = "custom" if model_preset == "custom" else "system_default"
@@ -182,8 +296,8 @@ class LLMGateway:
             if status.configured_via == configured_via
         )
 
-    def _system_default_status(self) -> ProviderStatus:
-        provider = self._resolve_default_provider()
+    def _system_default_status(self, route: ModelRoute) -> ProviderStatus:
+        provider = self._resolve_default_provider(route)
         if provider == "mock":
             return ProviderStatus(
                 provider="mock",
@@ -207,9 +321,9 @@ class LLMGateway:
             mode="live" if available else "fallback",
             fallback_provider=None if available else "mock",
             reason=(
-                f"System default provider {provider} is configured."
+                f"System default {route} provider {provider} is configured."
                 if available
-                else f"Missing {env_name}; system default will fall back to mock."
+                else f"Missing {env_name}; system default {route} route will fall back to mock."
             ),
         )
 
@@ -248,16 +362,32 @@ class LLMGateway:
             reason="Local deterministic fallback is always available.",
         )
 
-    def _resolve_default_provider(self) -> ProviderName:
-        configured = os.getenv("NASUS_DEFAULT_PROVIDER", "").strip().lower()
+    def _resolve_default_provider(self, route: ModelRoute) -> ProviderName:
+        env_by_route = {
+            "chat": "NASUS_DEFAULT_PROVIDER",
+            "embedding": "NASUS_EMBEDDING_PROVIDER",
+            "rerank": "NASUS_RERANK_PROVIDER",
+        }
+        configured = os.getenv(env_by_route[route], "").strip().lower()
+        if not configured and route != "chat":
+            configured = os.getenv("NASUS_DEFAULT_PROVIDER", "").strip().lower()
         if configured in {"openai", "gemini", "anthropic", "mock"}:
             return configured  # type: ignore[return-value]
         return "openai"
 
-    def _resolve_default_model(self, provider: ProviderName) -> str:
-        override = os.getenv("NASUS_DEFAULT_MODEL")
+    def _resolve_default_model(self, route: ModelRoute, provider: ProviderName) -> str:
+        route_override = {
+            "chat": "NASUS_DEFAULT_MODEL",
+            "embedding": "NASUS_EMBEDDING_MODEL",
+            "rerank": "NASUS_RERANK_MODEL",
+        }[route]
+        override = os.getenv(route_override)
         if override:
             return override
+        if route == "embedding":
+            return os.getenv("NASUS_OPENAI_EMBEDDING_MODEL", "text-embedding-3-large")
+        if route == "rerank":
+            return os.getenv("NASUS_RERANK_MODEL", "nasus-rerank-system-default")
         if provider == "gemini":
             return os.getenv("NASUS_GEMINI_MODEL", "gemini-2.5-pro")
         if provider == "anthropic":

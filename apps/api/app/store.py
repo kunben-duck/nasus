@@ -9,15 +9,21 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from .agent_loop_runtime import AgentLoopRuntime
-from .conversation_orchestrator import ConversationOrchestrator
+from .agent_memory import AgentMemoryManager, memory_context_hash, memory_context_summary
+from .agent_planner import DeterministicAgentPlanner, LLMStructuredAgentPlanner
+from .agent_service import AgentService
+from .agent_swarm import AgentSwarmCoordinator
+from .agent_workflow_runtime import build_agent_workflow_runtime
 from .database import init_database
 from .llm import LLMGateway
 from .models import (
     AgentGoal,
     AgentGoalCreateRequest,
+    AgentSwarmRun,
     AgentStep,
     ApprovalDetail,
     ApprovalSummary,
+    AuditEvent,
     AssetLane,
     BaselineRecord,
     BuildResponse,
@@ -59,6 +65,10 @@ from .models import (
 )
 from .repositories import ConversationRepository, ProjectRepository, SettingsRepository
 from .settings_store import SettingsPersistence
+from .system_image_service import SystemImageService
+from .system_image_tool_catalog import system_image_tool_definitions
+from .tool_governance import ToolGovernance
+from .tool_invocation_runtime import ToolInvocationRuntime
 
 
 def _now_iso() -> str:
@@ -83,15 +93,18 @@ class ApplicationStore:
         self.conversation_repository = ConversationRepository()
         self.project_repository = ProjectRepository()
         self.settings_persistence = SettingsPersistence()
-        persisted_settings, persisted_custom_key = self.settings_repository.load()
+        self.tool_governance = ToolGovernance()
+        persisted_settings, persisted_custom_keys = self.settings_repository.load()
         self.settings = self.llm.build_settings(
             language=persisted_settings["language"],
             theme=persisted_settings["theme"],
             notification_mode=persisted_settings["notification_mode"],
             model_preset=persisted_settings["model_preset"],
             custom_model=CustomModelConfig(**persisted_settings["custom_model"]),
+            model_profiles=persisted_settings.get("model_profiles"),
         )
-        self.custom_model_api_key_encrypted = persisted_custom_key
+        self.custom_model_api_keys_encrypted = dict(persisted_custom_keys)
+        self.custom_model_api_key_encrypted = self.custom_model_api_keys_encrypted.get("chat", "")
         self.tools = [
             ToolDefinition(
                 tool_id="project.create",
@@ -125,17 +138,6 @@ class ApplicationStore:
                 description="Generate structured test scenarios for the selected US.",
                 required_context=["project_id", "us_id"],
                 produced_objects=["QualityAssetPack", "AgentGoal"],
-            ),
-            ToolDefinition(
-                tool_id="baseline.initialize",
-                label="Initialize System Image",
-                tool_kind="project",
-                scope="central",
-                risk_level="high",
-                confirmation_mode="user_confirm",
-                description="Build the first Official System Image from code, US documents, and historical test assets.",
-                required_context=["project_id", "code_source", "us_doc_source", "test_asset_source"],
-                produced_objects=["Baseline", "ContextObject", "QualityMetricSnapshot"],
             ),
             ToolDefinition(
                 tool_id="query.dashboard.progress",
@@ -226,13 +228,23 @@ class ApplicationStore:
                 produced_objects=["ConversationSession"],
             ),
         ]
-        self.orchestrator = ConversationOrchestrator(
+        self.tools.extend(system_image_tool_definitions())
+        deterministic_planner = DeterministicAgentPlanner.build(
             tools=self.tools,
             project_name_extractor=self._extract_project_name,
             version_name_extractor=self._extract_version_name,
             summary_builder=self._conversation_summary_fallback,
         )
+        self.planner = LLMStructuredAgentPlanner(
+            fallback=deterministic_planner,
+            llm=self.llm,
+            tools=self.tools,
+            settings_provider=self.get_settings,
+            custom_api_key_provider=self._get_custom_model_api_key,
+            memory_context_builder=self._planner_memory_context,
+        )
         self.agent_loop_runtime = AgentLoopRuntime(self)
+        self.agent_workflow_runtime = build_agent_workflow_runtime(self.agent_loop_runtime)
         self.projects: Dict[str, ProjectCard] = {}
         self.versions: Dict[str, List[VersionSummary]] = defaultdict(list)
         self.us_items: Dict[str, List[USItem]] = defaultdict(list)
@@ -257,8 +269,16 @@ class ApplicationStore:
         self.event_queues: Dict[str, asyncio.Queue[EventPayload]] = {}
         self.agent_goals: Dict[str, AgentGoal] = {}
         self.agent_goal_queues: Dict[str, asyncio.Queue[EventPayload]] = {}
+        self.agent_swarms: Dict[str, AgentSwarmRun] = {}
+        self.agent_swarm_queues: Dict[str, asyncio.Queue[EventPayload]] = {}
         self.tool_invocations: Dict[str, ToolInvocation] = {}
+        self.audit_events: Dict[str, AuditEvent] = {}
         self.entity_versions: Dict[str, int] = defaultdict(int)
+        self.agent_memory = AgentMemoryManager(self)
+        self.system_image_service = SystemImageService(self)
+        self.agent_swarm_coordinator = AgentSwarmCoordinator(self)
+        self.tool_invocation_runtime = ToolInvocationRuntime(self)
+        self.agent_service = AgentService(self, self.agent_workflow_runtime)
         self._load_persisted_project_state()
         self._load_persisted_runtime_state()
         self._seed()
@@ -295,6 +315,14 @@ class ApplicationStore:
         self.tool_invocations = {
             invocation.id: invocation
             for invocation in self.conversation_repository.load_tool_invocations()
+        }
+        self.audit_events = {
+            event.id: event
+            for event in self.conversation_repository.load_audit_events()
+        }
+        self.agent_swarms = {
+            swarm.id: swarm
+            for swarm in self.conversation_repository.load_agent_swarms()
         }
         self.conversation_summary_checkpoints = {
             checkpoint.id: checkpoint
@@ -361,6 +389,13 @@ class ApplicationStore:
         if queue is None:
             queue = asyncio.Queue()
             self.agent_goal_queues[goal_id] = queue
+        return queue
+
+    def _get_or_create_swarm_queue(self, swarm_id: str) -> asyncio.Queue[EventPayload]:
+        queue = self.agent_swarm_queues.get(swarm_id)
+        if queue is None:
+            queue = asyncio.Queue()
+            self.agent_swarm_queues[swarm_id] = queue
         return queue
 
     def _seed(self) -> None:
@@ -589,252 +624,13 @@ class ApplicationStore:
         self.project_repository.replace_runs(project.id, [self.run_details["run_9021"]])
         self.project_repository.replace_approvals(project.id, [self.approval_details["approval_442"]])
         self.project_repository.replace_knowledge_objects(project.id, self.knowledge_objects[project.id])
-        self._ensure_system_image_state(project.id, ready=True, version_id=version.id)
+        self.system_image_service.ensure_state(project.id, ready=True, version_id=version.id)
         self.project_repository.upsert_release_readiness(project.id, self.release_readiness[version.id])
         self.get_or_create_conversation("welcome", "welcome", "Welcome")
         self.get_or_create_conversation("build", "build", "Build")
         self.get_or_create_conversation("dashboard", "dashboard", "Dashboard")
         self.get_or_create_conversation("project", project.id, project.name)
         self.get_or_create_conversation("workspace", "us_123", "US-123 Workspace")
-
-    def _ensure_system_image_state(self, project_id: str, *, ready: bool, version_id: Optional[str] = None) -> None:
-        project = self.projects[project_id]
-        now = _now_iso()
-        baseline_id = f"base_{project_id}_official"
-        status = "ready" if ready else "draft"
-        source_status = "indexed" if ready else "pending"
-        object_count = len(self.knowledge_objects.get(project_id, []))
-        relationship_count = 4 if ready else 0
-        metric_count = 4 if ready else 0
-
-        if not self.raw_assets.get(project_id):
-            self.raw_assets[project_id] = [
-                RawAssetRecord(
-                    id=f"raw_{project_id}_code",
-                    project_id=project_id,
-                    version_id=version_id,
-                    source_type="code",
-                    source_uri=f"git://{_slugify(project.name)}",
-                    ingestion_status=source_status,
-                    content_hash=f"hash:{project_id}:code",
-                    content_ref=f"minio://nasus/raw/{project_id}/code",
-                    evidence_refs=["source:git", "parser:tree-sitter", "index:opengrok"] if ready else [],
-                    last_ingested_at=now if ready else None,
-                ),
-                RawAssetRecord(
-                    id=f"raw_{project_id}_us",
-                    project_id=project_id,
-                    version_id=version_id,
-                    source_type="us_doc",
-                    source_uri=f"docs://{_slugify(project.name)}/historical-us",
-                    ingestion_status=source_status,
-                    content_hash=f"hash:{project_id}:us",
-                    content_ref=f"minio://nasus/raw/{project_id}/us-docs",
-                    evidence_refs=["source:historical-us", "parser:document-chunker"] if ready else [],
-                    last_ingested_at=now if ready else None,
-                ),
-                RawAssetRecord(
-                    id=f"raw_{project_id}_tests",
-                    project_id=project_id,
-                    version_id=version_id,
-                    source_type="test_asset",
-                    source_uri=f"tests://{_slugify(project.name)}/regression",
-                    ingestion_status=source_status,
-                    content_hash=f"hash:{project_id}:tests",
-                    content_ref=f"minio://nasus/raw/{project_id}/test-assets",
-                    evidence_refs=["source:test-cases", "source:automation-scripts"] if ready else [],
-                    last_ingested_at=now if ready else None,
-                ),
-            ]
-        elif ready:
-            for source in self.raw_assets[project_id]:
-                source.ingestion_status = "indexed"
-                source.last_ingested_at = source.last_ingested_at or now
-                if not source.evidence_refs:
-                    if source.source_type == "code":
-                        source.evidence_refs = ["source:git", "parser:tree-sitter", "index:opengrok"]
-                    elif source.source_type == "us_doc":
-                        source.evidence_refs = ["source:historical-us", "parser:document-chunker"]
-                    else:
-                        source.evidence_refs = ["source:test-cases", "source:automation-scripts"]
-
-        self.baselines[project_id] = [
-            BaselineRecord(
-                id=baseline_id,
-                project_id=project_id,
-                kind="official",
-                status=status,
-                fork_strategy="copy_on_write",
-                object_count=object_count,
-                relationship_count=relationship_count,
-                metric_snapshot_count=metric_count,
-                updated_at=now,
-            )
-        ]
-
-        if ready and self.knowledge_objects.get(project_id):
-            objects = self.knowledge_objects[project_id]
-            checkout = next((item for item in objects if "CHECKOUT" in item.id), objects[0])
-            asset = next((item for item in objects if item.type == "QualityAssetPack"), objects[-1])
-            self.context_relationships[project_id] = [
-                ContextRelationship(
-                    id=f"rel_{project_id}_code_feature",
-                    project_id=project_id,
-                    baseline_id=baseline_id,
-                    from_object_id=checkout.id,
-                    relationship_type="implements",
-                    to_object_id="raw:code",
-                    confidence=0.89,
-                    source_refs=[f"raw:{project_id}:code"],
-                ),
-                ContextRelationship(
-                    id=f"rel_{project_id}_us_feature",
-                    project_id=project_id,
-                    baseline_id=baseline_id,
-                    from_object_id="US-123",
-                    relationship_type="impacts",
-                    to_object_id=checkout.id,
-                    confidence=0.84,
-                    source_refs=[f"raw:{project_id}:us_doc"],
-                ),
-                ContextRelationship(
-                    id=f"rel_{project_id}_tests_feature",
-                    project_id=project_id,
-                    baseline_id=baseline_id,
-                    from_object_id=asset.id,
-                    relationship_type="covers",
-                    to_object_id=checkout.id,
-                    confidence=0.88,
-                    source_refs=[f"raw:{project_id}:test_asset"],
-                ),
-                ContextRelationship(
-                    id=f"rel_{project_id}_evidence_metric",
-                    project_id=project_id,
-                    baseline_id=baseline_id,
-                    from_object_id=checkout.id,
-                    relationship_type="evidenced_by",
-                    to_object_id="metric:test_quality",
-                    confidence=0.91,
-                    source_refs=["run:run_9021", "scenario-pack:r3"],
-                ),
-            ]
-        else:
-            self.context_relationships[project_id] = []
-
-        overlay_object_id = self.knowledge_objects[project_id][0].id if self.knowledge_objects.get(project_id) else "context:pending"
-        self.context_object_overlays[project_id] = [
-            ContextObjectOverlay(
-                id=f"overlay_{project_id}_version_risk",
-                project_id=project_id,
-                baseline_id=baseline_id,
-                object_id=overlay_object_id,
-                field_path="risk_patterns.checkout_redirect",
-                operation="add",
-                value_ref="candidate:risk-pattern:checkout-redirect",
-                source_refs=["run:run_9021", "approval:approval_442"],
-                status="candidate",
-            )
-        ] if ready else []
-
-        self.quality_metric_snapshots[project_id] = [
-            QualityMetricSnapshot(
-                id=f"metric_{project_id}_code",
-                project_id=project_id,
-                baseline_id=baseline_id,
-                version_id=version_id,
-                metric_group="code_quality",
-                metrics={"changed_modules": 3, "critical_paths": 2, "code_risk_score": 67},
-                evidence_refs=[f"raw:{project_id}:code"],
-                captured_at=now,
-            ),
-            QualityMetricSnapshot(
-                id=f"metric_{project_id}_us",
-                project_id=project_id,
-                baseline_id=baseline_id,
-                version_id=version_id,
-                us_id="us_123" if ready else None,
-                metric_group="us_completion_quality",
-                metrics={"requirements_clarity": 0.82, "acceptance_criteria_coverage": 0.76},
-                evidence_refs=[f"raw:{project_id}:us_doc"],
-                captured_at=now,
-            ),
-            QualityMetricSnapshot(
-                id=f"metric_{project_id}_tests",
-                project_id=project_id,
-                baseline_id=baseline_id,
-                version_id=version_id,
-                metric_group="test_quality",
-                metrics={"scenario_coverage": 0.78, "automation_coverage": 0.52, "failed_runs": 1 if ready else 0},
-                evidence_refs=[f"raw:{project_id}:test_asset"],
-                captured_at=now,
-            ),
-            QualityMetricSnapshot(
-                id=f"metric_{project_id}_release",
-                project_id=project_id,
-                baseline_id=baseline_id,
-                version_id=version_id,
-                metric_group="release_readiness",
-                metrics={"release_score": project.progress, "open_blockers": project.blocked_items},
-                evidence_refs=["approval:approval_442"] if ready else [],
-                captured_at=now,
-            ),
-        ] if ready else []
-
-        self.project_repository.replace_system_image(
-            project_id,
-            sources=self.raw_assets[project_id],
-            baselines=self.baselines[project_id],
-            relationships=self.context_relationships[project_id],
-            overlays=self.context_object_overlays[project_id],
-            metric_snapshots=self.quality_metric_snapshots[project_id],
-        )
-
-    def _initialize_system_image(self, project_id: str) -> SystemImageResponse:
-        project = self.projects[project_id]
-        if not self.knowledge_objects.get(project_id):
-            object_prefix = f"OBJ-{project_id.upper().replace('-', '_')}"
-            self.knowledge_objects[project_id] = [
-                KnowledgeObject(
-                    id=f"{object_prefix}-CORE",
-                    name=f"{project.name} Core",
-                    type="System",
-                    branch="Official",
-                    confidence="0.72",
-                    relations=["Imported Code", "Historical US", "Regression Tests"],
-                    evidence=["Source import placeholders"],
-                    freshness="just now",
-                ),
-                KnowledgeObject(
-                    id=f"{object_prefix}-US",
-                    name="Historical US Baseline",
-                    type="Feature",
-                    branch="Official",
-                    confidence="0.68",
-                    relations=[f"{project.name} Core", "Quality Loop"],
-                    evidence=["US document import"],
-                    freshness="just now",
-                ),
-                KnowledgeObject(
-                    id=f"{object_prefix}-TESTS",
-                    name="Regression Quality Pack",
-                    type="QualityAssetPack",
-                    branch="Official",
-                    confidence="0.66",
-                    relations=[f"{project.name} Core", "Release Gate"],
-                    evidence=["Historical cases", "Automation scripts"],
-                    freshness="just now",
-                ),
-            ]
-            self.project_repository.replace_knowledge_objects(project_id, self.knowledge_objects[project_id])
-
-        project.system_image_status = "ready"
-        project.progress = max(project.progress, 28)
-        self.projects[project_id] = project
-        self.project_repository.upsert_project(project)
-        version_id = self.versions[project_id][0].id if self.versions.get(project_id) else None
-        self._ensure_system_image_state(project_id, ready=True, version_id=version_id)
-        self._refresh_project_read_models(project_id)
-        return self.get_system_image(project_id)
 
     def get_welcome(self) -> WelcomeResponse:
         recent_conversations = list(self.conversations.values())[:3]
@@ -869,7 +665,8 @@ class ApplicationStore:
             theme=self.settings.theme,
             notification_mode=self.settings.notification_mode,
             model_preset=self.settings.model_preset,
-            custom_model=self._current_custom_model(),
+            custom_model=self._current_custom_model("chat"),
+            model_profiles=self._current_model_profiles(),
         )
         return self.settings
 
@@ -877,8 +674,11 @@ class ApplicationStore:
         language = payload.language or self.settings.language
         theme = payload.theme or self.settings.theme
         notification_mode = payload.notification_mode or self.settings.notification_mode
-        model_preset = payload.model_preset or self.settings.model_preset
-        custom_model = self._current_custom_model()
+        model_route = payload.model_route or "chat"
+        profiles = self._current_model_profiles()
+        profile = profiles[model_route]
+        model_preset = payload.model_preset or profile.model_preset
+        custom_model = profile.custom_model.model_copy(deep=True)
 
         if payload.custom_provider_kind is not None:
             custom_model.provider_kind = payload.custom_provider_kind
@@ -888,30 +688,40 @@ class ApplicationStore:
             custom_model.model_name = payload.custom_model_name.strip()
         if payload.custom_api_key is not None:
             raw_api_key = payload.custom_api_key.strip()
-            self.custom_model_api_key_encrypted = self.settings_persistence.encrypt_api_key(raw_api_key)
+            self.custom_model_api_keys_encrypted[model_route] = self.settings_persistence.encrypt_api_key(raw_api_key)
+            if model_route == "chat":
+                self.custom_model_api_key_encrypted = self.custom_model_api_keys_encrypted.get("chat", "")
             custom_model.has_api_key = bool(raw_api_key)
             custom_model.api_key_masked = self.settings_persistence.mask_api_key(raw_api_key)
         else:
-            custom_model.has_api_key = bool(self.custom_model_api_key_encrypted)
+            custom_model.has_api_key = bool(self.custom_model_api_keys_encrypted.get(model_route))
             if not custom_model.has_api_key:
                 custom_model.api_key_masked = None
 
+        profile.model_preset = model_preset
+        profile.custom_model = custom_model
+        profiles[model_route] = profile
+        chat_preset = profiles["chat"].model_preset
         self.settings = self.llm.build_settings(
             language=language,
             theme=theme,
             notification_mode=notification_mode,
-            model_preset=model_preset,
-            custom_model=custom_model,
+            model_preset=chat_preset,
+            custom_model=profiles["chat"].custom_model,
+            model_profiles=profiles,
         )
-        self.settings_repository.save(self.settings, self.custom_model_api_key_encrypted)
+        self.settings_repository.save(self.settings, self.custom_model_api_keys_encrypted)
         return self.settings
 
     async def test_settings_connection(
         self,
         payload: Optional[StudioSettingsConnectionTestRequest] = None,
     ) -> StudioSettingsConnectionTestResponse:
-        request = payload or StudioSettingsConnectionTestRequest(model_preset=self.settings.model_preset)
-        custom_model = self._current_custom_model()
+        request = payload or StudioSettingsConnectionTestRequest(model_route="chat", model_preset=self.settings.model_preset)
+        model_route = request.model_route or "chat"
+        profiles = self._current_model_profiles()
+        profile = profiles[model_route]
+        custom_model = profile.custom_model.model_copy(deep=True)
         if request.custom_provider_kind is not None:
             custom_model.provider_kind = request.custom_provider_kind
         if request.custom_base_url is not None:
@@ -919,31 +729,50 @@ class ApplicationStore:
         if request.custom_model_name is not None:
             custom_model.model_name = request.custom_model_name.strip()
 
-        custom_api_key = self._get_custom_model_api_key()
+        custom_api_key = self._get_custom_model_api_key(model_route)
         if request.custom_api_key is not None:
             custom_api_key = request.custom_api_key.strip()
         custom_model.has_api_key = bool(custom_api_key)
         custom_model.api_key_masked = self.settings_persistence.mask_api_key(custom_api_key)
 
+        profile.model_preset = request.model_preset or profile.model_preset
+        profile.custom_model = custom_model
+        profiles[model_route] = profile
         settings = self.llm.build_settings(
             language=self.settings.language,
             theme=self.settings.theme,
             notification_mode=self.settings.notification_mode,
-            model_preset=request.model_preset or self.settings.model_preset,
-            custom_model=custom_model,
+            model_preset=profiles["chat"].model_preset,
+            custom_model=profiles["chat"].custom_model,
+            model_profiles=profiles,
         )
-        return await self.llm.test_connection(settings=settings, custom_api_key=custom_api_key)
+        return await self.llm.test_connection(settings=settings, route=model_route, custom_api_key=custom_api_key)
 
-    def _current_custom_model(self) -> CustomModelConfig:
-        custom_model = self.settings.custom_model.model_copy(deep=True)
-        custom_model.has_api_key = bool(self.custom_model_api_key_encrypted)
+    def _current_model_profiles(self):
+        profiles = self.settings.model_profiles or self.llm.build_model_profiles(
+            model_preset=self.settings.model_preset,
+            custom_model=self.settings.custom_model,
+        )
+        refreshed = {}
+        for route, profile in profiles.items():
+            cloned = profile.model_copy(deep=True)
+            cloned.custom_model.has_api_key = bool(self.custom_model_api_keys_encrypted.get(route))
+            if not cloned.custom_model.has_api_key:
+                cloned.custom_model.api_key_masked = None
+            refreshed[route] = cloned
+        return refreshed
+
+    def _current_custom_model(self, model_route: str = "chat") -> CustomModelConfig:
+        profile = self._current_model_profiles()[model_route]
+        custom_model = profile.custom_model.model_copy(deep=True)
+        custom_model.has_api_key = bool(self.custom_model_api_keys_encrypted.get(model_route))
         if not custom_model.has_api_key:
             custom_model.api_key_masked = None
         return custom_model
 
-    def _get_custom_model_api_key(self) -> str:
+    def _get_custom_model_api_key(self, model_route: str = "chat") -> str:
         try:
-            return self.settings_persistence.decrypt_api_key(self.custom_model_api_key_encrypted)
+            return self.settings_persistence.decrypt_api_key(self.custom_model_api_keys_encrypted.get(model_route, ""))
         except RuntimeError:
             return ""
 
@@ -980,7 +809,7 @@ class ApplicationStore:
         self.project_repository.replace_runs(project.id, [])
         self.project_repository.replace_approvals(project.id, [])
         self.project_repository.replace_knowledge_objects(project.id, [])
-        self._ensure_system_image_state(project.id, ready=False)
+        self.system_image_service.ensure_state(project.id, ready=False)
         self.get_or_create_conversation("project", project.id, project.name)
         return project
 
@@ -1009,31 +838,7 @@ class ApplicationStore:
         return next(item for item in self.knowledge_objects[project_id] if item.id == object_id)
 
     def get_system_image(self, project_id: str) -> SystemImageResponse:
-        self._refresh_project_read_models(project_id)
-        project = self.projects[project_id]
-        baseline = self.baselines[project_id][0] if self.baselines.get(project_id) else None
-        source_counts = {
-            source_type: sum(1 for source in self.raw_assets[project_id] if source.source_type == source_type)
-            for source_type in ["code", "us_doc", "test_asset"]
-        }
-        summary = (
-            f"{project.name} system image is {project.system_image_status}. "
-            f"Sources: code={source_counts['code']}, us_doc={source_counts['us_doc']}, "
-            f"test_asset={source_counts['test_asset']}. "
-            f"Baseline {baseline.id if baseline else 'not initialized'} has "
-            f"{baseline.object_count if baseline else 0} objects and "
-            f"{baseline.relationship_count if baseline else 0} relationships."
-        )
-        return SystemImageResponse(
-            project=project,
-            summary=summary,
-            baselines=self.baselines[project_id],
-            sources=self.raw_assets[project_id],
-            objects=self.knowledge_objects[project_id],
-            relationships=self.context_relationships[project_id],
-            overlays=self.context_object_overlays[project_id],
-            metric_snapshots=self.quality_metric_snapshots[project_id],
-        )
+        return self.system_image_service.get(project_id)
 
     def get_run_detail(self, project_id: str, run_id: str) -> RunDetail:
         self._refresh_project_read_models(project_id)
@@ -1267,50 +1072,206 @@ class ApplicationStore:
         }
 
     async def create_tool_invocation(self, payload: ToolInvocationRequest) -> ToolInvocation:
-        invocation = ToolInvocation(
-            id=f"tool_{uuid4().hex[:10]}",
-            conversation_id=payload.conversation_id,
-            tool_id=payload.tool_id,
-            status="pending",
-            summary=f"Preparing {payload.tool_id}",
-            initiator_surface=payload.initiator_surface,
-            initiator_actor=payload.initiator_actor,
-            target_scope=payload.target_scope,
-            input_payload=payload.input,
+        return await self.tool_invocation_runtime.create(payload)
+
+    async def _execute_tool_invocation(self, invocation: ToolInvocation) -> ToolInvocation:
+        return await self.tool_invocation_runtime.execute(invocation)
+
+    async def _gate_tool_invocation_if_needed(self, invocation: ToolInvocation) -> bool:
+        return await self.tool_invocation_runtime.gate_if_needed(invocation)
+
+    def _tool_definition(self, tool_id: str) -> ToolDefinition | None:
+        return self.tool_invocation_runtime.tool_definition(tool_id)
+
+    async def confirm_tool_invocation(self, invocation_id: str) -> ToolInvocation:
+        return await self.tool_invocation_runtime.confirm(invocation_id)
+
+    def _pending_confirmation_invocation(self, conversation_id: str, content: str) -> ToolInvocation | None:
+        explicit_match = re.search(r"tool_[a-f0-9]+", content)
+        explicit_invocation_id = explicit_match.group(0) if explicit_match else None
+        candidates = [
+            invocation
+            for invocation in self.tool_invocations.values()
+            if invocation.conversation_id == conversation_id and invocation.status == "waiting_confirmation"
+        ]
+        if explicit_invocation_id:
+            return next((invocation for invocation in candidates if invocation.id == explicit_invocation_id), None)
+        return candidates[-1] if candidates else None
+
+    async def _handle_confirmation_message_if_any(self, conversation_id: str, content: str) -> Dict[str, Any] | None:
+        if not self.tool_governance.is_confirmation_message(content):
+            return None
+
+        invocation = self._pending_confirmation_invocation(conversation_id, content)
+        if invocation is None:
+            return None
+
+        goal_id = invocation.input_payload.get("agent_goal_id")
+        if isinstance(goal_id, str) and goal_id in self.agent_goals and self.agent_goals[goal_id].status == "paused":
+            goal = await self.agent_service.resume_goal(goal_id)
+            return {"agent_goal": goal, "tool_invocation": self.tool_invocations[invocation.id]}
+
+        confirmed = await self.confirm_tool_invocation(invocation.id)
+        return {"tool_invocation": confirmed}
+
+    async def _handle_source_binding_message_if_any(self, conversation_id: str, content: str) -> Dict[str, Any] | None:
+        conversation = self.conversations[conversation_id]
+        active_goal = self.agent_service.active_goal_for_conversation(conversation_id)
+        if active_goal is None or active_goal.status != "paused" or active_goal.pause_reason != "missing_source_binding":
+            return None
+
+        from .conversation_orchestrator import ConversationOrchestrator
+
+        source_specs = ConversationOrchestrator._extract_system_image_source_specs(content)
+        if not source_specs:
+            return None
+
+        blocked_step = next(
+            (
+                step
+                for step in active_goal.steps
+                if step.status == "blocked" and step.selected_tool_id == "system_image.sources.register"
+            ),
+            None,
         )
-        self.tool_invocations[invocation.id] = invocation
-        self.conversation_repository.upsert_tool_invocation(invocation)
+        if blocked_step is None:
+            return None
 
-        if payload.tool_id == "project.create":
-            name = str(payload.input.get("name") or "New Quality Project")
-            await self._run_project_create_invocation(invocation.id, name)
-        elif payload.tool_id == "version.create":
-            project_id = str(payload.input.get("project_id") or "")
-            version_name = str(payload.input.get("name") or "New Version")
-            await self._run_version_create_invocation(invocation.id, project_id, version_name)
-        elif payload.tool_id == "quality.scenario.generate":
-            project_id = str(payload.input.get("project_id") or "")
-            us_id = str(payload.input.get("us_id") or "")
-            await self._run_scenario_invocation(invocation.id, project_id, us_id)
-        elif payload.tool_id == "baseline.initialize":
-            project_id = str(payload.input.get("project_id") or "")
-            await self._run_baseline_initialize_invocation(invocation.id, project_id)
-        elif payload.tool_id.startswith("query."):
-            await self._run_query_invocation(invocation.id)
-        else:
-            invocation.status = "failed"
-            invocation.summary = f"Unknown tool: {payload.tool_id}"
-            invocation.result = ToolResult(
-                invocation_id=invocation.id,
-                status="failed",
-                summary=invocation.summary,
-            )
-            self.conversation_repository.upsert_tool_invocation(invocation)
+        existing_specs = blocked_step.tool_input_payload.get("source_specs")
+        specs_by_type: Dict[str, Dict[str, str]] = {}
+        if isinstance(existing_specs, list):
+            for item in existing_specs:
+                if isinstance(item, dict) and isinstance(item.get("source_type"), str):
+                    specs_by_type[item["source_type"]] = {str(key): str(value) for key, value in item.items()}
+        for spec in source_specs:
+            specs_by_type[spec["source_type"]] = spec
+        blocked_step.tool_input_payload["source_specs"] = [
+            specs_by_type[source_type]
+            for source_type in ("code", "us_doc", "test_asset")
+            if source_type in specs_by_type
+        ]
 
-        return invocation
+        self.conversation_repository.upsert_goal(active_goal)
+        self._upsert_goal_in_conversation(active_goal)
+        self.record_agent_goal_audit_event(
+            active_goal,
+            action="agent.goal.source_binding_received",
+            status=active_goal.status,
+            summary=f"Source bindings received for AgentGoal: {active_goal.title}",
+            actor=self.user.id,
+            actor_kind="user",
+            metadata={"source_types": [spec["source_type"] for spec in source_specs]},
+        )
+        await self.append_message(
+            conversation_id,
+            "assistant",
+            "I received the source bindings and will continue the system image build.",
+            metadata={
+                "planner_kind": "source_binding_received",
+                "agent_goal_id": active_goal.id,
+                "source_types": [spec["source_type"] for spec in source_specs],
+            },
+        )
+        goal = await self.agent_service.resume_goal(active_goal.id)
+        return {"agent_goal": goal}
 
     def get_tool_invocation(self, invocation_id: str) -> ToolInvocation:
         return self.tool_invocations[invocation_id]
+
+    def list_tool_invocations(
+        self,
+        *,
+        conversation_id: Optional[str] = None,
+        agent_goal_id: Optional[str] = None,
+        tool_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[ToolInvocation]:
+        invocations = list(self.tool_invocations.values())
+        if conversation_id is not None:
+            invocations = [item for item in invocations if item.conversation_id == conversation_id]
+        if agent_goal_id is not None:
+            invocations = [
+                item
+                for item in invocations
+                if item.input_payload.get("agent_goal_id") == agent_goal_id
+            ]
+        if tool_id is not None:
+            canonical_tool_id = self.tool_invocation_runtime.canonical_tool_id(tool_id)
+            invocations = [item for item in invocations if item.tool_id == canonical_tool_id]
+        if status is not None:
+            invocations = [item for item in invocations if item.status == status]
+        return sorted(invocations, key=self._tool_invocation_created_at)
+
+    def _tool_invocation_created_at(self, invocation: ToolInvocation) -> str:
+        created_events = [
+            event.occurred_at
+            for event in self.audit_events.values()
+            if event.tool_invocation_id == invocation.id and event.action == "tool.invocation.created"
+        ]
+        return min(created_events) if created_events else invocation.id
+
+    def record_audit_event(self, event: AuditEvent) -> None:
+        self.audit_events[event.id] = event
+        self.conversation_repository.upsert_audit_event(event)
+
+    def record_agent_goal_audit_event(
+        self,
+        goal: AgentGoal,
+        *,
+        action: str,
+        status: str | None = None,
+        summary: str,
+        actor: str = "agent",
+        actor_kind: str = "agent",
+        metadata: Dict[str, Any] | None = None,
+    ) -> None:
+        object_refs: List[str] = []
+        if goal.project_id:
+            object_refs.append(f"project:{goal.project_id}")
+        if goal.us_id:
+            object_refs.append(f"us:{goal.us_id}")
+        event_metadata: Dict[str, Any] = {
+            "workflow_id": goal.workflow_id,
+            "autonomy_level": goal.autonomy_level,
+            "max_steps": goal.max_steps,
+            "steps_completed": goal.steps_completed,
+            "pause_reason": goal.pause_reason,
+        }
+        if metadata:
+            event_metadata.update(metadata)
+        self.record_audit_event(
+            AuditEvent(
+                id=f"audit_{uuid4().hex[:12]}",
+                occurred_at=_now_iso(),
+                actor=actor,
+                actor_kind=actor_kind,  # type: ignore[arg-type]
+                action=action,
+                entity_type="agent_goal",
+                entity_id=goal.id,
+                status=status or goal.status,  # type: ignore[arg-type]
+                summary=summary,
+                conversation_id=goal.conversation_id,
+                agent_goal_id=goal.id,
+                object_refs=object_refs,
+                metadata=event_metadata,
+            )
+        )
+
+    def list_audit_events(
+        self,
+        *,
+        conversation_id: str | None = None,
+        tool_invocation_id: str | None = None,
+        agent_goal_id: str | None = None,
+    ) -> List[AuditEvent]:
+        events = list(self.audit_events.values())
+        if conversation_id is not None:
+            events = [event for event in events if event.conversation_id == conversation_id]
+        if tool_invocation_id is not None:
+            events = [event for event in events if event.tool_invocation_id == tool_invocation_id]
+        if agent_goal_id is not None:
+            events = [event for event in events if event.agent_goal_id == agent_goal_id]
+        return sorted(events, key=lambda event: event.occurred_at)
 
     def create_agent_goal(self, payload: AgentGoalCreateRequest) -> AgentGoal:
         goal = AgentGoal(
@@ -1322,6 +1283,7 @@ class ApplicationStore:
             status="pending",
             summary=payload.summary,
             autonomy_level=payload.autonomy_level,
+            max_steps=payload.max_steps,
             workflow_id=f"wf_{uuid4().hex[:8]}",
             steps=payload.steps
             or [
@@ -1333,10 +1295,188 @@ class ApplicationStore:
         self.agent_goals[goal.id] = goal
         self.conversation_repository.upsert_goal(goal)
         self._upsert_goal_in_conversation(goal)
+        self.record_agent_goal_audit_event(
+            goal,
+            action="agent.goal.created",
+            status="pending",
+            summary=f"Agent goal created: {goal.title}",
+            actor="system",
+            actor_kind="system",
+        )
         return goal
 
     def get_agent_goal(self, goal_id: str) -> AgentGoal:
         return self.agent_goals[goal_id]
+
+    def get_agent_goal_checkpoint(self, goal_id: str):
+        return self.agent_workflow_runtime.checkpoint(goal_id)
+
+    def get_agent_memory_context(
+        self,
+        *,
+        conversation_id: Optional[str] = None,
+        agent_goal_id: Optional[str] = None,
+        space_ref: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        conversation = self._conversation_for_memory_query(
+            conversation_id=conversation_id,
+            agent_goal_id=agent_goal_id,
+            space_ref=space_ref,
+        )
+        goal = self.agent_goals.get(agent_goal_id) if agent_goal_id else self.agent_service.active_goal_for_conversation(conversation.id)
+        memory_context = self.agent_memory.build_context(conversation, tools=self.tools)
+        latest_checkpoint = self._latest_checkpoint_for_conversation(conversation.id)
+        project_id = conversation.project_id
+
+        return {
+            "conversation_id": conversation.id,
+            "agent_goal_id": goal.id if goal else None,
+            "context_hash": memory_context_hash(memory_context),
+            "context_summary": memory_context_summary(memory_context),
+            "recent_turn_count": memory_context.recent_turn_count,
+            "checkpoint_count": memory_context.checkpoint_count,
+            "working_memory": self._working_memory_view(goal),
+            "conversation_memory": {
+                "latest_summary_checkpoint_id": latest_checkpoint.id if latest_checkpoint else None,
+                "recent_message_refs": [message.id for message in conversation.messages[-6:]],
+                "checkpoint_count": memory_context.checkpoint_count,
+                "recent_turn_count": memory_context.recent_turn_count,
+            },
+            "project_long_term_memory": self._project_long_term_memory_view(project_id),
+            "candidate_memory": self._candidate_memory_view(conversation, project_id),
+            "tool_catalog": {
+                "tool_count": len(self.tools),
+                "tool_ids": [tool.tool_id for tool in self.tools],
+            },
+        }
+
+    async def create_agent_memory_checkpoint(
+        self,
+        *,
+        conversation_id: Optional[str] = None,
+        agent_goal_id: Optional[str] = None,
+        space_ref: Optional[str] = None,
+        created_by: str = "user",
+    ) -> ConversationSummaryCheckpoint:
+        conversation = self._conversation_for_memory_query(
+            conversation_id=conversation_id,
+            agent_goal_id=agent_goal_id,
+            space_ref=space_ref,
+        )
+        latest_checkpoint = self._latest_checkpoint_for_conversation(conversation.id)
+        checkpoint = self._build_summary_checkpoint(conversation, force=True, created_by=created_by)
+        if checkpoint is None:
+            if latest_checkpoint is not None:
+                return latest_checkpoint
+            raise ValueError("No completed text messages are available to checkpoint.")
+        if latest_checkpoint and latest_checkpoint.message_range_end == checkpoint.message_range_end:
+            return latest_checkpoint
+
+        self.conversation_summary_checkpoints[checkpoint.id] = checkpoint
+        conversation.latest_summary_checkpoint_id = checkpoint.id
+        self.conversation_repository.upsert_summary_checkpoint(checkpoint)
+        self.conversation_repository.upsert_conversation(conversation)
+        await self._push_event(
+            conversation.id,
+            event_type="agent.memory.checkpointed",
+            entity_type="conversation",
+            entity_id=conversation.id,
+            mutation_kind="patch",
+            patch={"latest_summary_checkpoint_id": checkpoint.id},
+            query_keys=[["conversation", conversation.id], ["agent-memory", conversation.id]],
+        )
+        return checkpoint
+
+    def _conversation_for_memory_query(
+        self,
+        *,
+        conversation_id: Optional[str],
+        agent_goal_id: Optional[str],
+        space_ref: Optional[str],
+    ) -> ConversationSession:
+        if agent_goal_id:
+            goal = self.agent_goals[agent_goal_id]
+            return self.conversations[goal.conversation_id]
+        if conversation_id:
+            return self.conversations[conversation_id]
+        if space_ref:
+            space_type, _, space_id = space_ref.partition(":")
+            if not space_type or not space_id:
+                raise KeyError(space_ref)
+            for conversation in self.conversations.values():
+                if conversation.space_type == space_type and conversation.space_id == space_id:
+                    return conversation
+                if space_type == "project" and conversation.project_id == space_id:
+                    return conversation
+        raise KeyError("conversation_id, agent_goal_id, or space_ref is required")
+
+    @staticmethod
+    def _working_memory_view(goal: AgentGoal | None) -> Dict[str, Any]:
+        if goal is None:
+            return {
+                "active_goal_id": None,
+                "status": "idle",
+                "current_step_id": None,
+                "pause_reason": None,
+            }
+        current_step = next((step for step in goal.steps if step.status == "running"), None)
+        if current_step is None:
+            current_step = next((step for step in goal.steps if step.status == "blocked"), None)
+        return {
+            "active_goal_id": goal.id,
+            "status": goal.status,
+            "current_step_id": current_step.id if current_step else None,
+            "pause_reason": goal.pause_reason,
+            "steps_completed": goal.steps_completed,
+            "max_steps": goal.max_steps,
+        }
+
+    def _project_long_term_memory_view(self, project_id: Optional[str]) -> Dict[str, Any]:
+        if not project_id or project_id not in self.projects:
+            return {
+                "project_id": project_id,
+                "system_image_status": None,
+                "baseline_refs": [],
+                "source_refs": [],
+                "context_object_refs": [],
+                "metric_groups": [],
+            }
+        project = self.projects[project_id]
+        return {
+            "project_id": project_id,
+            "system_image_status": project.system_image_status,
+            "baseline_refs": [f"baseline:{baseline.id}:{baseline.status}" for baseline in self.baselines.get(project_id, [])],
+            "source_refs": [
+                f"raw_asset:{source.id}:{source.source_type}:{source.ingestion_status}"
+                for source in self.raw_assets.get(project_id, [])
+            ],
+            "context_object_refs": [
+                f"context_object:{item.id}:{item.type}"
+                for item in self.knowledge_objects.get(project_id, [])[:12]
+            ],
+            "metric_groups": sorted({metric.metric_group for metric in self.quality_metric_snapshots.get(project_id, [])}),
+        }
+
+    def _candidate_memory_view(self, conversation: ConversationSession, project_id: Optional[str]) -> Dict[str, Any]:
+        session_refs = [
+            binding.candidate_object_ref
+            for binding in self.session_knowledge_bindings.values()
+            if binding.conversation_id == conversation.id
+        ]
+        overlay_refs = []
+        if project_id:
+            overlay_refs = [
+                f"context_overlay:{overlay.id}:{overlay.status}"
+                for overlay in self.context_object_overlays.get(project_id, [])
+                if overlay.status == "candidate"
+            ]
+        return {
+            "session_only_refs": session_refs,
+            "candidate_overlay_refs": overlay_refs,
+        }
+
+    def get_agent_swarm(self, swarm_id: str) -> AgentSwarmRun:
+        return self.agent_swarm_coordinator.get_swarm(swarm_id)
 
     def _upsert_goal_in_conversation(self, goal: AgentGoal) -> None:
         conversation = self.conversations[goal.conversation_id]
@@ -1369,9 +1509,17 @@ class ApplicationStore:
         checkpoints.sort(key=lambda checkpoint: checkpoint.created_at)
         return checkpoints[-1]
 
-    def _build_summary_checkpoint(self, conversation: ConversationSession) -> Optional[ConversationSummaryCheckpoint]:
+    def _build_summary_checkpoint(
+        self,
+        conversation: ConversationSession,
+        *,
+        force: bool = False,
+        created_by: str = "system",
+    ) -> Optional[ConversationSummaryCheckpoint]:
         text_messages = self._recent_text_messages(conversation)
-        if len(text_messages) < 8:
+        if len(text_messages) < 8 and not force:
+            return None
+        if not text_messages:
             return None
 
         latest_checkpoint = self._latest_checkpoint_for_conversation(conversation.id)
@@ -1384,11 +1532,13 @@ class ApplicationStore:
                     break
 
         checkpoint_candidates = text_messages[start_index:]
-        if len(checkpoint_candidates) < 6:
+        if not checkpoint_candidates:
+            return None
+        if len(checkpoint_candidates) < 6 and not force:
             return None
 
-        messages_to_summarize = checkpoint_candidates[:-4]
-        if len(messages_to_summarize) < 4:
+        messages_to_summarize = checkpoint_candidates if force else checkpoint_candidates[:-4]
+        if len(messages_to_summarize) < 4 and not force:
             return None
 
         summary_lines: list[str] = []
@@ -1413,41 +1563,15 @@ class ApplicationStore:
             summary_text="\n".join(summary_lines),
             summary_object_refs=[],
             summary_token_count=len(" ".join(summary_lines).split()),
-            created_by="system",
+            created_by=created_by,  # type: ignore[arg-type]
             created_at=_now_iso(),
         )
 
     def _conversation_history_snapshot(self, conversation: ConversationSession) -> str:
-        segments: list[str] = []
-        latest_checkpoint = self._latest_checkpoint_for_conversation(conversation.id)
-        if latest_checkpoint:
-            segments.append(f"Checkpoint summary:\n{latest_checkpoint.summary_text}")
+        return self.agent_memory.build_context(conversation).history_snapshot
 
-        recent_messages = self._recent_text_messages(conversation)[-6:]
-        if recent_messages:
-            turns = []
-            for message in recent_messages:
-                text = " ".join(block.text.strip() for block in message.blocks if block.text.strip())
-                if not text:
-                    continue
-                actor = "User" if message.role == "user" else "Agent"
-                normalized_text = re.sub(r"\s+", " ", text)
-                turns.append(f"{actor}: {normalized_text}")
-            if turns:
-                segments.append("Recent turns:\n" + "\n".join(turns))
-
-        bindings = [
-            binding.candidate_object_ref
-            for binding in self.session_knowledge_bindings.values()
-            if binding.conversation_id == conversation.id
-        ]
-        if bindings:
-            segments.append("Session knowledge:\n" + "\n".join(f"- {ref}" for ref in bindings))
-
-        if not segments:
-            return "No prior conversation history."
-
-        return "\n\n".join(segments)
+    def _planner_memory_context(self, conversation: ConversationSession):
+        return self.agent_memory.build_context(conversation, tools=self.tools)
 
     async def _maybe_create_summary_checkpoint(self, conversation: ConversationSession) -> None:
         checkpoint = self._build_summary_checkpoint(conversation)
@@ -1506,6 +1630,7 @@ class ApplicationStore:
             mutation_kind="patch",
             patch={"message_id": message.id},
             query_keys=[["conversation", conversation_id]],
+            payload={"message_id": message.id, "message": message.model_dump()},
         )
         return message
 
@@ -1518,20 +1643,38 @@ class ApplicationStore:
         mutation_kind: str,
         patch: Dict[str, Any],
         query_keys: List[List[str]],
+        *,
+        snapshot_hint: bool = False,
+        payload: Dict[str, Any] | None = None,
     ) -> None:
         version_key = f"{entity_type}:{entity_id}"
         self.entity_versions[version_key] += 1
+        event_id = f"evt_{uuid4().hex[:10]}"
         event = EventPayload(
-            event_id=f"evt_{uuid4().hex[:10]}",
+            event_id=event_id,
             event_type=event_type,
+            occurred_at=_now_iso(),
+            correlation_id=str(patch.get("correlation_id") or patch.get("tool_invocation_id") or patch.get("agent_goal_id") or event_id),
+            conversation_id=conversation_id,
+            tool_invocation_id=entity_id if entity_type == "tool_invocation" else self._optional_str(patch.get("tool_invocation_id")),
+            agent_goal_id=entity_id if entity_type == "agent_goal" else self._optional_str(patch.get("agent_goal_id")),
+            agent_step_id=self._optional_str(patch.get("agent_step_id")),
+            swarm_run_id=entity_id if entity_type == "agent_swarm" else self._optional_str(patch.get("swarm_run_id")),
+            assignment_id=self._optional_str(patch.get("assignment_id")),
+            task_id=entity_id if entity_type == "task" else self._optional_str(patch.get("task_id")),
+            run_id=entity_id if entity_type == "run" else self._optional_str(patch.get("run_id")),
             entity_type=entity_type,
             entity_id=entity_id,
             entity_version=self.entity_versions[version_key],
             mutation_kind=mutation_kind,  # type: ignore[arg-type]
             patch=patch,
             query_keys=query_keys,
+            snapshot_hint=snapshot_hint,
+            payload=self._event_payload(entity_type, entity_id, patch, payload),
         )
         await self._get_or_create_event_queue(conversation_id).put(event)
+        if event.swarm_run_id:
+            await self._get_or_create_swarm_queue(event.swarm_run_id).put(event)
 
     async def _push_goal_event(
         self,
@@ -1540,20 +1683,60 @@ class ApplicationStore:
         mutation_kind: str,
         patch: Dict[str, Any],
         query_keys: List[List[str]],
+        *,
+        snapshot_hint: bool = False,
+        payload: Dict[str, Any] | None = None,
     ) -> None:
         version_key = f"agent_goal:{goal_id}"
         self.entity_versions[version_key] += 1
+        goal = self.agent_goals.get(goal_id)
+        event_id = f"evt_{uuid4().hex[:10]}"
         event = EventPayload(
-            event_id=f"evt_{uuid4().hex[:10]}",
+            event_id=event_id,
             event_type=event_type,
+            occurred_at=_now_iso(),
+            correlation_id=str(patch.get("correlation_id") or patch.get("tool_invocation_id") or goal_id),
+            conversation_id=goal.conversation_id if goal else self._optional_str(patch.get("conversation_id")),
+            tool_invocation_id=self._optional_str(patch.get("tool_invocation_id")),
+            agent_goal_id=goal_id,
+            agent_step_id=self._optional_str(patch.get("agent_step_id")),
+            swarm_run_id=self._optional_str(patch.get("swarm_run_id")),
+            assignment_id=self._optional_str(patch.get("assignment_id")),
+            task_id=self._optional_str(patch.get("task_id")),
+            run_id=self._optional_str(patch.get("run_id")),
             entity_type="agent_goal",
             entity_id=goal_id,
             entity_version=self.entity_versions[version_key],
             mutation_kind=mutation_kind,  # type: ignore[arg-type]
             patch=patch,
             query_keys=query_keys,
+            snapshot_hint=snapshot_hint,
+            payload=self._event_payload("agent_goal", goal_id, patch, payload),
         )
         await self._get_or_create_goal_queue(goal_id).put(event)
+
+    def _event_payload(
+        self,
+        entity_type: str,
+        entity_id: str,
+        patch: Dict[str, Any],
+        payload: Dict[str, Any] | None,
+    ) -> Dict[str, Any]:
+        if payload is not None:
+            return payload
+        if entity_type == "agent_goal" and entity_id in self.agent_goals:
+            return {"patch": patch, "agent_goal": self.agent_goals[entity_id].model_dump()}
+        if entity_type == "agent_swarm" and entity_id in self.agent_swarms:
+            return {"patch": patch, "agent_swarm": self.agent_swarms[entity_id].model_dump()}
+        if entity_type == "tool_invocation" and entity_id in self.tool_invocations:
+            return {"patch": patch, "tool_invocation": self.tool_invocations[entity_id].model_dump()}
+        return patch
+
+    @staticmethod
+    def _optional_str(value: Any) -> str | None:
+        if isinstance(value, str) and value:
+            return value
+        return None
 
     async def _emit_tool_status(
         self,
@@ -1586,54 +1769,10 @@ class ApplicationStore:
             )
 
     def _conversation_system_prompt(self, conversation: ConversationSession) -> str:
-        return (
-            "You are Nasus Agent, an agent-first quality orchestration assistant. "
-            "Be concise, grounded in the provided workspace context, and action-oriented. "
-            "Explain project, version, run, governance, or knowledge status clearly. "
-            "Do not invent objects that are not present in the context snapshot."
-        )
+        return self.agent_memory.build_context(conversation).system_prompt
 
     def _conversation_context_snapshot(self, conversation: ConversationSession) -> str:
-        sections: list[str] = [f"space_type={conversation.space_type}", f"space_id={conversation.space_id}"]
-
-        if conversation.project_id and conversation.project_id in self.projects:
-            project = self.projects[conversation.project_id]
-            sections.append(
-                f"project={project.name}; progress={project.progress}; risk={project.risk}; blocked_items={project.blocked_items}; pending_approvals={project.pending_approvals}; system_image={project.system_image_status}"
-            )
-
-        if conversation.project_id and conversation.project_id in self.versions and self.versions[conversation.project_id]:
-            version = self.versions[conversation.project_id][0]
-            sections.append(
-                f"version={version.name}; status={version.status}; us_closed={version.us_closed}; us_total={version.us_total}; pending_runs={version.pending_runs}; pending_approvals={version.pending_approvals}"
-            )
-
-        if conversation.us_id:
-            us_item = next(
-                (
-                    item
-                    for items in self.us_items.values()
-                    for item in items
-                    if item.id == conversation.us_id
-                ),
-                None,
-            )
-            if us_item is not None:
-                sections.append(
-                    f"us={us_item.id}; title={us_item.title}; owner={us_item.owner}; status={us_item.status}; risk={us_item.risk}; progress={us_item.progress}; next_action={us_item.next_action}"
-                )
-                for lane in self.asset_lanes.get(us_item.id, []):
-                    sections.append(f"asset_lane={lane.label}; status={lane.status}; summary={lane.summary}")
-
-        if conversation.project_id:
-            for run in self.runs.get(conversation.project_id, [])[:3]:
-                sections.append(f"run={run.id}; title={run.title}; status={run.status}; channel={run.channel}; summary={run.summary}")
-            for approval in self.approvals.get(conversation.project_id, [])[:3]:
-                sections.append(f"approval={approval.id}; title={approval.title}; status={approval.status}; summary={approval.summary}")
-            for item in self.knowledge_objects.get(conversation.project_id, [])[:3]:
-                sections.append(f"knowledge={item.id}; name={item.name}; branch={item.branch}; type={item.type}; freshness={item.freshness}")
-
-        return "\n".join(sections)
+        return self.agent_memory.build_context(conversation).context_snapshot
 
     async def _emit_llm_answer(
         self,
@@ -1679,17 +1818,13 @@ class ApplicationStore:
         fallback_text: str,
         system_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
-        history_snapshot = self._conversation_history_snapshot(conversation)
-        recent_turn_count = len(self._recent_text_messages(conversation)[-6:])
-        checkpoint_count = sum(
-            1 for checkpoint in self.conversation_summary_checkpoints.values() if checkpoint.conversation_id == conversation.id
-        )
+        memory_context = self.agent_memory.build_context(conversation)
         reply = await self.llm.generate_reply(
             settings=self.get_settings(),
-            system_prompt=system_prompt or self._conversation_system_prompt(conversation),
+            system_prompt=system_prompt or memory_context.system_prompt,
             user_message=user_message,
-            context_snapshot=self._conversation_context_snapshot(conversation),
-            history_snapshot=history_snapshot,
+            context_snapshot=memory_context.context_snapshot,
+            history_snapshot=memory_context.history_snapshot,
             fallback_text=fallback_text,
             custom_api_key=self._get_custom_model_api_key(),
         )
@@ -1701,8 +1836,8 @@ class ApplicationStore:
                 "llm_mode": reply.mode,
                 "llm_reason": reply.reason,
                 "settings_preset": self.settings.model_preset,
-                "memory_recent_turns": recent_turn_count,
-                "memory_checkpoint_count": checkpoint_count,
+                "memory_recent_turns": memory_context.recent_turn_count,
+                "memory_checkpoint_count": memory_context.checkpoint_count,
             },
         }
 
@@ -1753,7 +1888,14 @@ class ApplicationStore:
     async def handle_message(self, conversation_id: str, content: str) -> Dict[str, Any]:
         conversation = self.conversations[conversation_id]
         await self.append_message(conversation_id, "user", content)
-        decision = self.orchestrator.plan(conversation, content)
+        source_binding_result = await self._handle_source_binding_message_if_any(conversation_id, content)
+        if source_binding_result is not None:
+            return source_binding_result
+        confirmation_result = await self._handle_confirmation_message_if_any(conversation_id, content)
+        if confirmation_result is not None:
+            return confirmation_result
+
+        decision = await self.planner.plan(conversation, content)
 
         if decision.kind == "clarification" and decision.clarification:
             await self.append_message(
@@ -1785,7 +1927,7 @@ class ApplicationStore:
             return {"tool_invocations": tool_invocations}
 
         if decision.kind == "agent_goal" and decision.agent_goal:
-            goal = await self.agent_loop_runtime.start_goal(conversation_id, decision.agent_goal)
+            goal = await self.agent_service.start_from_proposal(conversation_id, decision.agent_goal)
             return {"agent_goal": goal}
 
         tool_invocation = ToolInvocation(
@@ -1904,374 +2046,6 @@ class ApplicationStore:
             )
         return "Governance is currently clear. There are no waiting approvals blocking the project at this moment."
 
-    async def _run_project_create_invocation(self, invocation_id: str, project_name: str) -> None:
-        invocation = self.tool_invocations[invocation_id]
-        await self._emit_tool_status(
-            invocation_id,
-            "running",
-            f"Creating project {project_name}",
-            [["build"], ["dashboard"], ["welcome"], ["projects"]],
-        )
-        await asyncio.sleep(0.2)
-        project = self.create_project(project_name)
-        if invocation.conversation_id:
-            await self.append_message(
-                invocation.conversation_id,
-                "assistant",
-                f"I created the draft project **{project.name}**. Next we should connect a Git repository, import US documents, and confirm whether UX boards or historical quality assets are available before initializing the Official System Image.",
-            )
-        await self._emit_tool_status(
-            invocation_id,
-            "completed",
-            f"Created draft project {project.name}",
-            [["build"], ["dashboard"], ["welcome"], ["projects"]],
-            ToolResult(
-                invocation_id=invocation_id,
-                status="completed",
-                summary=f"Created draft project {project.name}",
-                object_refs=[f"project:{project.id}"],
-                next_recommended_tools=["baseline.initialize", "version.create"],
-            ),
-        )
-
-    async def _run_version_create_invocation(self, invocation_id: str, project_id: str, version_name: str) -> None:
-        invocation = self.tool_invocations[invocation_id]
-        await self._emit_tool_status(
-            invocation_id,
-            "running",
-            f"Creating version branch {version_name}",
-            [["project", project_id], ["dashboard"], ["welcome"]],
-        )
-        await asyncio.sleep(0.2)
-        version = self.create_version(project_id, version_name)
-        if invocation.conversation_id:
-            await self.append_message(
-                invocation.conversation_id,
-                "assistant",
-                f"The version branch **{version.name}** is active. US board, risk pulse, and asset pack generation are now available in Version Space.",
-            )
-        await self._emit_tool_status(
-            invocation_id,
-            "completed",
-            f"Created version {version.name}",
-            [["project", project_id], ["dashboard"], ["welcome"]],
-            ToolResult(
-                invocation_id=invocation_id,
-                status="completed",
-                summary=f"Created version {version.name}",
-                object_refs=[f"version:{version.id}"],
-                next_recommended_tools=["quality.scenario.generate"],
-            ),
-        )
-
-    async def _run_baseline_initialize_invocation(self, invocation_id: str, project_id: str) -> None:
-        invocation = self.tool_invocations[invocation_id]
-        if not project_id:
-            invocation.status = "failed"
-            invocation.summary = "project_id is required to initialize a system image"
-            invocation.result = ToolResult(
-                invocation_id=invocation.id,
-                status="failed",
-                summary=invocation.summary,
-            )
-            self.conversation_repository.upsert_tool_invocation(invocation)
-            return
-
-        await self._emit_tool_status(
-            invocation_id,
-            "running",
-            "Initializing Official System Image from code, US docs, and test assets",
-            [["project", project_id], ["system-image", project_id], ["dashboard"]],
-        )
-        await asyncio.sleep(0.2)
-        system_image = self._initialize_system_image(project_id)
-        if invocation.conversation_id:
-            await self.append_message(
-                invocation.conversation_id,
-                "assistant",
-                (
-                    f"The Official System Image for **{system_image.project.name}** is ready. "
-                    f"I indexed {len(system_image.sources)} source groups, materialized "
-                    f"{len(system_image.objects)} context objects, {len(system_image.relationships)} relationships, "
-                    f"and {len(system_image.metric_snapshots)} quality metric snapshots."
-                ),
-            )
-        await self._emit_tool_status(
-            invocation_id,
-            "completed",
-            f"Initialized system image for {system_image.project.name}",
-            [["project", project_id], ["system-image", project_id], ["dashboard"], ["knowledge", project_id]],
-            ToolResult(
-                invocation_id=invocation_id,
-                status="completed",
-                summary=system_image.summary,
-                object_refs=[f"project:{project_id}", f"baseline:{system_image.baselines[0].id}"],
-                evidence_refs=[source.id for source in system_image.sources],
-                next_recommended_tools=["query.system_image.status", "version.create"],
-            ),
-        )
-
-    async def _run_scenario_invocation(self, invocation_id: str, project_id: str, us_id: str) -> None:
-        invocation = self.tool_invocations[invocation_id]
-        if not invocation.conversation_id:
-            return
-
-        conversation = self.conversations.get(invocation.conversation_id)
-        if not project_id and conversation:
-            project_id = conversation.project_id or ""
-        if not us_id and project_id:
-            first_us = next(iter(self.us_items.get(project_id, [])), None)
-            us_id = first_us.id if first_us is not None else ""
-        if not project_id or not us_id:
-            await self.append_message(
-                invocation.conversation_id,
-                "assistant",
-                "I need at least one imported US work item before I can start the quality loop. Import US documents first, then I can generate scenarios, cases, automation, and release evidence.",
-                metadata={"planner_kind": "quality_loop_blocked", "missing_context": ["us_work_item"]},
-            )
-            await self._emit_tool_status(
-                invocation_id,
-                "failed",
-                "US work item is required before scenario generation",
-                [["conversation", invocation.conversation_id], ["project", project_id]],
-                ToolResult(
-                    invocation_id=invocation_id,
-                    status="failed",
-                    summary="US work item is required before scenario generation",
-                    next_recommended_tools=["project.import_us_docs"],
-                ),
-            )
-            return
-
-        existing_goal_id = invocation.input_payload.get("agent_goal_id")
-        if isinstance(existing_goal_id, str) and existing_goal_id in self.agent_goals:
-            goal = self.agent_goals[existing_goal_id]
-        else:
-            goal = self.create_agent_goal(
-                AgentGoalCreateRequest(
-                    conversation_id=invocation.conversation_id,
-                    title="Generate scenario pack",
-                    summary="Building a structured scenario set from system image, US context, and recent change evidence.",
-                    project_id=project_id,
-                    us_id=us_id,
-                )
-            )
-        goal.steps[0].status = "running"
-        goal.steps[0].phase = "thinking"
-        goal.steps[0].selected_tool_id = invocation.tool_id
-        goal.steps[0].tool_invocation_id = invocation.id
-        goal.status = "running"
-        self.conversation_repository.upsert_goal(goal)
-        self._upsert_goal_in_conversation(goal)
-
-        await self._emit_tool_status(
-            invocation_id,
-            "running",
-            "Generating test scenarios",
-            [["conversation", invocation.conversation_id], ["workspace", project_id, us_id], ["project", project_id]],
-        )
-        await self._push_event(
-            invocation.conversation_id,
-            "agent.goal.updated",
-            "agent_goal",
-            goal.id,
-            "replace",
-            {"status": "running"},
-            [["conversation", invocation.conversation_id], ["workspace", project_id, us_id]],
-        )
-        await self._push_goal_event(
-            goal.id,
-            "agent.goal.updated",
-            "replace",
-            {"status": "running"},
-            [["agent-goal", goal.id]],
-        )
-
-        await asyncio.sleep(0.2)
-        goal.steps[0].status = "completed"
-        goal.steps[0].decision = "continue"
-        goal.steps[1].status = "running"
-        goal.steps[1].phase = "observing"
-        goal.steps[1].tool_invocation_id = invocation.id
-        goal.steps_completed = 1
-        self.conversation_repository.upsert_goal(goal)
-        self._upsert_goal_in_conversation(goal)
-        await self._push_event(
-            invocation.conversation_id,
-            "agent.goal.updated",
-            "agent_goal",
-            goal.id,
-            "patch",
-            {"current_step": "Review impact"},
-            [["conversation", invocation.conversation_id], ["workspace", project_id, us_id]],
-        )
-        await self._push_goal_event(
-            goal.id,
-            "agent.goal.updated",
-            "patch",
-            {"current_step": "Review impact"},
-            [["agent-goal", goal.id]],
-        )
-
-        await asyncio.sleep(0.2)
-        goal.steps[1].status = "completed"
-        goal.steps[1].decision = "continue"
-        goal.steps[2].status = "running"
-        goal.steps[2].phase = "deciding"
-        goal.steps[2].tool_invocation_id = invocation.id
-        goal.steps_completed = 2
-        self.conversation_repository.upsert_goal(goal)
-        self._upsert_goal_in_conversation(goal)
-        planning_update = await self._generate_llm_content(
-            conversation=self.conversations[invocation.conversation_id],
-            user_message="Summarize the current scenario planning progress for this US.",
-            fallback_text="I narrowed the scope to checkout fallback, saved-card recovery, and post-redirect assertion coverage. I am now drafting the scenario pack with explicit recovery and fraud-edge branches.",
-            system_prompt="You are Nasus Agent. Summarize scenario planning progress in one concise paragraph and keep it grounded in the provided workspace context.",
-        )
-        await self.append_message(
-            invocation.conversation_id,
-            "assistant",
-            planning_update["content"],
-            metadata=planning_update["metadata"],
-        )
-
-        await asyncio.sleep(0.2)
-        goal.steps[2].status = "completed"
-        goal.steps_completed = 3
-        goal.status = "completed"
-        self.conversation_repository.upsert_goal(goal)
-        self._upsert_goal_in_conversation(goal)
-        for lane in self.asset_lanes.get(us_id, []):
-            if lane.id == "lane_scenarios":
-                lane.status = "approved"
-                lane.summary = "8 scenarios grouped into happy path, redirect recovery, risk edges, and observability checks."
-                lane.updated_at = "2026-03-27 19:10"
-            if lane.id == "lane_cases":
-                lane.status = "ready_for_review"
-                lane.summary = "12 cases suggested from the approved scenario structure."
-                lane.updated_at = "2026-03-27 19:10"
-        self.project_repository.replace_asset_lanes(project_id, us_id, self.asset_lanes.get(us_id, []))
-        completion_update = await self._generate_llm_content(
-            conversation=self.conversations[invocation.conversation_id],
-            user_message="Summarize the completed scenario generation result and the best next action.",
-            fallback_text="Scenario generation is complete. The scenario lane is now approved and the case lane is ready for review, so we can continue into case generation or move directly toward automation drafting.",
-            system_prompt="You are Nasus Agent. Summarize completed scenario generation with a short next-step recommendation.",
-        )
-        await self.append_message(
-            invocation.conversation_id,
-            "assistant",
-            completion_update["content"],
-            metadata=completion_update["metadata"],
-        )
-        await self._push_event(
-            invocation.conversation_id,
-            "agent.goal.updated",
-            "agent_goal",
-            goal.id,
-            "replace",
-            {"status": "completed"},
-            [["conversation", invocation.conversation_id], ["workspace", project_id, us_id]],
-        )
-        await self._push_goal_event(
-            goal.id,
-            "agent.goal.updated",
-            "replace",
-            {"status": "completed"},
-            [["agent-goal", goal.id]],
-        )
-        await self._emit_tool_status(
-            invocation_id,
-            "completed",
-            "Generated scenario pack",
-            [["conversation", invocation.conversation_id], ["workspace", project_id, us_id], ["project", project_id]],
-            ToolResult(
-                invocation_id=invocation_id,
-                status="completed",
-                summary="Generated scenario pack",
-                object_refs=[f"us:{us_id}", "quality_asset_pack:scenario"],
-                next_recommended_tools=["quality.case.generate", "automation.generate"],
-            ),
-        )
-
-    async def _run_query_invocation(self, invocation_id: str) -> None:
-        invocation = self.tool_invocations[invocation_id]
-        conversation = self.conversations.get(invocation.conversation_id or "")
-        project_id = str(invocation.input_payload.get("project_id") or (conversation.project_id if conversation else "") or "")
-        version_id = str(invocation.input_payload.get("version_id") or (conversation.version_id if conversation else "") or "")
-        us_id = str(invocation.input_payload.get("us_id") or (conversation.us_id if conversation else "") or "")
-
-        fallback_text = "I reviewed the current workspace state and prepared a concise summary."
-        query_keys: list[list[str]] = [["conversation", invocation.conversation_id]] if invocation.conversation_id else []
-        effective_query_keys = query_keys or ([["conversation", invocation.conversation_id]] if invocation.conversation_id else [])
-
-        if invocation.tool_id == "query.dashboard.progress":
-            fallback_text = self._build_dashboard_summary("")
-            query_keys.extend([["dashboard"], ["welcome"]])
-        elif invocation.tool_id == "query.project.status" and project_id:
-            fallback_text = self._project_status_summary(project_id)
-            query_keys.extend([["project", project_id], ["dashboard"]])
-        elif invocation.tool_id == "query.version.status" and project_id and version_id:
-            fallback_text = self._version_status_summary(project_id, version_id)
-            query_keys.extend([["project", project_id], ["version", version_id]])
-        elif invocation.tool_id == "query.workspace.status" and us_id:
-            fallback_text = self._workspace_status_summary(us_id)
-            if project_id:
-                query_keys.append(["workspace", project_id, us_id])
-        elif invocation.tool_id == "query.knowledge.status" and project_id:
-            fallback_text = self._knowledge_status_summary(project_id)
-            query_keys.extend([["knowledge", project_id], ["project", project_id]])
-        elif invocation.tool_id == "query.system_image.status" and project_id:
-            fallback_text = self._system_image_status_summary(project_id)
-            query_keys.extend([["system-image", project_id], ["knowledge", project_id], ["project", project_id]])
-        elif invocation.tool_id == "query.run.status" and project_id:
-            fallback_text = self._run_status_summary(project_id)
-            query_keys.extend([["runs", project_id], ["project", project_id]])
-        elif invocation.tool_id == "query.governance.status" and project_id:
-            fallback_text = self._governance_status_summary(project_id)
-            query_keys.extend([["governance", project_id], ["project", project_id]])
-
-        await self._emit_tool_status(
-            invocation_id,
-            "running",
-            f"Querying {invocation.tool_id}",
-            effective_query_keys,
-        )
-        await asyncio.sleep(0.05)
-
-        content = fallback_text
-        metadata: dict[str, Any] = {"planner_kind": "tool_query", "tool_id": invocation.tool_id}
-        if conversation:
-            llm_update = await self._generate_llm_content(
-                conversation=conversation,
-                user_message=f"Summarize the current state for {invocation.tool_id}.",
-                fallback_text=fallback_text,
-                system_prompt="You are Nasus Agent. Summarize the current domain state concisely and recommend the next best action.",
-            )
-            content = llm_update["content"]
-            metadata = {**metadata, **llm_update["metadata"]}
-
-        if invocation.conversation_id:
-            await self.append_message(
-                invocation.conversation_id,
-                "assistant",
-                content,
-                metadata=metadata,
-            )
-
-        await self._emit_tool_status(
-            invocation_id,
-            "completed",
-            f"Completed {invocation.tool_id}",
-            effective_query_keys,
-            ToolResult(
-                invocation_id=invocation_id,
-                status="completed",
-                summary=fallback_text,
-                object_refs=[f"project:{project_id}"] if project_id else [],
-                next_recommended_tools=["quality.scenario.generate"] if invocation.tool_id == "query.workspace.status" else [],
-            ),
-        )
-
     async def _emit_simple_answer(
         self,
         conversation_id: str,
@@ -2296,38 +2070,42 @@ class ApplicationStore:
             event = await queue.get()
             yield event
 
+    async def stream_swarm_events(self, swarm_id: str):
+        yield self._swarm_snapshot_event(swarm_id)
+        queue = self._get_or_create_swarm_queue(swarm_id)
+        while True:
+            event = await queue.get()
+            yield event
+
+    def _swarm_snapshot_event(self, swarm_id: str) -> EventPayload:
+        swarm = self.agent_swarms[swarm_id]
+        version_key = f"agent_swarm:{swarm_id}"
+        return EventPayload(
+            event_id=f"evt_{uuid4().hex[:10]}",
+            event_type="agent.swarm.snapshot",
+            occurred_at=_now_iso(),
+            correlation_id=swarm_id,
+            conversation_id=swarm.conversation_id,
+            agent_goal_id=swarm.parent_goal_id,
+            swarm_run_id=swarm_id,
+            entity_type="agent_swarm",
+            entity_id=swarm_id,
+            entity_version=self.entity_versions.get(version_key, 0),
+            mutation_kind="replace",
+            patch={"status": swarm.status, "result_summary": swarm.result_summary},
+            query_keys=[["conversation", swarm.conversation_id], ["agent-swarm", swarm_id]],
+            snapshot_hint=True,
+            payload={"agent_swarm": swarm.model_dump()},
+        )
+
     async def interrupt_agent_goal(self, goal_id: str) -> AgentGoal:
-        goal = self.agent_goals[goal_id]
-        goal.status = "paused"
-        goal.pause_reason = "user_interrupt"
-        self.conversation_repository.upsert_goal(goal)
-        self._upsert_goal_in_conversation(goal)
-        await self._push_goal_event(goal_id, "agent.goal.updated", "patch", {"status": "paused", "pause_reason": "user_interrupt"}, [["agent-goal", goal_id]])
-        if goal.conversation_id:
-            await self._push_event(goal.conversation_id, "agent.goal.updated", "agent_goal", goal_id, "patch", {"status": "paused", "pause_reason": "user_interrupt"}, [["conversation", goal.conversation_id]])
-        return goal
+        return await self.agent_service.interrupt_goal(goal_id)
 
     async def resume_agent_goal(self, goal_id: str) -> AgentGoal:
-        goal = self.agent_goals[goal_id]
-        goal.status = "running"
-        goal.pause_reason = None
-        self.conversation_repository.upsert_goal(goal)
-        self._upsert_goal_in_conversation(goal)
-        await self._push_goal_event(goal_id, "agent.goal.updated", "patch", {"status": "running"}, [["agent-goal", goal_id]])
-        if goal.conversation_id:
-            await self._push_event(goal.conversation_id, "agent.goal.updated", "agent_goal", goal_id, "patch", {"status": "running"}, [["conversation", goal.conversation_id]])
-        return goal
+        return await self.agent_service.resume_goal(goal_id)
 
     async def add_goal_feedback(self, goal_id: str, feedback: str) -> AgentGoal:
-        goal = self.agent_goals[goal_id]
-        summary = f"{goal.summary} Feedback: {feedback}"
-        goal.summary = summary
-        self.conversation_repository.upsert_goal(goal)
-        self._upsert_goal_in_conversation(goal)
-        await self._push_goal_event(goal_id, "agent.goal.feedback", "patch", {"feedback": feedback}, [["agent-goal", goal_id]])
-        if goal.conversation_id:
-            await self.append_message(goal.conversation_id, "assistant", f"Feedback acknowledged for goal **{goal.title}**: {feedback}")
-        return goal
+        return await self.agent_service.add_feedback(goal_id, feedback)
 
     async def stream_events(self, conversation_id: str):
         queue = self._get_or_create_event_queue(conversation_id)

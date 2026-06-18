@@ -1,6 +1,9 @@
 import type {
   AgentGoal,
+  AgentMemoryContextView,
+  AgentSwarmRun,
   ApprovalDetail,
+  ConversationSummaryCheckpoint,
   BuildData,
   ConversationSession,
   DashboardData,
@@ -126,7 +129,49 @@ export const api = {
       }),
     }),
   getToolInvocation: (invocationId: string) => request<ToolInvocation>(`/v1/tool-invocations/${invocationId}`),
+  listToolInvocations: (filters?: {
+    conversation_id?: string
+    agent_goal_id?: string
+    tool_id?: string
+    status?: ToolInvocation['status']
+  }) => {
+    const params = new URLSearchParams()
+    Object.entries(filters ?? {}).forEach(([key, value]) => {
+      if (value) {
+        params.set(key, value)
+      }
+    })
+    const query = params.toString()
+    return request<ToolInvocation[]>(`/v1/tool-invocations${query ? `?${query}` : ''}`)
+  },
+  confirmToolInvocation: (invocationId: string) =>
+    request<ToolInvocation>(`/v1/tool-invocations/${invocationId}/confirm`, {
+      method: 'POST',
+    }),
   getAgentGoal: (goalId: string) => request<AgentGoal>(`/v1/agent-goals/${goalId}`),
+  getAgentMemoryContext: (filters: {
+    conversation_id?: string
+    agent_goal_id?: string
+    space_ref?: string
+  }) => {
+    const params = new URLSearchParams()
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) {
+        params.set(key, value)
+      }
+    })
+    return request<AgentMemoryContextView>(`/v1/agent-memory/context?${params.toString()}`)
+  },
+  createAgentMemoryCheckpoint: (payload: {
+    conversation_id?: string
+    agent_goal_id?: string
+    space_ref?: string
+    created_by?: 'system' | 'user'
+  }) =>
+    request<ConversationSummaryCheckpoint>('/v1/agent-memory/checkpoints', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   interruptAgentGoal: (goalId: string) =>
     request<AgentGoal>(`/v1/agent-goals/${goalId}/interrupt`, {
       method: 'POST',
@@ -140,5 +185,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ feedback }),
     }),
+  getAgentSwarm: (swarmId: string) => request<AgentSwarmRun>(`/v1/agent-swarms/${swarmId}`),
+  getAgentSwarmEventsUrl: (swarmId: string) => `/v1/agent-swarms/${swarmId}/events`,
   getTools: () => request<ToolDefinition[]>('/v1/tools/catalog'),
 }

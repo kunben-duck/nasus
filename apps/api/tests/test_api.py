@@ -1,3 +1,5 @@
+import asyncio
+import json
 import os
 import tempfile
 import time
@@ -23,6 +25,24 @@ def wait_until(predicate, timeout: float = 1.5):
             return
         time.sleep(0.05)
     raise AssertionError("condition was not met before timeout")
+
+
+def create_system_image_source_dirs(prefix: str):
+    source_root = Path(tempfile.mkdtemp(prefix=prefix))
+    code_dir = source_root / "code"
+    us_dir = source_root / "us"
+    tests_dir = source_root / "tests"
+    code_dir.mkdir()
+    us_dir.mkdir()
+    tests_dir.mkdir()
+    (code_dir / "checkout.py").write_text("def checkout(cart):\n    return cart.total\n", encoding="utf-8")
+    (us_dir / "US-001.md").write_text("# US-001\nAs a buyer, I can complete checkout.\n", encoding="utf-8")
+    (tests_dir / "test_checkout.py").write_text("def test_checkout():\n    assert True\n", encoding="utf-8")
+    return code_dir, us_dir, tests_dir
+
+
+def system_image_source_prompt(code_dir: Path, us_dir: Path, tests_dir: Path) -> str:
+    return f"code path {code_dir}, US docs path {us_dir}, tests path {tests_dir}"
 
 
 def test_welcome_payload_has_recent_projects():
@@ -107,6 +127,71 @@ def test_custom_model_config_can_be_saved():
                 "custom_api_key": "",
             },
         )
+
+
+def test_model_routes_can_be_configured_independently():
+    original = client.get("/v1/settings").json()
+    profiles = original["model_profiles"]
+    if profiles["embedding"]["custom_model"]["has_api_key"] or profiles["rerank"]["custom_model"]["has_api_key"]:
+        return
+
+    try:
+        embedding_response = client.patch(
+            "/v1/settings",
+            json={
+                "model_route": "embedding",
+                "model_preset": "custom",
+                "custom_provider_kind": "openai_compatible",
+                "custom_base_url": "https://vectors.example.com/v1",
+                "custom_model_name": "embed-large",
+                "custom_api_key": "sk-embedding-1111",
+            },
+        )
+        assert embedding_response.status_code == 200
+        embedding_body = embedding_response.json()
+        assert embedding_body["model_preset"] == original["model_preset"]
+        assert embedding_body["model_profiles"]["chat"]["model_preset"] == original["model_preset"]
+        assert embedding_body["model_profiles"]["embedding"]["model_preset"] == "custom"
+        assert embedding_body["model_profiles"]["embedding"]["model_provider"] == "openai_compatible"
+        assert embedding_body["model_profiles"]["embedding"]["custom_model"]["base_url"] == "https://vectors.example.com/v1"
+        assert embedding_body["model_profiles"]["embedding"]["custom_model"]["model_name"] == "embed-large"
+        assert embedding_body["model_profiles"]["embedding"]["custom_model"]["api_key_masked"] == "••••1111"
+
+        rerank_response = client.patch(
+            "/v1/settings",
+            json={
+                "model_route": "rerank",
+                "model_preset": "custom",
+                "custom_provider_kind": "openai_compatible",
+                "custom_base_url": "https://rank.example.com/v1",
+                "custom_model_name": "rerank-v1",
+                "custom_api_key": "sk-rerank-2222",
+            },
+        )
+        assert rerank_response.status_code == 200
+        rerank_body = rerank_response.json()
+        assert rerank_body["model_profiles"]["embedding"]["custom_model"]["model_name"] == "embed-large"
+        assert rerank_body["model_profiles"]["rerank"]["model_preset"] == "custom"
+        assert rerank_body["model_profiles"]["rerank"]["custom_model"]["api_key_masked"] == "••••2222"
+
+        persisted_db = Path(STATE_DIR) / "nasus.db"
+        assert b"sk-embedding-1111" not in persisted_db.read_bytes()
+        assert b"sk-rerank-2222" not in persisted_db.read_bytes()
+    finally:
+        for route in ("embedding", "rerank"):
+            profile = profiles[route]
+            custom = profile["custom_model"]
+            client.patch(
+                "/v1/settings",
+                json={
+                    "model_route": route,
+                    "model_preset": profile["model_preset"],
+                    "custom_provider_kind": custom["provider_kind"],
+                    "custom_base_url": custom["base_url"],
+                    "custom_model_name": custom["model_name"],
+                    "custom_api_key": "",
+                },
+            )
 
 
 def test_model_config_is_persisted_and_api_key_is_encrypted_at_rest():
@@ -206,6 +291,340 @@ def test_settings_connection_help_endpoint_is_human_readable():
     assert body["method"] == "POST"
     assert "Use POST /v1/settings/test-connection" in body["message"]
     assert body["current_model_preset"] in {"system_default", "custom"}
+
+
+def test_tool_catalog_exposes_system_image_tool_chain():
+    response = client.get("/v1/tools/catalog")
+    assert response.status_code == 200
+    tool_ids = {tool["tool_id"] for tool in response.json()}
+    assert {
+        "system_image.sources.register",
+        "system_image.sources.ingest",
+        "system_image.context.materialize",
+        "system_image.baseline.initialize",
+    }.issubset(tool_ids)
+    assert "baseline.initialize" not in tool_ids
+
+
+def test_agent_service_uses_workflow_runtime_port():
+    assert store.agent_workflow_runtime.runtime_kind == "local"
+    assert store.agent_service.runtime is store.agent_workflow_runtime
+    assert store.agent_loop_runtime.graph_kind == "local"
+    assert store.agent_loop_runtime.graph_runtime.steps_for_proposal is not None
+
+
+def test_agent_workflow_runtime_factory_builds_default_temporal_gateway():
+    from apps.api.app.agent_workflow_runtime import build_agent_workflow_runtime
+
+    runtime = build_agent_workflow_runtime(store.agent_loop_runtime, runtime_kind="temporal")
+    assert runtime.runtime_kind == "temporal"
+    assert runtime.gateway.__class__.__name__ == "TemporalClientWorkflowGateway"
+
+
+def test_agent_workflow_runtime_factory_accepts_temporal_gateway():
+    from apps.api.app.agent_goal_state_machine import AgentGoalRuntimeCheckpoint
+    from apps.api.app.agent_workflow_runtime import build_agent_workflow_runtime
+
+    class FakeTemporalGateway:
+        async def start_goal(self, conversation_id, proposal):
+            raise AssertionError("factory test should not execute gateway start")
+
+        async def resume_goal(self, goal_id):
+            raise AssertionError("factory test should not execute gateway resume")
+
+        def checkpoint(self, goal_id):
+            return AgentGoalRuntimeCheckpoint(
+                goal_id=goal_id,
+                workflow_id="temporal-test",
+                status="pending",
+                phase="pending",
+                current_step_index=None,
+                current_step_id=None,
+                current_step_title=None,
+                blocked_step_index=None,
+                blocked_tool_invocation_id=None,
+                resume_step_index=None,
+                steps_completed=0,
+            )
+
+    runtime = build_agent_workflow_runtime(
+        store.agent_loop_runtime,
+        runtime_kind="temporal",
+        temporal_gateway=FakeTemporalGateway(),
+    )
+    assert runtime.runtime_kind == "temporal"
+    assert runtime.checkpoint("goal_test").workflow_id == "temporal-test"
+
+
+def test_temporal_gateway_starts_and_resumes_agent_goal_workflow():
+    from apps.api.app.agent_runtime_config import TemporalGatewayConfig
+    from apps.api.app.agent_runtime_models import AgentGoalProposal, ToolPlanStep
+    from apps.api.app.agent_goal_state_machine import AgentGoalRuntimeCheckpoint
+    from apps.api.app.temporal_agent_gateway import TemporalClientWorkflowGateway
+
+    class FakeTemporalHandle:
+        def __init__(self) -> None:
+            self.signals = []
+
+        async def query(self, query, *args):
+            assert query == "current_goal"
+            return {
+                "id": "goal_temporal",
+                "conversation_id": "conv_temporal",
+                "project_id": "proj_temporal",
+                "us_id": None,
+                "title": "Temporal System Image",
+                "status": "running",
+                "summary": "Temporal worker accepted the system image goal.",
+                "steps": [],
+                "autonomy_level": "semi_auto",
+                "max_steps": 50,
+                "steps_completed": 0,
+                "pause_reason": None,
+                "workflow_id": None,
+            }
+
+        async def signal(self, signal, *args):
+            self.signals.append((signal, args))
+
+    class FakeTemporalClient:
+        def __init__(self) -> None:
+            self.handle = FakeTemporalHandle()
+            self.started = None
+            self.requested_workflow_id = None
+
+        async def start_workflow(self, workflow, *args, id, task_queue):
+            self.started = {
+                "workflow": workflow,
+                "args": args,
+                "id": id,
+                "task_queue": task_queue,
+            }
+            return self.handle
+
+        def get_workflow_handle(self, workflow_id):
+            self.requested_workflow_id = workflow_id
+            return self.handle
+
+    fake_client = FakeTemporalClient()
+    sunk_goals = []
+
+    async def fake_factory(config):
+        assert config.address == "temporal:7233"
+        return fake_client
+
+    gateway = TemporalClientWorkflowGateway(
+        TemporalGatewayConfig(address="temporal:7233", task_queue="agent-task-queue"),
+        client_factory=fake_factory,
+        checkpoint_provider=lambda goal_id: AgentGoalRuntimeCheckpoint(
+            goal_id=goal_id,
+            workflow_id="nasus-agent-goal-existing",
+            status="running",
+            phase="acting",
+            current_step_index=1,
+            current_step_id="step_act",
+            current_step_title="Execute",
+            blocked_step_index=None,
+            blocked_tool_invocation_id=None,
+            resume_step_index=None,
+            steps_completed=1,
+        ),
+        workflow_id_provider=lambda goal_id: "nasus-agent-goal-existing",
+        goal_state_sink=lambda goal: sunk_goals.append(goal),
+    )
+    proposal = AgentGoalProposal(
+        goal_template="system_image_build",
+        title="Temporal System Image",
+        summary="Build a system image through Temporal.",
+        goal_description="Register and ingest sources.",
+        planned_tools=[
+            ToolPlanStep(
+                tool_id="system_image.sources.register",
+                input_payload={"project_id": "proj_temporal"},
+                reason="Register sources.",
+            )
+        ],
+    )
+
+    goal = asyncio.run(gateway.start_goal("conv_temporal", proposal))
+    assert goal.id == "goal_temporal"
+    assert goal.workflow_id == fake_client.started["id"]
+    assert [item.id for item in sunk_goals] == ["goal_temporal"]
+    assert fake_client.started["workflow"] == "NasusAgentGoalWorkflow"
+    assert fake_client.started["task_queue"] == "agent-task-queue"
+    start_payload = fake_client.started["args"][0]
+    assert start_payload["conversation_id"] == "conv_temporal"
+    assert start_payload["proposal"]["planned_tools"][0]["tool_id"] == "system_image.sources.register"
+
+    resumed = asyncio.run(gateway.resume_goal("goal_temporal"))
+    assert resumed.id == "goal_temporal"
+    assert fake_client.requested_workflow_id == "nasus-agent-goal-existing"
+    assert fake_client.handle.signals == [("resume_goal", ({"goal_id": "goal_temporal"},))]
+    assert [item.id for item in sunk_goals] == ["goal_temporal", "goal_temporal"]
+
+
+def test_agent_goal_workflow_activity_service_uses_agent_loop_runtime_directly():
+    from apps.api.app.agent_goal_workflow_worker import AgentGoalWorkflowActivityService
+    from apps.api.app.models import AgentGoal
+
+    class FakeConversationRepository:
+        def __init__(self) -> None:
+            self.upserted_goal_ids = []
+
+        def upsert_goal(self, goal):
+            self.upserted_goal_ids.append(goal.id)
+
+    class FakeAgentLoopRuntime:
+        def __init__(self) -> None:
+            self.started = None
+            self.resumed = None
+
+        async def start_goal(self, conversation_id, proposal):
+            self.started = (conversation_id, proposal)
+            return AgentGoal(
+                id="goal_worker",
+                conversation_id=conversation_id,
+                project_id="proj_worker",
+                us_id=None,
+                title=proposal.title,
+                status="paused",
+                summary=proposal.summary,
+                steps=[],
+                autonomy_level=proposal.suggested_autonomy_level,
+                workflow_id=None,
+            )
+
+        async def resume_goal(self, goal_id):
+            self.resumed = goal_id
+            return AgentGoal(
+                id=goal_id,
+                conversation_id="conv_worker",
+                project_id="proj_worker",
+                us_id=None,
+                title="Worker resumed goal",
+                status="completed",
+                summary="Worker completed the goal.",
+                steps=[],
+                workflow_id="wf_worker",
+            )
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.agent_loop_runtime = FakeAgentLoopRuntime()
+            self.conversation_repository = FakeConversationRepository()
+            self.conversation_goal_updates = []
+
+        def _upsert_goal_in_conversation(self, goal):
+            self.conversation_goal_updates.append(goal.id)
+
+    fake_store = FakeStore()
+    service = AgentGoalWorkflowActivityService(store_provider=lambda: fake_store)
+    payload = {
+        "conversation_id": "conv_worker",
+        "workflow_id": "temporal-wf-worker",
+        "proposal": {
+            "goal_template": "system_image_build",
+            "title": "Worker System Image",
+            "summary": "Build the system image in a worker activity.",
+            "goal_description": "Register and ingest sources.",
+            "suggested_autonomy_level": "semi_auto",
+            "planned_tools": [
+                {
+                    "tool_id": "system_image.sources.register",
+                    "input_payload": {"project_id": "proj_worker"},
+                    "reason": "Register source groups.",
+                }
+            ],
+        },
+    }
+
+    started = asyncio.run(service.start_agent_goal(payload))
+    conversation_id, proposal = fake_store.agent_loop_runtime.started
+    assert conversation_id == "conv_worker"
+    assert proposal.planned_tools[0].tool_id == "system_image.sources.register"
+    assert proposal.planned_tools[0].input_payload == {"project_id": "proj_worker"}
+    assert started["workflow_id"] == "temporal-wf-worker"
+    assert fake_store.conversation_repository.upserted_goal_ids == ["goal_worker"]
+    assert fake_store.conversation_goal_updates == ["goal_worker"]
+
+    resumed = asyncio.run(service.resume_agent_goal({"goal_id": "goal_worker"}))
+    assert resumed["status"] == "completed"
+    assert fake_store.agent_loop_runtime.resumed == "goal_worker"
+
+
+def test_agent_graph_runtime_factory_builds_default_langgraph_gateway():
+    from apps.api.app.agent_graph_runtime import build_agent_graph_runtime
+
+    runtime = build_agent_graph_runtime(store, store.agent_loop_runtime.state_machine, graph_kind="langgraph")
+    assert runtime.graph_kind == "langgraph"
+    assert runtime.gateway.__class__.__name__ == "LangGraphAgentLoopGateway"
+
+
+def test_agent_graph_runtime_factory_accepts_langgraph_gateway():
+    from apps.api.app.agent_graph_runtime import build_agent_graph_runtime
+
+    class FakeLangGraphGateway:
+        async def start(self, goal_id, proposal):
+            raise AssertionError("factory test should not execute graph start")
+
+        async def resume(self, goal_id):
+            raise AssertionError("factory test should not execute graph resume")
+
+        def steps_for_proposal(self, proposal):
+            return []
+
+    runtime = build_agent_graph_runtime(
+        store,
+        store.agent_loop_runtime.state_machine,
+        graph_kind="langgraph",
+        langgraph_gateway=FakeLangGraphGateway(),
+    )
+    assert runtime.graph_kind == "langgraph"
+    assert runtime.steps_for_proposal(object()) == []
+
+
+def test_tool_invocation_runtime_is_canonical_store_entry_for_gated_tools():
+    assert store.tool_invocation_runtime.tool_definition("system_image.baseline.initialize").confirmation_mode == "user_confirm"
+    assert store.tool_invocation_runtime.handlers.resolve("system_image.baseline.initialize") is not None
+    assert store.tool_invocation_runtime.handlers.resolve("quality.scenario.generate") is not None
+    assert store.tool_invocation_runtime.handlers.resolve("query.system_image.status") is not None
+
+    project = client.post("/v1/projects", json={"name": "Runtime Gate Project"}).json()
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+    response = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.baseline.initialize",
+            "input": {"project_id": project["id"]},
+            "initiator_surface": "ui",
+            "initiator_actor": "user",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "waiting_confirmation"
+    assert store.get_tool_invocation(body["id"]).status == "waiting_confirmation"
+    gated_audit = client.get(f"/v1/audit-events?tool_invocation_id={body['id']}").json()
+    gated_actions = {event["action"] for event in gated_audit}
+    assert {"tool.invocation.created", "tool.invocation.gated"}.issubset(gated_actions)
+    assert all(event["tool_invocation_id"] == body["id"] for event in gated_audit)
+
+    confirmed = client.post(f"/v1/tool-invocations/{body['id']}/confirm")
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "completed"
+    completed_audit = client.get(f"/v1/audit-events?tool_invocation_id={body['id']}").json()
+    completed_actions = {event["action"] for event in completed_audit}
+    assert {"tool.invocation.confirmed", "tool.invocation.executing", "tool.invocation.completed"}.issubset(
+        completed_actions
+    )
+    assert any("baseline:" in ref for event in completed_audit for ref in event["object_refs"])
+    conversation_audit = client.get(f"/v1/audit-events?conversation_id={conversation['id']}").json()
+    assert any(event["tool_invocation_id"] == body["id"] for event in conversation_audit)
 
 
 def test_build_message_creates_project():
@@ -344,12 +763,15 @@ def test_created_project_has_draft_system_image_and_can_initialize_via_tool():
         "/v1/tool-invocations",
         json={
             "conversation_id": conversation["id"],
-            "tool_id": "baseline.initialize",
+            "tool_id": "system_image.baseline.initialize",
             "input": {"project_id": project["id"]},
         },
     )
     assert invoked.status_code == 200
     invocation_id = invoked.json()["id"]
+    assert invoked.json()["status"] == "waiting_confirmation"
+    confirmed = client.post(f"/v1/tool-invocations/{invocation_id}/confirm")
+    assert confirmed.status_code == 200
     wait_until(lambda: client.get(f"/v1/tool-invocations/{invocation_id}").json()["status"] == "completed")
 
     ready = client.get(f"/v1/projects/{project['id']}/system-image").json()
@@ -358,6 +780,472 @@ def test_created_project_has_draft_system_image_and_can_initialize_via_tool():
     assert ready["baselines"][0]["status"] == "ready"
     assert len(ready["objects"]) >= 3
     assert len(ready["metric_snapshots"]) == 4
+
+
+def test_legacy_baseline_initialize_alias_is_normalized_to_canonical_tool():
+    project = client.post("/v1/projects", json={"name": "Legacy Baseline Alias"}).json()
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    invoked = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "baseline.initialize",
+            "input": {"project_id": project["id"]},
+        },
+    )
+
+    assert invoked.status_code == 200
+    body = invoked.json()
+    assert body["tool_id"] == "system_image.baseline.initialize"
+    assert body["input_payload"]["requested_tool_id"] == "baseline.initialize"
+    assert body["status"] == "waiting_confirmation"
+
+
+def test_system_image_tools_can_register_and_ingest_real_source_files():
+    project = client.post("/v1/projects", json={"name": "Real Source Ingestion"}).json()
+    source_root = Path(tempfile.mkdtemp(prefix="nasus-source-ingestion-"))
+    code_dir = source_root / "code"
+    us_dir = source_root / "us"
+    tests_dir = source_root / "tests"
+    code_dir.mkdir()
+    us_dir.mkdir()
+    tests_dir.mkdir()
+    (code_dir / "checkout.py").write_text("def checkout(cart):\n    return cart.total\n", encoding="utf-8")
+    (us_dir / "US-101.md").write_text("# US-101\nAs a buyer, I can checkout with saved cards.\n", encoding="utf-8")
+    (tests_dir / "test_checkout.py").write_text("def test_checkout():\n    assert True\n", encoding="utf-8")
+
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+    source_specs = [
+        {"source_type": "code", "source_uri": str(code_dir)},
+        {"source_type": "us_doc", "source_uri": str(us_dir)},
+        {"source_type": "test_asset", "source_uri": str(tests_dir)},
+    ]
+
+    registered = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.sources.register",
+            "input": {"project_id": project["id"], "source_specs": source_specs},
+        },
+    )
+    assert registered.status_code == 200
+    assert registered.json()["status"] == "completed"
+
+    ingested = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.sources.ingest",
+            "input": {"project_id": project["id"]},
+        },
+    )
+    assert ingested.status_code == 200
+    assert ingested.json()["status"] == "completed"
+
+    image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    sources = {source["source_type"]: source for source in image["sources"]}
+    assert sources["code"]["source_uri"] == str(code_dir)
+    assert sources["us_doc"]["source_uri"] == str(us_dir)
+    assert sources["test_asset"]["source_uri"] == str(tests_dir)
+    assert all(source["ingestion_status"] == "indexed" for source in sources.values())
+    assert all(source["content_hash"].startswith("sha256:") for source in sources.values())
+    assert any("file:checkout.py" in ref for ref in sources["code"]["evidence_refs"])
+    assert any("file:US-101.md" in ref for ref in sources["us_doc"]["evidence_refs"])
+    assert any("file:test_checkout.py" in ref for ref in sources["test_asset"]["evidence_refs"])
+
+    materialized = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.context.materialize",
+            "input": {"project_id": project["id"]},
+        },
+    )
+    assert materialized.status_code == 200
+    assert materialized.json()["status"] == "completed"
+
+    materialized_image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    object_names = {item["name"] for item in materialized_image["objects"]}
+    object_types = {item["type"] for item in materialized_image["objects"]}
+    relationship_types = {item["relationship_type"] for item in materialized_image["relationships"]}
+    metrics_by_group = {item["metric_group"]: item["metrics"] for item in materialized_image["metric_snapshots"]}
+    assert any("checkout" in name for name in object_names)
+    assert any("US-101" in name for name in object_names)
+    assert any("test_checkout" in name for name in object_names)
+    assert {"CodeFunction", "USWorkItem", "TestCase"}.issubset(object_types)
+    assert {"implements", "impacts", "covers"}.issubset(relationship_types)
+    assert metrics_by_group["code_quality"]["code_symbols"] >= 1
+    assert metrics_by_group["us_completion_quality"]["requirements_count"] >= 1
+    assert metrics_by_group["test_quality"]["test_count"] >= 1
+
+    baseline = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.baseline.initialize",
+            "input": {"project_id": project["id"]},
+        },
+    )
+    assert baseline.status_code == 200
+    assert baseline.json()["status"] == "waiting_confirmation"
+    confirmed = client.post(f"/v1/tool-invocations/{baseline.json()['id']}/confirm")
+    assert confirmed.status_code == 200
+    wait_until(lambda: client.get(f"/v1/tool-invocations/{baseline.json()['id']}").json()["status"] == "completed")
+
+    ready_image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    assert ready_image["project"]["system_image_status"] == "ready"
+    assert len(ready_image["relationships"]) == len(materialized_image["relationships"])
+    assert len(ready_image["metric_snapshots"]) == len(materialized_image["metric_snapshots"])
+    assert any("checkout" in item["name"] for item in ready_image["objects"])
+
+
+def test_agent_memory_context_packages_system_image_state():
+    project = client.post("/v1/projects", json={"name": "Agent Memory Image"}).json()
+    source_root = Path(tempfile.mkdtemp(prefix="nasus-agent-memory-"))
+    code_dir = source_root / "code"
+    us_dir = source_root / "us"
+    tests_dir = source_root / "tests"
+    code_dir.mkdir()
+    us_dir.mkdir()
+    tests_dir.mkdir()
+    (code_dir / "checkout.py").write_text("def checkout(cart):\n    return cart.total\n", encoding="utf-8")
+    (us_dir / "US-202.md").write_text("# US-202\nAs a buyer, I can retry payment.\n", encoding="utf-8")
+    (tests_dir / "test_retry.py").write_text("def test_retry_payment():\n    assert True\n", encoding="utf-8")
+
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+    source_specs = [
+        {"source_type": "code", "source_uri": str(code_dir)},
+        {"source_type": "us_doc", "source_uri": str(us_dir)},
+        {"source_type": "test_asset", "source_uri": str(tests_dir)},
+    ]
+    client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.sources.register",
+            "input": {"project_id": project["id"], "source_specs": source_specs},
+        },
+    )
+    client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.context.materialize",
+            "input": {"project_id": project["id"]},
+        },
+    )
+    asyncio.run(store.append_message(conversation["id"], "user", "What does the image know about checkout?"))
+
+    memory = store.agent_memory.build_context(store.get_conversation(conversation["id"]))
+    assert "[system_image]" in memory.context_snapshot
+    assert "source=code; status=indexed" in memory.context_snapshot
+    assert "context_object=" in memory.context_snapshot
+    assert "relationship=implements" in memory.context_snapshot
+    assert "metric=code_quality" in memory.context_snapshot
+    assert "User: What does the image know about checkout?" in memory.history_snapshot
+    assert memory.recent_turn_count >= 1
+
+
+def test_agent_goal_think_step_records_memory_context_package():
+    from apps.api.app.agent_runtime_models import AgentGoalProposal
+
+    project = client.post("/v1/projects", json={"name": "Think Memory Package"}).json()
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+    asyncio.run(store.append_message(conversation["id"], "user", "Remember checkout is the first system image target."))
+
+    proposal = AgentGoalProposal(
+        goal_template="system_image_build",
+        title="Memory-Aware System Image",
+        summary="Build the project system image using the current memory package.",
+        goal_description="Use project memory and available tools to plan system image construction.",
+    )
+
+    goal = asyncio.run(store.agent_loop_runtime.start_goal(conversation["id"], proposal))
+
+    refreshed = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
+    think_step = refreshed["steps"][0]
+    assert refreshed["id"] == goal.id
+    assert think_step["phase"] == "thinking"
+    assert think_step["status"] == "completed"
+    assert think_step["memory_context_hash"].startswith("sha256:")
+    assert "sections=space, project" in think_step["memory_context_summary"]
+    assert think_step["memory_recent_turn_count"] >= 1
+    assert "system_image.sources.register" in think_step["available_tool_ids"]
+    assert "Memory context includes" in think_step["reasoning"]
+
+
+def test_agent_memory_context_endpoint_exposes_system_image_agent_memory_view():
+    project = client.post("/v1/projects", json={"name": "Inspectable Agent Memory"}).json()
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": "Build the official system image from code, US docs, and tests"},
+    )
+
+    assert response.status_code == 200
+    goal_id = response.json()["agent_goal"]["id"]
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
+
+    memory = client.get(f"/v1/agent-memory/context?agent_goal_id={goal_id}")
+    assert memory.status_code == 200
+    body = memory.json()
+    assert body["conversation_id"] == conversation["id"]
+    assert body["agent_goal_id"] == goal_id
+    assert body["context_hash"].startswith("sha256:")
+    assert "system_image" in body["context_summary"]
+    assert body["working_memory"]["active_goal_id"] == goal_id
+    assert body["working_memory"]["status"] == "paused"
+    assert body["working_memory"]["pause_reason"] == "missing_source_binding"
+    assert body["conversation_memory"]["recent_turn_count"] >= 1
+    assert body["project_long_term_memory"]["project_id"] == project["id"]
+    assert body["project_long_term_memory"]["system_image_status"] == "draft"
+    assert any(":code:" in ref for ref in body["project_long_term_memory"]["source_refs"])
+    assert "system_image.sources.register" in body["tool_catalog"]["tool_ids"]
+    assert "system_image.baseline.initialize" in body["tool_catalog"]["tool_ids"]
+
+
+def test_agent_goal_events_use_structured_sse_envelope():
+    from apps.api.app.agent_runtime_models import AgentGoalProposal
+
+    project = client.post("/v1/projects", json={"name": "Structured Agent Events"}).json()
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+    proposal = AgentGoalProposal(
+        goal_template="system_image_build",
+        title="Structured Event System Image",
+        summary="Verify that AgentGoal events expose a mergeable SSE envelope.",
+        goal_description="Start a system image goal and inspect event payload metadata.",
+    )
+
+    goal = asyncio.run(store.agent_loop_runtime.start_goal(conversation["id"], proposal))
+
+    events = list(store.event_queues[conversation["id"]]._queue)
+    agent_events = [
+        event
+        for event in events
+        if event.event_type == "agent.goal.updated" and event.entity_id == goal.id
+    ]
+    assert agent_events
+    first_event = agent_events[0]
+    assert first_event.occurred_at
+    assert first_event.correlation_id
+    assert first_event.conversation_id == conversation["id"]
+    assert first_event.agent_goal_id == goal.id
+    assert first_event.entity_type == "agent_goal"
+    assert first_event.mutation_kind == "patch"
+    assert first_event.payload["patch"] == first_event.patch
+    assert first_event.payload["agent_goal"]["id"] == goal.id
+    assert first_event.agent_step_id is not None
+    assert ["conversation", conversation["id"]] in first_event.query_keys
+
+
+def test_conversation_message_events_include_message_snapshot():
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "dashboard", "space_id": "dashboard", "title": "Dashboard Event Stream"},
+    ).json()
+
+    message = asyncio.run(store.append_message(conversation["id"], "assistant", "Streaming-ready message."))
+
+    events = list(store.event_queues[conversation["id"]]._queue)
+    message_events = [
+        event
+        for event in events
+        if event.event_type == "conversation.message.created"
+        and event.patch.get("message_id") == message.id
+    ]
+    assert message_events
+    event = message_events[-1]
+    assert event.conversation_id == conversation["id"]
+    assert event.payload["message"]["id"] == message.id
+    assert event.payload["message"]["blocks"][0]["text"] == "Streaming-ready message."
+
+
+def test_live_planner_receives_unified_memory_context_with_system_image_state():
+    original = client.get("/v1/settings").json()
+    project = client.post("/v1/projects", json={"name": "Planner Memory Image"}).json()
+    source_root = Path(tempfile.mkdtemp(prefix="nasus-planner-memory-"))
+    code_dir = source_root / "code"
+    us_dir = source_root / "us"
+    tests_dir = source_root / "tests"
+    code_dir.mkdir()
+    us_dir.mkdir()
+    tests_dir.mkdir()
+    (code_dir / "checkout.py").write_text("def checkout(cart):\n    return cart.total\n", encoding="utf-8")
+    (us_dir / "US-404.md").write_text("# US-404\nAs a buyer, I can recover a failed payment.\n", encoding="utf-8")
+    (tests_dir / "test_payment_recovery.py").write_text("def test_payment_recovery():\n    assert True\n", encoding="utf-8")
+
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+    source_specs = [
+        {"source_type": "code", "source_uri": str(code_dir)},
+        {"source_type": "us_doc", "source_uri": str(us_dir)},
+        {"source_type": "test_asset", "source_uri": str(tests_dir)},
+    ]
+    client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.sources.register",
+            "input": {"project_id": project["id"], "source_specs": source_specs},
+        },
+    )
+    client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.sources.ingest",
+            "input": {"project_id": project["id"]},
+        },
+    )
+    client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.context.materialize",
+            "input": {"project_id": project["id"]},
+        },
+    )
+    asyncio.run(store.append_message(conversation["id"], "user", "Remember that payment recovery is the hot path."))
+
+    captured: dict[str, str] = {}
+
+    async def fake_call_custom(
+        *,
+        custom_model,
+        custom_api_key,
+        system_prompt,
+        user_message,
+        context_snapshot,
+        history_snapshot,
+    ):
+        captured["system_prompt"] = system_prompt
+        captured["user_message"] = user_message
+        captured["context_snapshot"] = context_snapshot
+        captured["history_snapshot"] = history_snapshot
+        return json.dumps(
+            {
+                "kind": "clarification",
+                "question": "Should I initialize the baseline now or inspect risks first?",
+                "reason": "planner_memory_context_verified",
+                "missing_context": ["confirmation_preference"],
+            }
+        )
+
+    try:
+        client.patch(
+            "/v1/settings",
+            json={
+                "model_preset": "custom",
+                "custom_provider_kind": "openai_compatible",
+                "custom_base_url": "https://api.example.com/v1",
+                "custom_model_name": "planner-memory-model",
+                "custom_api_key": "sk-planner-memory",
+            },
+        )
+        with patch.object(store.llm, "_call_custom", new=fake_call_custom):
+            response = client.post(
+                f"/v1/conversations/{conversation['id']}/messages",
+                json={"content": "Use what you remember and plan the next system image step"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["clarification"]["reason"] == "planner_memory_context_verified"
+        assert captured["system_prompt"].startswith("You are Nasus Agent")
+        assert "Nasus structured agent planner" in captured["system_prompt"]
+        assert "Use what you remember" in captured["user_message"]
+        assert "[tool_catalog]" in captured["context_snapshot"]
+        assert "system_image.baseline.initialize" in captured["context_snapshot"]
+        assert "source=code; status=indexed" in captured["context_snapshot"]
+        assert "context_object=" in captured["context_snapshot"]
+        assert "metric=code_quality" in captured["context_snapshot"]
+        assert "User: Remember that payment recovery is the hot path." in captured["history_snapshot"]
+    finally:
+        client.patch(
+            "/v1/settings",
+            json={
+                "language": original["language"],
+                "theme": original["theme"],
+                "model_preset": original["model_preset"],
+                "notification_mode": original["notification_mode"],
+                "custom_provider_kind": original["custom_model"]["provider_kind"],
+                "custom_base_url": original["custom_model"]["base_url"],
+                "custom_model_name": original["custom_model"]["model_name"],
+                "custom_api_key": "",
+            },
+        )
+
+
+def test_system_image_ingest_failure_blocks_context_materialization():
+    project = client.post("/v1/projects", json={"name": "Broken Source Ingestion"}).json()
+    source_root = Path(tempfile.mkdtemp(prefix="nasus-broken-source-"))
+    missing_code = source_root / "missing-code"
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    registered = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.sources.register",
+            "input": {
+                "project_id": project["id"],
+                "source_specs": [{"source_type": "code", "source_uri": str(missing_code)}],
+            },
+        },
+    )
+    assert registered.status_code == 200
+
+    ingested = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.sources.ingest",
+            "input": {"project_id": project["id"]},
+        },
+    )
+    assert ingested.status_code == 200
+    assert ingested.json()["status"] == "failed"
+
+    materialized = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.context.materialize",
+            "input": {"project_id": project["id"]},
+        },
+    )
+    assert materialized.status_code == 200
+    assert materialized.json()["status"] == "failed"
+    assert "source ingestion failed" in materialized.json()["summary"]
+
+    image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    assert image["project"]["system_image_status"] == "draft"
+    assert any(source["ingestion_status"] == "failed" for source in image["sources"])
 
 
 def test_project_conversation_can_initialize_system_image_from_natural_language():
@@ -374,13 +1262,623 @@ def test_project_conversation_can_initialize_system_image_from_natural_language(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["tool_invocations"][0]["tool_id"] == "baseline.initialize"
-    invocation_id = body["tool_invocations"][0]["id"]
-    wait_until(lambda: client.get(f"/v1/tool-invocations/{invocation_id}").json()["status"] == "completed")
+    assert body["agent_goal"]["title"] == "Build Official System Image"
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
+    refreshed = client.get(f"/v1/conversations/{conversation['id']}").json()
+    goal = refreshed["agent_goals"][-1]
+    assert goal["pause_reason"] == "missing_source_binding"
+    assert [step["selected_tool_id"] for step in goal["steps"] if step["phase"] == "acting"] == [
+        "system_image.sources.register",
+        "system_image.sources.ingest",
+        "system_image.context.materialize",
+        "system_image.baseline.initialize",
+    ]
+    blocked = next(step for step in goal["steps"] if step["status"] == "blocked")
+    assert blocked["selected_tool_id"] == "system_image.sources.register"
+    assert blocked["tool_invocation_id"]
+    assert all(
+        step["status"] == "pending"
+        for step in goal["steps"]
+        if step["selected_tool_id"] in {
+            "system_image.sources.ingest",
+            "system_image.context.materialize",
+            "system_image.baseline.initialize",
+        }
+    )
+    assert any(
+        message["metadata"].get("planner_kind") == "source_binding_required"
+        for message in refreshed["messages"]
+    )
+
+    code_dir, us_dir, tests_dir = create_system_image_source_dirs("nasus-guided-system-image-")
+    source_binding = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": system_image_source_prompt(code_dir, us_dir, tests_dir)},
+    )
+    assert source_binding.status_code == 200
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["pause_reason"] == "waiting_confirmation")
+    goal = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
+    resume = client.post(f"/v1/agent-goals/{goal['id']}/resume")
+    assert resume.status_code == 200
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "completed")
 
     image = client.get(f"/v1/projects/{project['id']}/system-image").json()
     assert image["project"]["system_image_status"] == "ready"
     assert all(source["ingestion_status"] == "indexed" for source in image["sources"])
+
+
+def test_system_image_agent_goal_lifecycle_is_audited_end_to_end():
+    project = client.post("/v1/projects", json={"name": "Audited System Image"}).json()
+    code_dir, us_dir, tests_dir = create_system_image_source_dirs("nasus-audited-system-image-")
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={
+            "content": (
+                "Build the official system image with "
+                f"{system_image_source_prompt(code_dir, us_dir, tests_dir)}"
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    goal_id = response.json()["agent_goal"]["id"]
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
+
+    paused_audit = client.get(f"/v1/audit-events?agent_goal_id={goal_id}")
+    assert paused_audit.status_code == 200
+    paused_actions = {event["action"] for event in paused_audit.json()}
+    assert {"agent.goal.created", "agent.goal.proposed", "agent.goal.started", "agent.goal.paused"}.issubset(
+        paused_actions
+    )
+    assert "agent.goal.resumed" not in paused_actions
+    assert all(event["agent_goal_id"] == goal_id for event in paused_audit.json())
+    assert any(
+        f"project:{project['id']}" in event["object_refs"] and event["metadata"]["max_steps"] == 50
+        for event in paused_audit.json()
+    )
+
+    resume = client.post(f"/v1/agent-goals/{goal_id}/resume")
+    assert resume.status_code == 200
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "completed")
+
+    completed_audit = client.get(f"/v1/audit-events?agent_goal_id={goal_id}").json()
+    completed_actions = {event["action"] for event in completed_audit}
+    assert {"agent.goal.resume_requested", "agent.goal.resumed", "agent.goal.completed"}.issubset(completed_actions)
+    assert any(
+        event["action"] == "agent.goal.completed" and event["metadata"]["steps_completed"] >= 1
+        for event in completed_audit
+    )
+
+
+def test_agent_goal_budget_exhaustion_pauses_before_extra_tool_calls():
+    from apps.api.app.agent_runtime_models import AgentGoalProposal, ToolPlanStep
+    from apps.api.app.models import AgentGoalCreateRequest
+
+    project = client.post("/v1/projects", json={"name": "Budget Guard System Image"}).json()
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+    proposal = AgentGoalProposal(
+        goal_template="system_image_build",
+        title="Budget Guard System Image",
+        summary="Verify that the agent loop pauses when its step budget is exhausted.",
+        goal_description="Build a system image, but stop before tool execution when max_steps is reached.",
+        planned_tools=[
+            ToolPlanStep(
+                tool_id="system_image.sources.register",
+                input_payload={"project_id": project["id"]},
+                reason="Register source groups before ingestion.",
+            )
+        ],
+    )
+    steps = store.agent_loop_runtime.graph_runtime.steps_for_proposal(proposal)
+    goal = store.create_agent_goal(
+        AgentGoalCreateRequest(
+            conversation_id=conversation["id"],
+            project_id=project["id"],
+            title=proposal.title,
+            summary=proposal.summary,
+            max_steps=1,
+            steps=steps,
+        )
+    )
+
+    asyncio.run(store.agent_loop_runtime.graph_runtime.start(goal.id, proposal))
+
+    refreshed_goal = store.get_agent_goal(goal.id)
+    assert refreshed_goal.status == "paused"
+    assert refreshed_goal.pause_reason == "budget_exhausted"
+    assert not any(
+        invocation.input_payload.get("agent_goal_id") == goal.id
+        for invocation in store.tool_invocations.values()
+    )
+    audit_actions = {event.action for event in store.list_audit_events(agent_goal_id=goal.id)}
+    assert "agent.goal.budget_exhausted" in audit_actions
+
+
+def test_agent_goal_runtime_compiles_system_image_plan_from_goal_context():
+    from apps.api.app.agent_runtime_models import AgentGoalProposal
+
+    project = client.post("/v1/projects", json={"name": "Autonomous Plan Image"}).json()
+    code_dir, us_dir, tests_dir = create_system_image_source_dirs("nasus-autonomous-plan-image-")
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+    registered = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.sources.register",
+            "input": {
+                "project_id": project["id"],
+                "source_specs": [
+                    {"source_type": "code", "source_uri": str(code_dir)},
+                    {"source_type": "us_doc", "source_uri": str(us_dir)},
+                    {"source_type": "test_asset", "source_uri": str(tests_dir)},
+                ],
+            },
+        },
+    )
+    assert registered.status_code == 200
+    assert registered.json()["status"] == "completed"
+    proposal = AgentGoalProposal(
+        goal_template="system_image_build",
+        title="Autonomously Build System Image",
+        summary="Build the system image from the current project context without a prefilled tool chain.",
+        goal_description="Use the current project context to decide the required system image construction tools.",
+    )
+
+    goal = asyncio.run(store.agent_loop_runtime.start_goal(conversation["id"], proposal))
+
+    refreshed = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
+    compiled_tool_ids = [step["selected_tool_id"] for step in refreshed["steps"] if step["phase"] == "acting"]
+    assert compiled_tool_ids == [
+        "system_image.sources.ingest",
+        "system_image.context.materialize",
+        "system_image.baseline.initialize",
+    ]
+    assert refreshed["status"] == "paused"
+    assert refreshed["pause_reason"] == "waiting_confirmation"
+    proposed_audit = next(
+        event for event in store.list_audit_events(agent_goal_id=goal.id)
+        if event.action == "agent.goal.proposed"
+    )
+    assert proposed_audit.metadata["planned_tool_ids"] == compiled_tool_ids
+
+    resumed = client.post(f"/v1/agent-goals/{goal.id}/resume")
+    assert resumed.status_code == 200
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "completed")
+    image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    assert image["project"]["system_image_status"] == "ready"
+
+
+def test_under_specified_system_image_goal_replans_after_source_binding_followup():
+    from apps.api.app.agent_runtime_models import AgentGoalProposal
+
+    project = client.post("/v1/projects", json={"name": "Followup Replanned Image"}).json()
+    code_dir, us_dir, tests_dir = create_system_image_source_dirs("nasus-followup-replanned-image-")
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+    proposal = AgentGoalProposal(
+        goal_template="system_image_build",
+        title="Build System Image From Goal Only",
+        summary="Build the project system image without a pre-filled tool chain.",
+        goal_description="Autonomously plan the system image construction flow from the current project state.",
+    )
+
+    goal = asyncio.run(store.agent_loop_runtime.start_goal(conversation["id"], proposal))
+
+    paused = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
+    assert paused["id"] == goal.id
+    assert paused["status"] == "paused"
+    assert paused["pause_reason"] == "missing_source_binding"
+    assert [step["selected_tool_id"] for step in paused["steps"] if step["phase"] == "acting"] == [
+        "system_image.sources.register"
+    ]
+
+    source_binding = asyncio.run(
+        store.handle_message(
+            conversation["id"],
+            system_image_source_prompt(code_dir, us_dir, tests_dir),
+        )
+    )
+    assert source_binding["agent_goal"].id == goal.id
+    replanned = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
+    assert replanned["status"] == "paused"
+    assert replanned["pause_reason"] == "waiting_confirmation"
+    assert [step["selected_tool_id"] for step in replanned["steps"] if step["phase"] == "acting"] == [
+        "system_image.sources.register",
+        "system_image.sources.ingest",
+        "system_image.context.materialize",
+        "system_image.baseline.initialize",
+    ]
+    assert all(
+        step["status"] == "completed"
+        for step in replanned["steps"]
+        if step["selected_tool_id"] in {
+            "system_image.sources.register",
+            "system_image.sources.ingest",
+            "system_image.context.materialize",
+        }
+    )
+
+    resumed = client.post(f"/v1/agent-goals/{goal.id}/resume")
+    assert resumed.status_code == 200
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "completed")
+    image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    assert image["project"]["system_image_status"] == "ready"
+    assert all(source["ingestion_status"] == "indexed" for source in image["sources"])
+
+
+def test_project_conversation_binds_explicit_system_image_sources_from_natural_language():
+    project = client.post("/v1/projects", json={"name": "Conversation Bound Sources"}).json()
+    source_root = Path(tempfile.mkdtemp(prefix="nasus-conversation-sources-"))
+    code_dir = source_root / "code"
+    us_dir = source_root / "us"
+    tests_dir = source_root / "tests"
+    code_dir.mkdir()
+    us_dir.mkdir()
+    tests_dir.mkdir()
+    (code_dir / "checkout.py").write_text("def checkout(cart):\n    return cart.total\n", encoding="utf-8")
+    (us_dir / "US-303.md").write_text("# US-303\nAs a buyer, I can confirm checkout.\n", encoding="utf-8")
+    (tests_dir / "test_checkout_confirm.py").write_text("def test_checkout_confirm():\n    assert True\n", encoding="utf-8")
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={
+            "content": (
+                "Build the official system image with "
+                f"code path {code_dir}, US docs path {us_dir}, tests path {tests_dir}"
+            )
+        },
+    )
+    assert response.status_code == 200
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
+    goal = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
+    register_step = next(step for step in goal["steps"] if step["selected_tool_id"] == "system_image.sources.register")
+    source_specs = register_step["tool_input_payload"]["source_specs"]
+    assert {spec["source_type"]: spec["source_uri"] for spec in source_specs} == {
+        "code": str(code_dir),
+        "us_doc": str(us_dir),
+        "test_asset": str(tests_dir),
+    }
+
+    client.post(f"/v1/agent-goals/{goal['id']}/resume")
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "completed")
+    image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    object_names = {item["name"] for item in image["objects"]}
+    assert image["project"]["system_image_status"] == "ready"
+    assert any("checkout" in name for name in object_names)
+    assert any("US-303" in name for name in object_names)
+    assert any("test_checkout_confirm" in name for name in object_names)
+    swarm = next(
+        item for item in store.agent_swarms.values()
+        if item.parent_goal_id == goal["id"] and item.swarm_kind == "ingestion"
+    )
+    assert swarm.status == "completed"
+    assert swarm.result_summary.startswith("Merged 3 source-specific candidates")
+    assert {assignment.status for assignment in swarm.assignments} == {"completed"}
+    assert {assignment.target_refs[-1] for assignment in swarm.assignments} == {
+        "source_type:code",
+        "source_type:us_doc",
+        "source_type:test_asset",
+    }
+    fetched_swarm = client.get(f"/v1/agent-swarms/{swarm.id}")
+    assert fetched_swarm.status_code == 200
+    assert fetched_swarm.json()["id"] == swarm.id
+    assert len(fetched_swarm.json()["assignments"]) == 3
+    async def first_swarm_event():
+        stream = store.stream_swarm_events(swarm.id)
+        event = await stream.__anext__()
+        await stream.aclose()
+        return event
+
+    snapshot_event = asyncio.run(first_swarm_event())
+    assert snapshot_event.event_type == "agent.swarm.snapshot"
+    assert snapshot_event.swarm_run_id == swarm.id
+    assert snapshot_event.agent_goal_id == goal["id"]
+    assert snapshot_event.payload["agent_swarm"]["id"] == swarm.id
+    assert snapshot_event.payload["agent_swarm"]["status"] == "completed"
+    restored_store = InMemoryStore()
+    assert restored_store.get_agent_swarm(swarm.id).status == "completed"
+
+
+def test_agent_goal_tool_invocations_are_queryable_as_system_image_execution_trace():
+    project = client.post("/v1/projects", json={"name": "Traceable System Image"}).json()
+    code_dir, us_dir, tests_dir = create_system_image_source_dirs("nasus-traceable-system-image-")
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={
+            "content": (
+                "Build the official system image with "
+                f"{system_image_source_prompt(code_dir, us_dir, tests_dir)}"
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    goal_id = response.json()["agent_goal"]["id"]
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
+
+    paused_trace = client.get(f"/v1/tool-invocations?agent_goal_id={goal_id}").json()
+    assert [item["tool_id"] for item in paused_trace] == [
+        "system_image.sources.register",
+        "system_image.sources.ingest",
+        "system_image.context.materialize",
+        "system_image.baseline.initialize",
+    ]
+    assert all(item["conversation_id"] == conversation["id"] for item in paused_trace)
+    assert all(item["initiator_actor"] == "agent" for item in paused_trace)
+    assert all(item["initiator_surface"] == "agent_loop" for item in paused_trace)
+    assert any(item["status"] == "waiting_confirmation" for item in paused_trace)
+
+    completed = client.post(f"/v1/agent-goals/{goal_id}/resume")
+    assert completed.status_code == 200
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "completed")
+
+    completed_trace = client.get(f"/v1/tool-invocations?conversation_id={conversation['id']}&status=completed").json()
+    assert [item["tool_id"] for item in completed_trace] == [
+        "system_image.sources.register",
+        "system_image.sources.ingest",
+        "system_image.context.materialize",
+        "system_image.baseline.initialize",
+    ]
+    assert all(item["result"] and item["result"]["summary"] for item in completed_trace)
+
+
+def test_agent_service_keeps_single_active_goal_per_conversation():
+    project = client.post("/v1/projects", json={"name": "Single Active Goal"}).json()
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    created = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": "Initialize the official system image from code, US docs, and tests"},
+    )
+    assert created.status_code == 200
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
+    first_goal = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
+
+    duplicate = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": "Build the official system image again before the first one completes"},
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.json()["agent_goal"]["id"] == first_goal["id"]
+    refreshed = client.get(f"/v1/conversations/{conversation['id']}").json()
+    assert [goal["id"] for goal in refreshed["agent_goals"]].count(first_goal["id"]) == 1
+    assert len(refreshed["agent_goals"]) == 1
+    assert any(
+        message["metadata"].get("agent_runtime") == "active_goal_guard"
+        for message in refreshed["messages"]
+    )
+
+
+def test_live_llm_structured_planner_can_drive_system_image_goal():
+    original = client.get("/v1/settings").json()
+    project = client.post("/v1/projects", json={"name": "LLM Planner System Image"}).json()
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    try:
+        client.patch(
+            "/v1/settings",
+            json={
+                "model_preset": "custom",
+                "custom_provider_kind": "openai_compatible",
+                "custom_base_url": "https://api.example.com/v1",
+                "custom_model_name": "planner-model",
+                "custom_api_key": "sk-planner-9999",
+            },
+        )
+
+        async def fake_call_custom(*, custom_model, custom_api_key, system_prompt, user_message, context_snapshot, history_snapshot):
+            assert "Nasus structured agent planner" in system_prompt
+            assert "system_image.sources.register" in context_snapshot
+            return json.dumps(
+                {
+                    "kind": "agent_goal",
+                    "goal_template": "system_image_build",
+                    "title": "LLM Planned System Image Build",
+                    "summary": "Build a system image using the structured planner.",
+                    "goal_description": "Register, ingest, materialize, and initialize the project baseline.",
+                    "steps": [
+                        {
+                            "tool_id": "system_image.sources.register",
+                            "input": {"project_id": project["id"]},
+                            "reason": "Register source groups.",
+                        },
+                        {
+                            "tool_id": "system_image.sources.ingest",
+                            "input": {"project_id": project["id"]},
+                            "reason": "Ingest source evidence.",
+                        },
+                        {
+                            "tool_id": "system_image.context.materialize",
+                            "input": {"project_id": project["id"]},
+                            "reason": "Materialize context.",
+                        },
+                        {
+                            "tool_id": "system_image.baseline.initialize",
+                            "input": {"project_id": project["id"]},
+                            "reason": "Initialize baseline after governance confirmation.",
+                        },
+                    ],
+                    "target_refs": [f"project:{project['id']}"],
+                    "query_keys": [["project", project["id"]], ["system-image", project["id"]]],
+                    "kickoff_message": "I will build this system image using the structured planner.",
+                }
+            )
+
+        with patch.object(store.llm, "_call_custom", new=fake_call_custom):
+            response = client.post(
+                f"/v1/conversations/{conversation['id']}/messages",
+                json={"content": "Plan and build the official system image"},
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["agent_goal"]["title"] == "LLM Planned System Image Build"
+        wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
+    finally:
+        client.patch(
+            "/v1/settings",
+            json={
+                "language": original["language"],
+                "theme": original["theme"],
+                "model_preset": original["model_preset"],
+                "notification_mode": original["notification_mode"],
+                "custom_provider_kind": original["custom_model"]["provider_kind"],
+                "custom_base_url": original["custom_model"]["base_url"],
+                "custom_model_name": original["custom_model"]["model_name"],
+                "custom_api_key": "",
+            },
+        )
+
+
+def test_project_conversation_confirmation_message_resumes_paused_system_image_goal():
+    project = client.post("/v1/projects", json={"name": "Chat Confirm System Image"}).json()
+    code_dir, us_dir, tests_dir = create_system_image_source_dirs("nasus-chat-confirm-system-image-")
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={
+            "content": (
+                "Initialize the system image with "
+                f"{system_image_source_prompt(code_dir, us_dir, tests_dir)}"
+            )
+        },
+    )
+    assert response.status_code == 200
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
+
+    confirmation = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": "确认，继续执行"},
+    )
+    assert confirmation.status_code == 200
+    body = confirmation.json()
+    assert body["agent_goal"]["status"] == "completed"
+    assert body["tool_invocation"]["status"] == "completed"
+
+    image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    assert image["project"]["system_image_status"] == "ready"
+    assert all(source["ingestion_status"] == "indexed" for source in image["sources"])
+
+
+def test_paused_system_image_agent_goal_can_resume_after_store_restart():
+    project = client.post("/v1/projects", json={"name": "Restartable System Image"}).json()
+    code_dir, us_dir, tests_dir = create_system_image_source_dirs("nasus-restartable-system-image-")
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={
+            "content": (
+                "Build the system image from source evidence with "
+                f"{system_image_source_prompt(code_dir, us_dir, tests_dir)}"
+            )
+        },
+    )
+    assert response.status_code == 200
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
+    paused_goal = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
+    assert paused_goal["pause_reason"] == "waiting_confirmation"
+    checkpoint = client.get(f"/v1/agent-goals/{paused_goal['id']}/checkpoint").json()
+    assert checkpoint["status"] == "paused"
+    assert checkpoint["phase"] == "paused"
+    assert checkpoint["blocked_step_index"] == checkpoint["resume_step_index"]
+    assert checkpoint["blocked_tool_invocation_id"]
+
+    restored_store = InMemoryStore()
+    restored_goal = restored_store.get_agent_goal(paused_goal["id"])
+    assert restored_goal.status == "paused"
+    assert any(step.tool_invocation_id for step in restored_goal.steps if step.status == "blocked")
+    restored_checkpoint = restored_store.get_agent_goal_checkpoint(paused_goal["id"])
+    assert restored_checkpoint.blocked_tool_invocation_id == checkpoint["blocked_tool_invocation_id"]
+    assert restored_checkpoint.resume_step_index == checkpoint["resume_step_index"]
+
+    resumed = asyncio.run(restored_store.resume_agent_goal(paused_goal["id"]))
+    assert resumed.status == "completed"
+    image = restored_store.get_system_image(project["id"])
+    assert image.project.system_image_status == "ready"
+    assert all(source.ingestion_status == "indexed" for source in image.sources)
+
+
+def test_missing_source_binding_agent_goal_can_resume_after_store_restart():
+    project = client.post("/v1/projects", json={"name": "Restartable Source Binding"}).json()
+    code_dir, us_dir, tests_dir = create_system_image_source_dirs("nasus-restartable-source-binding-")
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": "Build the official system image from code, US docs, and tests"},
+    )
+    assert response.status_code == 200
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
+    paused_goal = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
+    assert paused_goal["pause_reason"] == "missing_source_binding"
+    checkpoint = client.get(f"/v1/agent-goals/{paused_goal['id']}/checkpoint").json()
+    blocked_invocation_id = checkpoint["blocked_tool_invocation_id"]
+    assert blocked_invocation_id
+
+    restored_store = InMemoryStore()
+    restored_goal = restored_store.get_agent_goal(paused_goal["id"])
+    assert restored_goal.status == "paused"
+    assert restored_goal.pause_reason == "missing_source_binding"
+    restored_invocation = restored_store.get_tool_invocation(blocked_invocation_id)
+    assert restored_invocation.result is not None
+    assert restored_invocation.result.requires_followup is True
+    assert restored_invocation.result.followup_reason == "missing_source_binding"
+
+    resumed_after_source = asyncio.run(
+        restored_store.handle_message(
+            conversation["id"],
+            system_image_source_prompt(code_dir, us_dir, tests_dir),
+        )
+    )
+    assert resumed_after_source["agent_goal"].id == paused_goal["id"]
+    assert resumed_after_source["agent_goal"].status == "paused"
+    assert resumed_after_source["agent_goal"].pause_reason == "waiting_confirmation"
+    restored_with_sources = restored_store.get_system_image(project["id"])
+    assert all(source.ingestion_status == "indexed" for source in restored_with_sources.sources)
+
+    completed = asyncio.run(restored_store.resume_agent_goal(paused_goal["id"]))
+    assert completed.status == "completed"
+    image = restored_store.get_system_image(project["id"])
+    assert image.project.system_image_status == "ready"
 
 
 def test_project_conversation_routes_system_image_query_to_canonical_tool():
@@ -474,11 +1972,15 @@ def test_agent_goal_interrupt_and_resume_update_conversation_snapshot():
     ).json()
 
     created = client.post(
-        f"/v1/conversations/{conversation['id']}/messages",
-        json={"content": "Help me complete the quality loop for this US"},
+        "/v1/agent-goals",
+        json={
+            "conversation_id": conversation["id"],
+            "title": "Manual quality review",
+            "summary": "A manually managed agent goal used to verify lifecycle controls.",
+        },
     )
     assert created.status_code == 200
-    goal_id = created.json()["agent_goal"]["id"]
+    goal_id = created.json()["id"]
     wait_until(lambda: len(client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"]) >= 1)
 
     paused = client.post(f"/v1/agent-goals/{goal_id}/interrupt")
@@ -734,6 +2236,41 @@ def test_conversation_summary_checkpoint_is_created_and_persisted():
     checkpoint = restored_store.conversation_summary_checkpoints[restored.latest_summary_checkpoint_id]
     assert checkpoint.summary_text
     assert checkpoint.message_range_end is not None
+
+
+def test_agent_memory_checkpoint_can_be_created_explicitly_for_system_image_goal():
+    project = client.post("/v1/projects", json={"name": "Manual Memory Checkpoint"}).json()
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": "Build the official system image from code, US docs, and tests"},
+    )
+    assert response.status_code == 200
+    goal_id = response.json()["agent_goal"]["id"]
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
+
+    checkpoint = client.post(
+        "/v1/agent-memory/checkpoints",
+        json={"agent_goal_id": goal_id, "created_by": "user"},
+    )
+    assert checkpoint.status_code == 200
+    checkpoint_body = checkpoint.json()
+    assert checkpoint_body["conversation_id"] == conversation["id"]
+    assert checkpoint_body["created_by"] == "user"
+    assert "Build the official system image" in checkpoint_body["summary_text"]
+
+    memory = client.get(f"/v1/agent-memory/context?agent_goal_id={goal_id}").json()
+    assert memory["checkpoint_count"] >= 1
+    assert memory["conversation_memory"]["latest_summary_checkpoint_id"] == checkpoint_body["id"]
+
+    restored_store = InMemoryStore()
+    restored = restored_store.get_conversation(conversation["id"])
+    assert restored.latest_summary_checkpoint_id == checkpoint_body["id"]
+    assert restored_store.conversation_summary_checkpoints[checkpoint_body["id"]].summary_text
 
 
 def test_llm_generate_reply_receives_conversation_history_snapshot():

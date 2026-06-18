@@ -26,7 +26,7 @@
 - 产品能力真相：[final-feature-spec.md](./final-feature-spec.md)
 - 系统架构设计：[system-architecture.md](./system-architecture.md)
 - 实现总览：[implementation-overview.md](./implementation-overview.md)
-- 模块级开发指导：[modules/README.md](./modules/README.md)
+- 产品模块设计：[product-modules.md](./design/product-modules.md)
 
 ## 2. 项目定义
 

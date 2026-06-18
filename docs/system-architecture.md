@@ -3,6 +3,7 @@
 ## 0 文档优先级说明
 
 - 本文用于说明 Nasus 的系统分层、部署单元和实现约束。
+- 当前需求对应的生产准入、P0 纵切、开发顺序和技术契约冻结要求，以 [技术方案设计基线](./technical-solution-baseline.md) 为准。
 - 若本文与 [最终特性说明书](./final-feature-spec.md) 存在冲突，以最终特性说明书定义的产品能力和默认规则为准。
 - 尤其在 Agent 能力边界上，本文保留当前实现语义中的分层约束；最终产品能力以“Agent 可原生触发检索与执行，但必须受策略、审计和回放约束”为准。
 
@@ -89,7 +90,7 @@ Nasus 的产品一级模块固定为 3 个：
 - **工具契约面（Tool Contract Layer）**：`Conversation Orchestrator` + `Tool Registry` + `Tool Invocation Service` + `Confirmation / Approval Gate`，负责把会话输入、页面动作和外部 API 请求统一映射成可治理的工具调用。
 - **智能面（Intelligence Plane）**：Unified Context Engine + Domain Intelligence Services + `Agent Service` + `Agent Memory Manager` + `Agent Swarm Coordinator` + `Skill Registry` + `Merge/Score`，负责构建 `Task Context` + `Quality Profile`，并为工具执行提供可直接消费的编排能力。
 - **执行面（Execution Plane）**：Web Execution Fabric + Runner + Failure/Healing + Execution Evidence Store，负责网页端工具、Playwright/MCP 调用、确定性执行、失败归因和 patch 建议。
-- **数据面（Data Plane）**：PostgreSQL + MinIO + OpenGrok + Tree-sitter + Audit/Event Store，提供事实源、证据归档和检索能力。
+- **数据面（Data Plane）**：PostgreSQL + pgvector + MinIO + OpenGrok + Tree-sitter + Audit/Event Store，提供事实源、证据归档、关键词检索、语义检索、检索运行审计和可替换检索投影能力。
 
 运行平面说明：
 
@@ -210,12 +211,12 @@ Nasus 的产品一级模块固定为 3 个：
 ### 9.2 基于计划书的最小推断
 - 推断部署模型：四类中心运行单元 `portal`（React 前端）、`api/orchestrator`（FastAPI）、`workflow-service`（`Durable Workflow Runtime`，默认采用 Temporal 或等价实现）、`worker-runtime`（异步 worker 池）、`runner`（Playwright 执行 job）。存储层为 PostgreSQL + MinIO，代码索引/解析由 OpenGrok + Tree-sitter 实现。
 - 任务流：Web 发起任务 -> API/Agent 组装统一 Task Context -> `workflow-service` 启动耐久任务 -> `worker-runtime` 生成质量方案和自动化属性 -> Web 触发 Playwright/MCP -> 中心端提交 `AgentDecision` -> 统一 `Run` 和证据回写 PostgreSQL/MinIO -> 冲突时进入 `pending_merge` -> `Approval Control` 决定基线走向。
-- 运行环境建议：中心端先以 Docker 模式部署 4 到 5 个运行单元，再按需求扩展到多 worker 池。若中心检索性能逼近瓶颈，再考虑引入独立检索/向量层。这是受计划书 `infra/` 目录和 Phase 0-5 演进顺序启发的部署建议。
+- 运行环境建议：中心端先以 Docker 模式部署 4 到 5 个运行单元，再按需求扩展到多 worker 池。V1 必须在 PostgreSQL FTS + pgvector 上落地 hybrid retrieval、embedding 和 rerank adapter；若中心检索规模或召回质量逼近瓶颈，再把检索投影迁移到 Weaviate / OpenSearch / Qdrant / Milvus 等独立服务。
 
 ## 10 首轮建设到后续演进
 
 - 建议先跑通 Phase0-3（对象协议、项目/版本初始化、任务上下文、质量方案生成），Phase4 补自动化执行与失败分析，Phase5 加审批与基线回写。[计划书](./nasus_assurance_studio_implementation_plan.md#L764)
-- 随着成熟度提升，可把 worker 按 Context/Impact/Scenario/Failure 进一步分池、把 runner 做成隔离 job、把 OpenGrok/Tree-sitter 解析从实时路径剥离、仅在召回质量需要时再引入专用向量/检索层。[文档未明示，此为可演进建议]
+- 随着成熟度提升，可把 worker 按 Context/Impact/Scenario/Failure 进一步分池、把 runner 做成隔离 job、把 OpenGrok/Tree-sitter 解析从实时路径剥离、把 V1 的 PostgreSQL FTS + pgvector 检索投影平滑替换为专用向量/检索层。[文档未明示，此为可演进建议]
 
 ## 11 可靠性、审计、权限与可观测性
 
@@ -258,6 +259,6 @@ Nasus 的产品一级模块固定为 3 个：
 | P5 | 运维与治理 | Audit Store、Policy Service、Observability | RBAC 配置、审计看板、监控体系 |
 
 - 建议先完成 P0-P3，形成项目接入、任务分析和 Web 执行闭环；在此基础上再补齐 P4-P5 的审批、沉淀和运维治理能力。
-- 随着成熟度提升，可把 worker 按 Context/Impact/Scenario/Failure 进一步分池、把 runner 做成隔离 job、把 OpenGrok/Tree-sitter 解析从实时路径剥离、仅在召回质量需要时再引入专用向量/检索层。[文档未明示，此为可演进建议]
+- 随着成熟度提升，可把 worker 按 Context/Impact/Scenario/Failure 进一步分池、把 runner 做成隔离 job、把 OpenGrok/Tree-sitter 解析从实时路径剥离、把 V1 的 PostgreSQL FTS + pgvector 检索投影平滑替换为专用向量/检索层。[文档未明示，此为可演进建议]
 
 上文内容可直接供设计评审和部署讨论使用，若需要我还能把它转成图示版或工程落地清单。

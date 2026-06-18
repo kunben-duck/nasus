@@ -73,7 +73,7 @@ class ConversationOrchestrator:
             )
 
         if self._looks_like_system_image_initialization(conversation, lowered, user_message):
-            return self._system_image_initialization_plan(conversation)
+            return self._system_image_initialization_plan(conversation, user_message)
 
         if self._looks_like_system_image_query(conversation, lowered, user_message):
             return self._system_image_query_plan(conversation)
@@ -189,21 +189,72 @@ class ConversationOrchestrator:
             ),
         )
 
-    def _system_image_initialization_plan(self, conversation: ConversationSession) -> OrchestratorDecision:
+    def _system_image_initialization_plan(self, conversation: ConversationSession, user_message: str) -> OrchestratorDecision:
         project_id = conversation.project_id or conversation.space_id
+        if conversation.space_type not in {"project", "knowledge"} or not project_id:
+            return OrchestratorDecision(
+                kind="clarification",
+                clarification=ClarificationRequest(
+                    question="Tell me which project should receive the Official System Image baseline.",
+                    reason="system_image_initialization",
+                    missing_context=["project_id"],
+                ),
+            )
+
+        source_specs = self._extract_system_image_source_specs(user_message)
+        register_input: dict[str, object] = {"project_id": project_id}
+        if source_specs:
+            register_input["source_specs"] = source_specs
+
+        planned_tools = [
+            ToolPlanStep(
+                tool_id="system_image.sources.register",
+                input_payload=register_input,
+                reason=(
+                    "Register the explicit source references provided by the user."
+                    if source_specs
+                    else "Register the canonical source groups: code, historical US documents, and historical test assets."
+                ),
+            ),
+            ToolPlanStep(
+                tool_id="system_image.sources.ingest",
+                input_payload={"project_id": project_id},
+                reason="Ingest and index the registered sources so downstream context assembly has evidence refs.",
+            ),
+            ToolPlanStep(
+                tool_id="system_image.context.materialize",
+                input_payload={"project_id": project_id},
+                reason="Materialize context objects, relationships, overlays, and quality metric snapshots.",
+            ),
+            ToolPlanStep(
+                tool_id="system_image.baseline.initialize",
+                input_payload={"project_id": project_id},
+                reason="Promote the materialized context into the initial Official System Image baseline.",
+            ),
+        ]
         return OrchestratorDecision(
-            kind="tool_plan",
-            tool_plan=ToolInvocationPlan(
-                intent_kind="system_image_initialization",
-                confidence=0.9,
-                steps=[
-                    ToolPlanStep(
-                        tool_id="baseline.initialize",
-                        input_payload={"project_id": project_id},
-                        reason="Initialize the Official System Image from the three first-class sources.",
+            kind="agent_goal",
+            agent_goal=AgentGoalProposal(
+                goal_template="system_image_build",
+                title="Build Official System Image",
+                summary="Build the project baseline from code, historical US documents, and historical test assets.",
+                goal_description="Register sources, ingest evidence, materialize context, and initialize the baseline.",
+                suggested_autonomy_level="semi_auto",
+                estimated_steps=len(planned_tools) * 2 + 2,
+                planned_tools=planned_tools,
+                initial_tool_id=planned_tools[0].tool_id,
+                initial_tool_input=planned_tools[0].input_payload,
+                target_refs=[f"project:{project_id}", f"system-image:{project_id}"],
+                query_keys=[["project", project_id], ["system-image", project_id], ["knowledge", project_id]],
+                kickoff_message=(
+                    "I will build the Official System Image as a multi-step agent goal: register source groups, "
+                    "ingest code/US/test evidence, materialize context, and then initialize the baseline."
+                    + (
+                        " I found explicit source references in your message and will bind them to the first tool call."
+                        if source_specs
+                        else ""
                     )
-                ],
-                recommended_next_tools=["query.system_image.status", "version.create"],
+                ),
             ),
         )
 
@@ -221,7 +272,7 @@ class ConversationOrchestrator:
                         reason="Summarize source freshness, baseline readiness, relationships, and quality metrics.",
                     )
                 ],
-                recommended_next_tools=["baseline.initialize"] if conversation.space_type == "project" else [],
+                recommended_next_tools=["system_image.baseline.initialize"] if conversation.space_type == "project" else [],
             ),
         )
 
@@ -364,3 +415,44 @@ class ConversationOrchestrator:
         if 1 < len(plain) <= 40 and not any(token in plain.lower() for token in ["create", "version", "branch", "project"]):
             return plain
         return None
+
+    @classmethod
+    def _extract_system_image_source_specs(cls, content: str) -> list[dict[str, str]]:
+        source_label_groups: dict[str, list[str]] = {
+            "code": ["code", "repo", "repository", "git", "source code", "代码", "代码库", "仓库"],
+            "us_doc": ["us", "us docs", "us doc", "story docs", "requirements", "需求", "需求文档", "US文档", "用户故事"],
+            "test_asset": [
+                "tests",
+                "test",
+                "test assets",
+                "test cases",
+                "automation scripts",
+                "测试",
+                "测试资产",
+                "测试用例",
+                "自动化脚本",
+                "脚本",
+            ],
+        }
+        specs_by_type: dict[str, dict[str, str]] = {}
+        for source_type, labels in source_label_groups.items():
+            label_pattern = "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
+            pattern = re.compile(
+                rf"(?:{label_pattern})"
+                rf"(?:\s*(?:path|dir|directory|url|uri|地址|路径|目录|位置|为|是|在))?"
+                rf"\s*(?:=|:|：|->|=>)?\s*"
+                rf"(?P<uri>(?:file://|https?://|ssh://|git@|/|~|\.\.?/)[^\s,，;；]+)",
+                re.IGNORECASE,
+            )
+            match = pattern.search(content)
+            if not match:
+                continue
+            uri = cls._clean_source_uri(match.group("uri"))
+            if uri:
+                specs_by_type[source_type] = {"source_type": source_type, "source_uri": uri}
+
+        return [specs_by_type[source_type] for source_type in ["code", "us_doc", "test_asset"] if source_type in specs_by_type]
+
+    @staticmethod
+    def _clean_source_uri(uri: str) -> str:
+        return uri.strip().rstrip(".,，;；。)]}'\"")
