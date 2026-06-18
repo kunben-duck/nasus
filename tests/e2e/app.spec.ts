@@ -39,5 +39,9 @@ test('agent-first build to project workspace path works end-to-end', async ({ pa
   await expect(page.getByText(/source groups are indexed|system image is/i).first()).toBeVisible({ timeout: 15_000 })
 
   await page.getByTestId('agent-card-quality-loop-agent').click()
-  await expect(page.getByText(/imported US work item/i).first()).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByTestId('agent-goal-panel')).toContainText(/Advance quality loop/i, { timeout: 15_000 })
+  await expect(page.getByTestId('agent-goal-panel')).toContainText(/completed/i, { timeout: 20_000 })
+  await expect(page.getByTestId('quality-asset-panel')).toContainText(/Release Assessment/i, { timeout: 20_000 })
+  await expect(page.getByTestId('quality-asset-panel')).toContainText(/completed/i)
+  await expect(page.getByTestId('quality-asset-panel')).toContainText(/Latest run/i)
 })

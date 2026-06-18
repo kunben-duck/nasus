@@ -140,6 +140,39 @@ class ApplicationStore:
                 produced_objects=["QualityAssetPack", "AgentGoal"],
             ),
             ToolDefinition(
+                tool_id="quality.case.generate",
+                label="Generate Test Cases",
+                tool_kind="analysis",
+                scope="either",
+                risk_level="low",
+                confirmation_mode="none",
+                description="Generate structured test cases from approved scenario coverage.",
+                required_context=["project_id", "us_id"],
+                produced_objects=["QualityAssetPack", "TestCaseSet"],
+            ),
+            ToolDefinition(
+                tool_id="automation.generate",
+                label="Generate Automation",
+                tool_kind="execution",
+                scope="central",
+                risk_level="medium",
+                confirmation_mode="none",
+                description="Generate automation and attach execution evidence for the selected US.",
+                required_context=["project_id", "us_id"],
+                produced_objects=["Run", "ExecutionEvidence", "QualityAssetPack"],
+            ),
+            ToolDefinition(
+                tool_id="release.assess",
+                label="Assess Release Readiness",
+                tool_kind="governance",
+                scope="central",
+                risk_level="medium",
+                confirmation_mode="none",
+                description="Assess release readiness from quality assets, automation evidence, and governance state.",
+                required_context=["project_id", "us_id"],
+                produced_objects=["ReleaseReadiness", "QualityProfile"],
+            ),
+            ToolDefinition(
                 tool_id="query.dashboard.progress",
                 label="Check Portfolio Progress",
                 tool_kind="query",
@@ -859,7 +892,7 @@ class ApplicationStore:
 
     def create_version(self, project_id: str, name: str) -> VersionSummary:
         version = VersionSummary(
-            id=f"ver_{_slugify(name)}_{len(self.versions[project_id]) + 1}",
+            id=f"ver_{_slugify(name)}_{project_id[-6:]}_{len(self.versions[project_id]) + 1}",
             name=name,
             status="draft",
             branch_name=f"release/{_slugify(name)}",

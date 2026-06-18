@@ -46,6 +46,44 @@ def system_image_source_prompt(code_dir: Path, us_dir: Path, tests_dir: Path) ->
     return f"code path {code_dir}, US docs path {us_dir}, tests path {tests_dir}"
 
 
+def create_project_with_materialized_system_image(name: str):
+    project = client.post("/v1/projects", json={"name": name}).json()
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
+    ).json()
+    code_dir, us_dir, tests_dir = create_system_image_source_dirs(f"nasus-{name.lower().replace(' ', '-')}-")
+    source_specs = [
+        {"source_type": "code", "source_uri": str(code_dir)},
+        {"source_type": "us_doc", "source_uri": str(us_dir)},
+        {"source_type": "test_asset", "source_uri": str(tests_dir)},
+    ]
+    registered = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "system_image.sources.register",
+            "input": {"project_id": project["id"], "source_specs": source_specs},
+        },
+    )
+    assert registered.status_code == 200
+    assert registered.json()["status"] == "completed"
+    for tool_id in ["system_image.sources.ingest", "system_image.context.materialize"]:
+        invoked = client.post(
+            "/v1/tool-invocations",
+            json={
+                "conversation_id": conversation["id"],
+                "tool_id": tool_id,
+                "input": {"project_id": project["id"]},
+            },
+        )
+        assert invoked.status_code == 200
+        assert invoked.json()["status"] == "completed"
+    workspace = client.get(f"/v1/projects/{project['id']}").json()
+    assert workspace["us_items"]
+    return project, conversation, workspace
+
+
 def test_system_image_source_prompt_parser_does_not_match_us_inside_absolute_path():
     prompt = (
         "code path /Users/uben/project/project/Nasus/tests/fixtures/system-image/code, "
@@ -328,6 +366,12 @@ def test_tool_catalog_exposes_system_image_tool_chain():
         "system_image.sources.ingest",
         "system_image.context.materialize",
         "system_image.baseline.initialize",
+    }.issubset(tool_ids)
+    assert {
+        "quality.scenario.generate",
+        "quality.case.generate",
+        "automation.generate",
+        "release.assess",
     }.issubset(tool_ids)
     assert "baseline.initialize" not in tool_ids
 
@@ -613,6 +657,9 @@ def test_tool_invocation_runtime_is_canonical_store_entry_for_gated_tools():
     assert store.tool_invocation_runtime.tool_definition("system_image.baseline.initialize").confirmation_mode == "user_confirm"
     assert store.tool_invocation_runtime.handlers.resolve("system_image.baseline.initialize") is not None
     assert store.tool_invocation_runtime.handlers.resolve("quality.scenario.generate") is not None
+    assert store.tool_invocation_runtime.handlers.resolve("quality.case.generate") is not None
+    assert store.tool_invocation_runtime.handlers.resolve("automation.generate") is not None
+    assert store.tool_invocation_runtime.handlers.resolve("release.assess") is not None
     assert store.tool_invocation_runtime.handlers.resolve("query.system_image.status") is not None
 
     project = client.post("/v1/projects", json={"name": "Runtime Gate Project"}).json()
@@ -751,6 +798,23 @@ def test_tool_invocation_creates_project():
     wait_until(lambda: client.get(f"/v1/tool-invocations/{invocation_id}").json()["status"] == "completed")
     projects = client.get("/v1/projects").json()
     assert any(project["name"] == "Agent Ops Hub" for project in projects)
+
+
+def test_project_api_creation_is_backed_by_tool_invocation_and_audit():
+    project = client.post("/v1/projects", json={"name": "API Tool Project"}).json()
+
+    invocations = client.get(
+        "/v1/tool-invocations",
+        params={"tool_id": "project.create", "status": "completed"},
+    ).json()
+    matching = [
+        invocation
+        for invocation in invocations
+        if f"project:{project['id']}" in (invocation.get("result") or {}).get("object_refs", [])
+    ]
+    assert matching
+    audit = client.get(f"/v1/audit-events?tool_invocation_id={matching[-1]['id']}").json()
+    assert {"tool.invocation.created", "tool.invocation.completed"}.issubset({event["action"] for event in audit})
 
 
 def test_system_image_exposes_long_term_baseline_shape():
@@ -1935,10 +1999,30 @@ def test_project_and_version_are_persisted_across_store_restart():
     assert restored_store.release_readiness[version["id"]].status == "Draft"
 
 
+def test_version_api_creation_is_backed_by_tool_invocation_and_audit():
+    project = client.post("/v1/projects", json={"name": "API Version Project"}).json()
+    version = client.post(f"/v1/projects/{project['id']}/versions", json={"name": "2026.Q5"}).json()
+
+    invocations = client.get(
+        "/v1/tool-invocations",
+        params={"tool_id": "version.create", "status": "completed"},
+    ).json()
+    matching = [
+        invocation
+        for invocation in invocations
+        if f"version:{version['id']}" in (invocation.get("result") or {}).get("object_refs", [])
+    ]
+    assert matching
+    audit = client.get(f"/v1/audit-events?tool_invocation_id={matching[-1]['id']}").json()
+    assert {"tool.invocation.created", "tool.invocation.completed"}.issubset({event["action"] for event in audit})
+
+
 def test_workspace_message_generates_agent_goal():
+    project, _, workspace = create_project_with_materialized_system_image("Workspace Goal Project")
+    us_id = workspace["us_items"][0]["id"]
     conversation = client.post(
         "/v1/conversations",
-        json={"space_type": "workspace", "space_id": "us_123", "title": "US-123 Workspace"},
+        json={"space_type": "workspace", "space_id": us_id, "title": f"{us_id} Workspace"},
     ).json()
 
     response = client.post(
@@ -1952,9 +2036,11 @@ def test_workspace_message_generates_agent_goal():
 
 
 def test_workspace_quality_loop_request_creates_agent_goal_proposal_and_runtime_goal():
+    project, _, workspace = create_project_with_materialized_system_image("Workspace Quality Goal Project")
+    us_id = workspace["us_items"][0]["id"]
     conversation = client.post(
         "/v1/conversations",
-        json={"space_type": "workspace", "space_id": "us_123", "title": "US-123 Workspace"},
+        json={"space_type": "workspace", "space_id": us_id, "title": f"{us_id} Workspace"},
     ).json()
 
     response = client.post(
@@ -1969,10 +2055,14 @@ def test_workspace_quality_loop_request_creates_agent_goal_proposal_and_runtime_
     assert refreshed["agent_goals"][-1]["status"] in {"running", "completed"}
 
 
-def test_project_quality_loop_request_selects_first_us_and_generates_scenarios():
+def test_project_quality_loop_request_selects_first_us_and_completes_release_assessment():
+    project, conversation, workspace = create_project_with_materialized_system_image("Quality Loop Project")
+    us_id = workspace["us_items"][0]["id"]
+    assert workspace["asset_lanes"]
+
     conversation = client.post(
         "/v1/conversations",
-        json={"space_type": "project", "space_id": "proj_payment", "title": "Payment System"},
+        json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
     response = client.post(
@@ -1983,12 +2073,21 @@ def test_project_quality_loop_request_selects_first_us_and_generates_scenarios()
     body = response.json()
     assert body["agent_goal"]["title"].startswith("Advance quality loop")
 
-    def scenario_lane_persisted() -> bool:
-        workspace = client.get("/v1/projects/proj_payment/workspaces/us_123").json()
-        scenarios = next((lane for lane in workspace["asset_lanes"] if lane["id"] == "lane_scenarios"), None)
-        return scenarios is not None and scenarios["status"] == "approved"
+    def quality_loop_completed() -> bool:
+        current_workspace = client.get(f"/v1/projects/{project['id']}/workspaces/{us_id}").json()
+        lanes = {lane["label"]: lane for lane in current_workspace["asset_lanes"]}
+        return (
+            lanes.get("Scenarios", {}).get("status") == "approved"
+            and lanes.get("Cases", {}).get("status") == "approved"
+            and lanes.get("Automation", {}).get("status") == "completed"
+            and lanes.get("Release Assessment", {}).get("status") == "completed"
+            and bool(current_workspace["runs"])
+        )
 
-    wait_until(scenario_lane_persisted)
+    wait_until(quality_loop_completed, timeout=3)
+    release = client.get(f"/v1/projects/{project['id']}/release-readiness").json()
+    assert release["status"] == "Ready for release review"
+    assert release["score"] >= 80
 
 
 def test_agent_goal_interrupt_and_resume_update_conversation_snapshot():
@@ -2023,9 +2122,11 @@ def test_agent_goal_interrupt_and_resume_update_conversation_snapshot():
 
 
 def test_workspace_asset_lane_updates_are_persisted_across_store_restart():
+    project, _, workspace = create_project_with_materialized_system_image("Restartable Quality Loop")
+    us_id = workspace["us_items"][0]["id"]
     conversation = client.post(
         "/v1/conversations",
-        json={"space_type": "workspace", "space_id": "us_123", "title": "US-123 Workspace"},
+        json={"space_type": "workspace", "space_id": us_id, "title": f"{us_id} Workspace"},
     ).json()
 
     response = client.post(
@@ -2034,20 +2135,24 @@ def test_workspace_asset_lane_updates_are_persisted_across_store_restart():
     )
     assert response.status_code == 200
 
-    def scenario_lane_persisted() -> bool:
-        workspace = client.get("/v1/projects/proj_payment/workspaces/us_123").json()
-        scenarios = next((lane for lane in workspace["asset_lanes"] if lane["id"] == "lane_scenarios"), None)
-        return scenarios is not None and scenarios["status"] == "approved"
+    def release_lane_persisted() -> bool:
+        current_workspace = client.get(f"/v1/projects/{project['id']}/workspaces/{us_id}").json()
+        release = next((lane for lane in current_workspace["asset_lanes"] if lane["label"] == "Release Assessment"), None)
+        return release is not None and release["status"] == "completed"
 
-    wait_until(scenario_lane_persisted)
+    wait_until(release_lane_persisted, timeout=6)
 
     restored_store = InMemoryStore()
-    restored_lanes = restored_store.asset_lanes["us_123"]
-    scenarios = next(lane for lane in restored_lanes if lane.id == "lane_scenarios")
-    cases = next(lane for lane in restored_lanes if lane.id == "lane_cases")
+    restored_lanes = restored_store.asset_lanes[us_id]
+    scenarios = next(lane for lane in restored_lanes if lane.label == "Scenarios")
+    cases = next(lane for lane in restored_lanes if lane.label == "Cases")
+    automation = next(lane for lane in restored_lanes if lane.label == "Automation")
+    release = next(lane for lane in restored_lanes if lane.label == "Release Assessment")
     assert scenarios.status == "approved"
-    assert "8 scenarios grouped" in scenarios.summary
-    assert cases.status == "ready_for_review"
+    assert "8 scenario groups" in scenarios.summary
+    assert cases.status == "approved"
+    assert automation.status == "completed"
+    assert release.status == "completed"
 
 
 def test_project_message_can_create_version():
@@ -2192,7 +2297,7 @@ def test_conversation_merge_moves_messages_into_target():
 
     post_source = client.post(
         f"/v1/conversations/{source['id']}/messages",
-        json={"content": "Generate scenarios for refund status timeline"},
+        json={"content": "What is the current workspace status for refund status timeline?"},
     )
     assert post_source.status_code == 200
     wait_until(lambda: len(client.get(f"/v1/conversations/{source['id']}").json()["messages"]) >= 2)
@@ -2237,10 +2342,10 @@ def test_conversation_summary_checkpoint_is_created_and_persisted():
     ).json()
 
     prompts = [
-        "Summarize the current quality risk",
-        "Generate scenarios for this US",
-        "What should we do after scenarios?",
-        "Give me a concise execution recommendation",
+        "Summarize the current workspace risk",
+        "What is the current workspace status?",
+        "What should we do after this status check?",
+        "Give me a concise delivery recommendation",
     ]
     for prompt in prompts:
         response = client.post(

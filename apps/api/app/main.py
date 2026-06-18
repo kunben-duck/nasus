@@ -49,6 +49,14 @@ def _error_response(code: str, message: str, status_code: int = 400) -> HTTPExce
     )
 
 
+def _object_ref_id(object_refs: list[str], prefix: str) -> str | None:
+    marker = f"{prefix}:"
+    for object_ref in object_refs:
+        if object_ref.startswith(marker):
+            return object_ref.split(":", 1)[1]
+    return None
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
@@ -167,11 +175,24 @@ def list_projects() -> Any:
 
 
 @app.post("/v1/projects")
-def create_project(payload: dict[str, str]) -> Any:
+async def create_project(payload: dict[str, str]) -> Any:
     name = payload.get("name")
     if not name:
         raise _error_response("validation_error", "name is required")
-    return store.create_project(name)
+    invocation = await store.create_tool_invocation(
+        ToolInvocationRequest(
+            tool_id="project.create",
+            input={"name": name},
+            initiator_surface="api",
+            initiator_actor="user",
+        )
+    )
+    if invocation.status != "completed" or invocation.result is None:
+        raise _error_response("tool_invocation_failed", invocation.summary, 500)
+    project_id = _object_ref_id(invocation.result.object_refs, "project")
+    if project_id is None or project_id not in store.projects:
+        raise _error_response("tool_invocation_failed", "project.create did not return a project object", 500)
+    return store.projects[project_id]
 
 
 @app.get("/v1/projects/{project_id}")
@@ -191,14 +212,31 @@ def get_versions(project_id: str) -> Any:
 
 
 @app.post("/v1/projects/{project_id}/versions")
-def create_version(project_id: str, payload: dict[str, str]) -> VersionSummary:
+async def create_version(project_id: str, payload: dict[str, str]) -> VersionSummary:
     name = payload.get("name")
     if not name:
         raise _error_response("validation_error", "name is required")
+    if project_id not in store.projects:
+        raise _error_response("not_found", f"project {project_id} was not found", 404)
+    invocation = await store.create_tool_invocation(
+        ToolInvocationRequest(
+            tool_id="version.create",
+            input={"project_id": project_id, "name": name},
+            initiator_surface="api",
+            initiator_actor="user",
+        )
+    )
+    if invocation.status != "completed" or invocation.result is None:
+        raise _error_response("tool_invocation_failed", invocation.summary, 500)
+    version_id = _object_ref_id(invocation.result.object_refs, "version")
+    if version_id is None:
+        raise _error_response("tool_invocation_failed", "version.create did not return a version object", 500)
     try:
-        return store.create_version(project_id, name)
+        return next(version for version in store.versions[project_id] if version.id == version_id)
     except KeyError as exc:
         raise _error_response("not_found", f"project {project_id} was not found", 404) from exc
+    except StopIteration as exc:
+        raise _error_response("tool_invocation_failed", f"version {version_id} was not found after tool execution", 500) from exc
 
 
 @app.get("/v1/projects/{project_id}/workspaces/{us_id}")

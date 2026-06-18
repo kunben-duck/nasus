@@ -8,6 +8,7 @@ import type {
   CustomModelConfig,
   ModelRoute,
   ProjectCard,
+  ProjectWorkspaceData,
   SettingsConnectionResult,
   StudioSettings,
   StudioSettingsConnectionTestRequest,
@@ -236,6 +237,11 @@ export function NasusStudio() {
     queryFn: () => api.getSystemImage(activeProject!.id),
     enabled: Boolean(activeProject?.id),
   })
+  const projectWorkspaceQuery = useQuery({
+    queryKey: ['project', activeProject?.id],
+    queryFn: () => api.getProject(activeProject!.id),
+    enabled: Boolean(activeProject?.id),
+  })
 
   const visibleMessages = useMemo(() => {
     const conversation = view === 'project' ? projectConversation.conversation : buildConversation.conversation
@@ -289,6 +295,7 @@ export function NasusStudio() {
       if (view === 'project') {
         await projectConversation.sendMessage(text)
         if (activeProject) {
+          await queryClient.invalidateQueries({ queryKey: ['project', activeProject.id] })
           await queryClient.invalidateQueries({ queryKey: ['system-image', activeProject.id] })
           await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
         }
@@ -361,6 +368,7 @@ export function NasusStudio() {
     try {
       await projectConversation.sendMessage(promptText)
       if (activeProject) {
+        await queryClient.invalidateQueries({ queryKey: ['project', activeProject.id] })
         await queryClient.invalidateQueries({ queryKey: ['system-image', activeProject.id] })
         await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       }
@@ -376,6 +384,7 @@ export function NasusStudio() {
     try {
       await projectConversation.sendMessage('确认，继续执行')
       if (activeProject) {
+        await queryClient.invalidateQueries({ queryKey: ['project', activeProject.id] })
         await queryClient.invalidateQueries({ queryKey: ['system-image', activeProject.id] })
         await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       }
@@ -451,7 +460,8 @@ export function NasusStudio() {
         ) : null}
         {isProjectSpace && activeProject ? (
           <ProjectWorkspace
-            project={activeProject}
+            project={projectWorkspaceQuery.data?.project ?? activeProject}
+            workspace={projectWorkspaceQuery.data}
             systemImage={systemImageQuery.data}
             mode={agentMode}
             setMode={setAgentMode}
@@ -740,6 +750,7 @@ function BuildComposer({
 
 function ProjectWorkspace({
   project,
+  workspace,
   systemImage,
   mode,
   setMode,
@@ -757,6 +768,7 @@ function ProjectWorkspace({
   toggleSidebar,
 }: {
   project: ProjectCard
+  workspace?: ProjectWorkspaceData
   systemImage?: SystemImageData
   mode: AgentMode
   setMode: (mode: AgentMode) => void
@@ -775,7 +787,7 @@ function ProjectWorkspace({
 }) {
   const cardActions: Record<string, () => void> = {
     'System Image Builder': initializeSystemImage,
-    'Quality Loop Agent': () => askProject('Summarize the current quality loop status and recommend the next best action.'),
+    'Quality Loop Agent': () => askProject('Continue the quality loop for the riskiest open US.'),
     'Release Assessor': () => askProject('Assess release readiness based on current evidence, open risks, and governance status.'),
     'Repo Maintainer': () => askProject('Inspect system image code quality and changed module risk for this project.'),
   }
@@ -818,6 +830,7 @@ function ProjectWorkspace({
       </div>
       <SystemImageStrip systemImage={systemImage} project={project} />
       <AgentGoalPanel goal={agentGoal} />
+      <QualityAssetPanel workspace={workspace} />
       {pendingGoal ? (
         <div className="confirmation-gate-card" data-testid="agent-confirmation-gate">
           <div>
@@ -862,6 +875,56 @@ function ProjectWorkspace({
         </div>
       </div>
     </section>
+  )
+}
+
+function QualityAssetPanel({ workspace }: { workspace?: ProjectWorkspaceData }) {
+  const lanes = workspace?.asset_lanes ?? []
+  const primaryUs = workspace?.us_items[0]
+  const latestRun = workspace?.runs[0]
+
+  if (!workspace) {
+    return null
+  }
+
+  return (
+    <div className="quality-asset-panel" data-testid="quality-asset-panel">
+      <div className="quality-panel-header">
+        <div>
+          <span className="eyebrow">Quality loop</span>
+          <strong>{primaryUs?.title ?? 'Waiting for US work item'}</strong>
+          <p>{primaryUs ? `${primaryUs.status} · ${primaryUs.progress}% · ${primaryUs.next_action}` : 'Import US documents or build the system image to create the first work item.'}</p>
+        </div>
+        {latestRun ? (
+          <span className={`run-status-pill ${latestRun.status}`}>{latestRun.status}</span>
+        ) : null}
+      </div>
+      {lanes.length ? (
+        <div className="quality-lane-grid">
+          {lanes.map((lane) => (
+            <div className={`quality-lane-card ${lane.status}`} key={lane.id}>
+              <div>
+                <span className="quality-lane-dot" />
+                <strong>{lane.label}</strong>
+              </div>
+              <p>{lane.summary}</p>
+              <span>{lane.status}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="quality-empty-state">
+          No quality asset lanes yet. Ask Nasus to build the system image or import US documents first.
+        </div>
+      )}
+      {latestRun ? (
+        <div className="quality-run-row">
+          <span>Latest run</span>
+          <strong>{latestRun.title}</strong>
+          <p>{latestRun.summary}</p>
+        </div>
+      ) : null}
+    </div>
   )
 }
 

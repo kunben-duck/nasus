@@ -280,21 +280,45 @@ class ConversationOrchestrator:
         project_id = conversation.project_id or (conversation.space_id if conversation.space_type == "project" else "")
         us_id = conversation.us_id or (conversation.space_id if conversation.space_type == "workspace" else "")
         subject = us_id or project_id or "current project"
+        planned_tools = [
+            ToolPlanStep(
+                tool_id="quality.scenario.generate",
+                input_payload={"project_id": project_id, "us_id": us_id},
+                reason="Generate risk-based scenario coverage from the current system image and US context.",
+            ),
+            ToolPlanStep(
+                tool_id="quality.case.generate",
+                input_payload={"project_id": project_id, "us_id": us_id},
+                reason="Turn approved scenario coverage into structured cases with assertions and data hints.",
+            ),
+            ToolPlanStep(
+                tool_id="automation.generate",
+                input_payload={"project_id": project_id, "us_id": us_id},
+                reason="Generate automation and attach execution evidence to the quality asset pack.",
+            ),
+            ToolPlanStep(
+                tool_id="release.assess",
+                input_payload={"project_id": project_id, "us_id": us_id},
+                reason="Score release readiness from approved assets, execution evidence, and governance state.",
+            ),
+        ]
         return OrchestratorDecision(
             kind="agent_goal",
             agent_goal=AgentGoalProposal(
                 goal_template="quality_loop",
                 title=f"Advance quality loop for {subject}",
-                summary="Drive the current US through the next quality step and keep the user updated with clear progress.",
+                summary="Drive the current US through scenarios, cases, automation evidence, and release readiness.",
                 goal_description=user_message,
-                estimated_steps=4,
-                initial_tool_id="quality.scenario.generate",
-                initial_tool_input={"project_id": project_id, "us_id": us_id},
+                estimated_steps=len(planned_tools) * 2 + 2,
+                planned_tools=planned_tools,
+                initial_tool_id=planned_tools[0].tool_id,
+                initial_tool_input=planned_tools[0].input_payload,
                 target_refs=[f"project:{project_id}"] + ([f"us:{us_id}"] if us_id else []),
-                query_keys=[["project", project_id], ["conversation", conversation.id]],
+                query_keys=[["project", project_id], ["conversation", conversation.id]]
+                + ([["workspace", project_id, us_id]] if project_id and us_id else []),
                 kickoff_message=(
-                    f"I'll take over the next quality step for **{subject}**. I will review the current workspace context, "
-                    "generate the scenario pack, observe the result, and then propose the best next action."
+                    f"I'll take over the quality loop for **{subject}**. I will generate scenarios, cases, automation evidence, "
+                    "and a release-readiness assessment through the canonical tool chain."
                 ),
             ),
         )
