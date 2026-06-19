@@ -187,6 +187,7 @@ class ConversationRepository:
             conversations = session.scalars(select(ConversationRecord)).all()
             message_rows = session.scalars(select(ConversationMessageRecord)).all()
             goal_rows = session.scalars(select(AgentGoalRecord)).all()
+            invocation_rows = session.scalars(select(ToolInvocationRecord)).all()
 
         messages_by_conversation: dict[str, list[ConversationMessage]] = {}
         for row in message_rows:
@@ -198,11 +199,17 @@ class ConversationRepository:
         for row in goal_rows:
             goals_by_conversation.setdefault(row.conversation_id, []).append(self._to_goal(row))
 
+        invocations_by_conversation: dict[str, list[ToolInvocation]] = {}
+        for row in invocation_rows:
+            if row.conversation_id:
+                invocations_by_conversation.setdefault(row.conversation_id, []).append(self._to_tool_invocation(row))
+
         return [
             self._to_conversation(
                 row,
                 messages_by_conversation.get(row.id, []),
                 goals_by_conversation.get(row.id, []),
+                invocations_by_conversation.get(row.id, []),
             )
             for row in conversations
         ]
@@ -442,6 +449,7 @@ class ConversationRepository:
         row: ConversationRecord,
         messages: list[ConversationMessage],
         goals: list[AgentGoal],
+        tool_invocations: list[ToolInvocation],
     ) -> ConversationSession:
         return ConversationSession(
             id=row.id,
@@ -461,6 +469,7 @@ class ConversationRepository:
             archived_at=row.archived_at,
             messages=messages,
             agent_goals=goals,
+            tool_invocations=tool_invocations,
             related_conversation_ids=row.related_conversation_ids or [],
         )
 

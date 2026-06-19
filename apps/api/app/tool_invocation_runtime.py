@@ -209,6 +209,7 @@ class ToolInvocationRuntime:
     def _persist(self, invocation: ToolInvocation) -> None:
         self.store.tool_invocations[invocation.id] = invocation
         self.store.conversation_repository.upsert_tool_invocation(invocation)
+        self.store._upsert_invocation_in_conversation(invocation)
 
     def _audit(
         self,

@@ -23,6 +23,8 @@ test('agent-first build to project workspace path works end-to-end', async ({ pa
 
   await page.getByTestId('agent-card-system-image-builder').click()
   await expect(page.getByTestId('agent-goal-panel')).toContainText(/Build Official System Image/i, { timeout: 15_000 })
+  await expect(page.getByTestId('agent-loop-trace')).toContainText(/Think · Act · Observe · Decide/i, { timeout: 15_000 })
+  await expect(page.getByTestId('agent-current-step')).toBeVisible()
   await expect(page.getByTestId('agent-confirmation-gate')).toContainText(/Source bindings required/i, { timeout: 15_000 })
 
   await page.getByTestId('project-agent-input').fill(sourcePrompt)
@@ -31,6 +33,7 @@ test('agent-first build to project workspace path works end-to-end', async ({ pa
 
   await page.getByTestId('confirm-agent-goal').click()
   await expect(page.getByTestId('system-image-strip')).toContainText(/ready/i, { timeout: 20_000 })
+  await expect(page.getByTestId('system-image-strip')).toContainText(/Official System Image ready/i)
   await expect(page.getByTestId('agent-goal-panel')).toContainText(/completed/i)
   await expect(page.getByText(/Sources indexed/i)).toBeVisible()
   await expect(page.getByText(/Code analysis/i)).toBeVisible()
@@ -44,7 +47,13 @@ test('agent-first build to project workspace path works end-to-end', async ({ pa
   await expect(page.getByTestId('agent-goal-panel')).toContainText(/completed/i, { timeout: 20_000 })
   await expect(page.getByTestId('quality-asset-panel')).toContainText(/Release Assessment/i, { timeout: 20_000 })
   await expect(page.getByTestId('quality-asset-panel')).toContainText(/completed/i)
+  await expect(page.getByTestId('quality-loop-state')).toContainText(/ready for release/i, { timeout: 20_000 })
+  await expect(page.getByTestId('quality-loop-state')).toContainText(/Release score/i)
   await expect(page.getByTestId('quality-asset-panel')).toContainText(/Latest run/i)
+
+  await page.getByTestId('tool-release-gate').click()
+  await expect(page.getByTestId('tool-invocation-rail')).toContainText(/release\.assess/i, { timeout: 15_000 })
+  await expect(page.getByTestId('tool-invocation-rail')).toContainText(/completed/i, { timeout: 15_000 })
 })
 
 test('studio routes are deep-linkable', async ({ page }) => {

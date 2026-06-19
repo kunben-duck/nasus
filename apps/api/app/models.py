@@ -225,6 +225,16 @@ class ReleaseReadiness(BaseModel):
     blocker_items: List[str] = Field(default_factory=list)
 
 
+class QualityLoopState(BaseModel):
+    status: Literal["no_us", "not_started", "in_progress", "ready_for_release", "blocked"]
+    stage_index: int
+    stage_total: int = 4
+    label: str
+    release_score: int = 0
+    next_recommended_tools: List[str] = Field(default_factory=list)
+    blockers: List[str] = Field(default_factory=list)
+
+
 class KnowledgeObject(BaseModel):
     id: str
     name: str
@@ -307,9 +317,27 @@ class QualityMetricSnapshot(BaseModel):
     captured_at: str
 
 
+class SystemImageBuildState(BaseModel):
+    status: Literal[
+        "source_required",
+        "sources_registered",
+        "indexed",
+        "materialized",
+        "ready",
+        "failed",
+    ]
+    stage_index: int
+    stage_total: int = 5
+    label: str
+    missing_source_types: List[str] = Field(default_factory=list)
+    failed_source_ids: List[str] = Field(default_factory=list)
+    next_recommended_tools: List[str] = Field(default_factory=list)
+
+
 class SystemImageResponse(BaseModel):
     project: ProjectCard
     summary: str
+    build_state: SystemImageBuildState
     baselines: List[BaselineRecord]
     sources: List[RawAssetRecord]
     objects: List[KnowledgeObject]
@@ -475,6 +503,7 @@ class ConversationSession(BaseModel):
     archived_at: Optional[str] = None
     messages: List[ConversationMessage] = Field(default_factory=list)
     agent_goals: List[AgentGoal] = Field(default_factory=list)
+    tool_invocations: List["ToolInvocation"] = Field(default_factory=list)
     related_conversation_ids: List[str] = Field(default_factory=list)
 
 
@@ -516,6 +545,7 @@ class ProjectWorkspaceResponse(BaseModel):
     versions: List[VersionSummary]
     current_version_id: str
     us_items: List[USItem]
+    quality_loop_state: QualityLoopState
     asset_lanes: List[AssetLane]
     runs: List[RunSummary]
     approvals: List[ApprovalSummary]

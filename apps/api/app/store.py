@@ -42,6 +42,7 @@ from .models import (
     MessageBlock,
     ProjectCard,
     ProjectWorkspaceResponse,
+    QualityLoopState,
     QualityMetricSnapshot,
     RawAssetRecord,
     ReleaseReadiness,
@@ -869,9 +870,80 @@ class ApplicationStore:
             versions=versions,
             current_version_id=current_version_id,
             us_items=self.us_items[project_id],
+            quality_loop_state=self._quality_loop_state(project_id, primary_us),
             asset_lanes=self.asset_lanes.get(primary_us, []),
             runs=self.runs[project_id],
             approvals=self.approvals[project_id],
+        )
+
+    def _quality_loop_state(self, project_id: str, us_id: str) -> QualityLoopState:
+        if not us_id:
+            return QualityLoopState(
+                status="no_us",
+                stage_index=0,
+                label="No US work item is available yet",
+                next_recommended_tools=["system_image.context.materialize"],
+            )
+
+        lanes = self.asset_lanes.get(us_id, [])
+        lane_status_by_key: dict[str, str] = {}
+        for lane in lanes:
+            label = lane.label.lower()
+            if "scenario" in label:
+                lane_status_by_key["scenarios"] = lane.status
+            elif "case" in label:
+                lane_status_by_key["cases"] = lane.status
+            elif "automation" in label:
+                lane_status_by_key["automation"] = lane.status
+            elif "release" in label:
+                lane_status_by_key["release"] = lane.status
+
+        release = self.release_readiness.get(self.versions[project_id][0].id) if self.versions.get(project_id) else None
+        completed_statuses = {"approved", "completed"}
+        stage_order = [
+            ("scenarios", "quality.scenario.generate"),
+            ("cases", "quality.case.generate"),
+            ("automation", "automation.generate"),
+            ("release", "release.assess"),
+        ]
+        completed_count = sum(1 for key, _tool in stage_order if lane_status_by_key.get(key) in completed_statuses)
+        blockers = list(release.blocker_items if release else [])
+        if any(status == "failed" for status in lane_status_by_key.values()):
+            blockers.append("A quality asset lane failed and needs human review.")
+
+        if blockers:
+            return QualityLoopState(
+                status="blocked",
+                stage_index=completed_count,
+                label="Quality loop blocked",
+                release_score=release.score if release else 0,
+                blockers=blockers,
+                next_recommended_tools=["query.governance.status", "release.assess"],
+            )
+
+        if completed_count == len(stage_order):
+            return QualityLoopState(
+                status="ready_for_release",
+                stage_index=len(stage_order),
+                label="Quality loop ready for release review",
+                release_score=release.score if release else 0,
+                next_recommended_tools=["release.assess", "query.governance.status"],
+            )
+
+        next_tool = next((tool for key, tool in stage_order if lane_status_by_key.get(key) not in completed_statuses), "quality.scenario.generate")
+        if completed_count == 0 and all(status in {"not_started", ""} for status in lane_status_by_key.values()):
+            label = "Quality loop not started"
+            status = "not_started"
+        else:
+            label = f"Quality loop in progress: {completed_count}/{len(stage_order)} stages complete"
+            status = "in_progress"
+
+        return QualityLoopState(
+            status=status,
+            stage_index=completed_count,
+            label=label,
+            release_score=release.score if release else 0,
+            next_recommended_tools=[next_tool],
         )
 
     def list_knowledge_objects(self, project_id: str) -> List[KnowledgeObject]:
@@ -939,6 +1011,7 @@ class ApplicationStore:
             "version": self.versions[project_id][0] if self.versions[project_id] else None,
             "us_item": us,
             "asset_lanes": self.asset_lanes.get(us_id, []),
+            "quality_loop_state": self._quality_loop_state(project_id, us_id),
             "conversation": self.get_or_create_conversation("workspace", us_id, f"{us_id} Workspace"),
             "runs": self.runs[project_id],
             "approvals": self.approvals[project_id],
@@ -998,6 +1071,7 @@ class ApplicationStore:
             status="draft",
             messages=[],
             agent_goals=[],
+            tool_invocations=[],
         )
         self.conversations[conversation_id] = conversation
         self.conversation_index[key] = conversation_id
@@ -1536,6 +1610,20 @@ class ApplicationStore:
         self.conversation_repository.upsert_goal(goal)
         self.conversation_repository.upsert_conversation(conversation)
 
+    def _upsert_invocation_in_conversation(self, invocation: ToolInvocation) -> None:
+        if not invocation.conversation_id or invocation.conversation_id not in self.conversations:
+            return
+        conversation = self.conversations[invocation.conversation_id]
+        existing_index = next(
+            (index for index, current in enumerate(conversation.tool_invocations) if current.id == invocation.id),
+            None,
+        )
+        if existing_index is None:
+            conversation.tool_invocations.append(invocation)
+        else:
+            conversation.tool_invocations[existing_index] = invocation
+        self.conversation_repository.upsert_conversation(conversation)
+
     def _recent_text_messages(self, conversation: ConversationSession) -> List[ConversationMessage]:
         return [
             message
@@ -1797,6 +1885,7 @@ class ApplicationStore:
         if result is not None:
             invocation.result = result
         self.conversation_repository.upsert_tool_invocation(invocation)
+        self._upsert_invocation_in_conversation(invocation)
 
         if invocation.conversation_id:
             await self._push_event(

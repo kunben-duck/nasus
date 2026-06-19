@@ -862,6 +862,34 @@ def test_tool_invocation_creates_project():
     assert any(project["name"] == "Agent Ops Hub" for project in projects)
 
 
+def test_conversation_snapshot_includes_tool_invocations():
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "build", "space_id": "build-tool-snapshot", "title": "Build Tool Snapshot"},
+    ).json()
+
+    response = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "project.create",
+            "input": {"name": "Tool Snapshot Project"},
+        },
+    )
+
+    assert response.status_code == 200
+    invocation = response.json()
+    snapshot = client.get(f"/v1/conversations/{conversation['id']}").json()
+    matching = [item for item in snapshot["tool_invocations"] if item["id"] == invocation["id"]]
+    assert matching
+    assert matching[0]["tool_id"] == "project.create"
+    assert matching[0]["status"] == "completed"
+
+    reloaded = InMemoryStore()
+    reloaded_snapshot = reloaded.get_conversation(conversation["id"])
+    assert any(item.id == invocation["id"] for item in reloaded_snapshot.tool_invocations)
+
+
 def test_tool_invocation_idempotency_key_reuses_existing_invocation():
     conversation = client.post(
         "/v1/conversations",
@@ -940,6 +968,8 @@ def test_created_project_has_draft_system_image_and_can_initialize_via_tool():
     assert draft.status_code == 200
     draft_body = draft.json()
     assert draft_body["project"]["system_image_status"] == "draft"
+    assert draft_body["build_state"]["status"] == "source_required"
+    assert draft_body["build_state"]["missing_source_types"] == ["code", "us_doc", "test_asset"]
     assert {source["source_type"] for source in draft_body["sources"]} == {"code", "us_doc", "test_asset"}
     assert all(source["ingestion_status"] == "pending" for source in draft_body["sources"])
     assert draft_body["baselines"][0]["status"] == "draft"
@@ -965,6 +995,8 @@ def test_created_project_has_draft_system_image_and_can_initialize_via_tool():
 
     ready = client.get(f"/v1/projects/{project['id']}/system-image").json()
     assert ready["project"]["system_image_status"] == "ready"
+    assert ready["build_state"]["status"] == "ready"
+    assert ready["build_state"]["stage_index"] == ready["build_state"]["stage_total"]
     assert all(source["ingestion_status"] == "indexed" for source in ready["sources"])
     assert ready["baselines"][0]["status"] == "ready"
     assert len(ready["objects"]) >= 3
@@ -1027,6 +1059,9 @@ def test_system_image_tools_can_register_and_ingest_real_source_files():
     )
     assert registered.status_code == 200
     assert registered.json()["status"] == "completed"
+    registered_image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    assert registered_image["build_state"]["status"] == "sources_registered"
+    assert registered_image["build_state"]["next_recommended_tools"] == ["system_image.sources.ingest"]
 
     ingested = client.post(
         "/v1/tool-invocations",
@@ -1040,6 +1075,8 @@ def test_system_image_tools_can_register_and_ingest_real_source_files():
     assert ingested.json()["status"] == "completed"
 
     image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    assert image["build_state"]["status"] == "indexed"
+    assert image["build_state"]["next_recommended_tools"] == ["system_image.context.materialize"]
     sources = {source["source_type"]: source for source in image["sources"]}
     assert sources["code"]["source_uri"] == str(code_dir)
     assert sources["us_doc"]["source_uri"] == str(us_dir)
@@ -1062,6 +1099,8 @@ def test_system_image_tools_can_register_and_ingest_real_source_files():
     assert materialized.json()["status"] == "completed"
 
     materialized_image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    assert materialized_image["build_state"]["status"] == "materialized"
+    assert materialized_image["build_state"]["next_recommended_tools"] == ["system_image.baseline.initialize"]
     object_names = {item["name"] for item in materialized_image["objects"]}
     object_types = {item["type"] for item in materialized_image["objects"]}
     relationship_types = {item["relationship_type"] for item in materialized_image["relationships"]}
@@ -1091,6 +1130,7 @@ def test_system_image_tools_can_register_and_ingest_real_source_files():
 
     ready_image = client.get(f"/v1/projects/{project['id']}/system-image").json()
     assert ready_image["project"]["system_image_status"] == "ready"
+    assert ready_image["build_state"]["status"] == "ready"
     assert len(ready_image["relationships"]) == len(materialized_image["relationships"])
     assert len(ready_image["metric_snapshots"]) == len(materialized_image["metric_snapshots"])
     assert any("checkout" in item["name"] for item in ready_image["objects"])
@@ -1434,6 +1474,8 @@ def test_system_image_ingest_failure_blocks_context_materialization():
 
     image = client.get(f"/v1/projects/{project['id']}/system-image").json()
     assert image["project"]["system_image_status"] == "draft"
+    assert image["build_state"]["status"] == "failed"
+    assert image["build_state"]["failed_source_ids"]
     assert any(source["ingestion_status"] == "failed" for source in image["sources"])
 
 
@@ -2141,6 +2183,8 @@ def test_workspace_message_generates_agent_goal():
 def test_workspace_quality_loop_request_creates_agent_goal_proposal_and_runtime_goal():
     project, _, workspace = create_project_with_materialized_system_image("Workspace Quality Goal Project")
     us_id = workspace["us_items"][0]["id"]
+    assert workspace["quality_loop_state"]["status"] == "not_started"
+    assert workspace["quality_loop_state"]["next_recommended_tools"] == ["quality.scenario.generate"]
     conversation = client.post(
         "/v1/conversations",
         json={"space_type": "workspace", "space_id": us_id, "title": f"{us_id} Workspace"},
@@ -2228,6 +2272,10 @@ def test_project_quality_loop_request_selects_first_us_and_completes_release_ass
         )
 
     wait_until(quality_loop_completed, timeout=3)
+    completed_workspace = client.get(f"/v1/projects/{project['id']}").json()
+    assert completed_workspace["quality_loop_state"]["status"] == "ready_for_release"
+    assert completed_workspace["quality_loop_state"]["stage_index"] == completed_workspace["quality_loop_state"]["stage_total"]
+    assert completed_workspace["quality_loop_state"]["release_score"] >= 80
     release = client.get(f"/v1/projects/{project['id']}/release-readiness").json()
     assert release["status"] == "Ready for release review"
     assert release["score"] >= 80

@@ -53,6 +53,16 @@ export interface AssetLane {
   updated_at: string
 }
 
+export interface QualityLoopState {
+  status: 'no_us' | 'not_started' | 'in_progress' | 'ready_for_release' | 'blocked'
+  stage_index: number
+  stage_total: number
+  label: string
+  release_score: number
+  next_recommended_tools: string[]
+  blockers: string[]
+}
+
 export interface RunSummary {
   id: string
   status: string
@@ -150,9 +160,20 @@ export interface QualityMetricSnapshot {
   captured_at: string
 }
 
+export interface SystemImageBuildState {
+  status: 'source_required' | 'sources_registered' | 'indexed' | 'materialized' | 'ready' | 'failed'
+  stage_index: number
+  stage_total: number
+  label: string
+  missing_source_types: string[]
+  failed_source_ids: string[]
+  next_recommended_tools: string[]
+}
+
 export interface SystemImageData {
   project: ProjectCard
   summary: string
+  build_state: SystemImageBuildState
   baselines: BaselineRecord[]
   sources: RawAssetRecord[]
   objects: KnowledgeObject[]
@@ -250,6 +271,7 @@ export interface ConversationSession {
   space_id: string
   messages: ConversationMessage[]
   agent_goals: AgentGoal[]
+  tool_invocations: ToolInvocation[]
 }
 
 export interface WelcomeData {
@@ -278,6 +300,7 @@ export interface ProjectWorkspaceData {
   versions: VersionSummary[]
   current_version_id: string
   us_items: USItem[]
+  quality_loop_state: QualityLoopState
   asset_lanes: AssetLane[]
   runs: RunSummary[]
   approvals: ApprovalSummary[]
@@ -287,6 +310,7 @@ export interface WorkspaceData {
   project: ProjectCard
   version: VersionSummary
   us_item: USItem
+  quality_loop_state: QualityLoopState
   asset_lanes: AssetLane[]
   conversation: ConversationSession
   runs: RunSummary[]

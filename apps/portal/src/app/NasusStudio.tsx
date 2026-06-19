@@ -14,6 +14,7 @@ import type {
   StudioSettings,
   StudioSettingsConnectionTestRequest,
   SystemImageData,
+  ToolInvocation,
 } from '../features/types'
 import { useConversation } from '../hooks/useConversation'
 
@@ -441,6 +442,30 @@ export function NasusStudio() {
     }
   }
 
+  async function invokeProjectTool(toolId: string, input: Record<string, unknown> = {}) {
+    if (!activeProject) return
+    setIsPromptRunning(true)
+    try {
+      const conversation = await api.ensureConversation('project', activeProject.id, activeProject.name)
+      await api.invokeTool({
+        conversation_id: conversation.id,
+        tool_id: toolId,
+        input: {
+          project_id: activeProject.id,
+          ...input,
+        },
+        initiator_surface: 'ui',
+        initiator_actor: 'user',
+      })
+      await queryClient.invalidateQueries({ queryKey: ['project', activeProject.id] })
+      await queryClient.invalidateQueries({ queryKey: ['system-image', activeProject.id] })
+      await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      await queryClient.invalidateQueries({ queryKey: ['conversation', conversation.id] })
+    } finally {
+      setIsPromptRunning(false)
+    }
+  }
+
   async function confirmPendingGoal() {
     if (!pausedProjectGoal || pausedProjectGoal.pause_reason !== 'waiting_confirmation') return
     setIsPromptRunning(true)
@@ -531,11 +556,13 @@ export function NasusStudio() {
             setMode={setAgentMode}
             messages={visibleMessages}
             agentGoal={latestProjectGoal}
+            toolInvocations={projectConversation.conversation?.tool_invocations ?? []}
             pendingGoal={pausedProjectGoal}
             prompt={prompt}
             setPrompt={setPrompt}
             runPrompt={runPrompt}
             askProject={askProject}
+            invokeProjectTool={invokeProjectTool}
             confirmPendingGoal={confirmPendingGoal}
             initializeSystemImage={() => initializeSystemImage.mutate()}
             loading={isPromptRunning || projectConversation.isSending || initializeSystemImage.isPending}
@@ -828,11 +855,13 @@ function ProjectWorkspace({
   setMode,
   messages,
   agentGoal,
+  toolInvocations,
   pendingGoal,
   prompt,
   setPrompt,
   runPrompt,
   askProject,
+  invokeProjectTool,
   confirmPendingGoal,
   initializeSystemImage,
   loading,
@@ -846,11 +875,13 @@ function ProjectWorkspace({
   setMode: (mode: AgentMode) => void
   messages: MessageRow[]
   agentGoal?: AgentGoal
+  toolInvocations: ToolInvocation[]
   pendingGoal?: AgentGoal
   prompt: string
   setPrompt: (value: string) => void
   runPrompt: () => void
   askProject: (promptText: string) => void
+  invokeProjectTool: (toolId: string, input?: Record<string, unknown>) => void
   confirmPendingGoal: () => void
   initializeSystemImage: () => void
   loading: boolean
@@ -860,8 +891,8 @@ function ProjectWorkspace({
   const cardActions: Record<string, () => void> = {
     'System Image Builder': initializeSystemImage,
     'Quality Loop Agent': () => askProject('Continue the quality loop for the riskiest open US.'),
-    'Release Assessor': () => askProject('Assess release readiness based on current evidence, open risks, and governance status.'),
-    'Repo Maintainer': () => askProject('Inspect system image code quality and changed module risk for this project.'),
+    'Release Assessor': () => invokeProjectTool('release.assess'),
+    'Repo Maintainer': () => invokeProjectTool('query.system_image.status'),
   }
 
   return (
@@ -902,6 +933,7 @@ function ProjectWorkspace({
       </div>
       <SystemImageStrip systemImage={systemImage} project={project} />
       <AgentGoalPanel goal={agentGoal} />
+      <ToolInvocationRail invocations={toolInvocations} />
       <QualityAssetPanel workspace={workspace} />
       {pendingGoal ? (
         <div className="confirmation-gate-card" data-testid="agent-confirmation-gate">
@@ -942,7 +974,7 @@ function ProjectWorkspace({
           <button className="tool-chip">Tools</button>
           <button className="tool-chip active" data-testid="tool-system-image" onClick={initializeSystemImage}>System image ×</button>
           <button className="tool-chip active" onClick={() => askProject('Continue the quality loop for the riskiest open US.')}>Quality loop ×</button>
-          <button className="tool-chip" onClick={() => askProject('Assess release gate readiness and list blockers.')}>Release gate</button>
+          <button className="tool-chip" data-testid="tool-release-gate" onClick={() => invokeProjectTool('release.assess')}>Release gate</button>
           <button className="round-icon" data-testid="project-agent-submit" onClick={runPrompt} disabled={loading}>↵</button>
         </div>
       </div>
@@ -950,10 +982,38 @@ function ProjectWorkspace({
   )
 }
 
+function ToolInvocationRail({ invocations }: { invocations: ToolInvocation[] }) {
+  const visibleInvocations = invocations
+    .filter((invocation) => ['pending', 'running', 'waiting_confirmation', 'waiting_approval', 'completed', 'failed'].includes(invocation.status))
+    .slice(-4)
+
+  if (!visibleInvocations.length) return null
+
+  return (
+    <div className="tool-invocation-rail" data-testid="tool-invocation-rail">
+      <div className="tool-invocation-heading">
+        <span className="eyebrow">Tool runtime</span>
+        <strong>Agent actions</strong>
+      </div>
+      <div className="tool-invocation-list">
+        {visibleInvocations.map((invocation) => (
+          <div className={`tool-invocation-pill ${invocation.status}`} key={invocation.id}>
+            <span className="tool-invocation-dot" aria-hidden="true" />
+            <span className="tool-invocation-name">{invocation.tool_id}</span>
+            <span className="tool-invocation-status">{invocation.status.replaceAll('_', ' ')}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function QualityAssetPanel({ workspace }: { workspace?: ProjectWorkspaceData }) {
   const lanes = workspace?.asset_lanes ?? []
   const primaryUs = workspace?.us_items[0]
   const latestRun = workspace?.runs[0]
+  const qualityState = workspace?.quality_loop_state
+  const qualityStages = ['Scenarios', 'Cases', 'Automation', 'Release']
 
   if (!workspace) {
     return null
@@ -967,10 +1027,39 @@ function QualityAssetPanel({ workspace }: { workspace?: ProjectWorkspaceData }) 
           <strong>{primaryUs?.title ?? 'Waiting for US work item'}</strong>
           <p>{primaryUs ? `${primaryUs.status} · ${primaryUs.progress}% · ${primaryUs.next_action}` : 'Import US documents or build the system image to create the first work item.'}</p>
         </div>
-        {latestRun ? (
+        {qualityState ? (
+          <span className={`quality-state-pill ${qualityState.status}`}>{qualityState.status.replaceAll('_', ' ')}</span>
+        ) : latestRun ? (
           <span className={`run-status-pill ${latestRun.status}`}>{latestRun.status}</span>
         ) : null}
       </div>
+      {qualityState ? (
+        <div className="quality-loop-state-card" data-testid="quality-loop-state">
+          <div>
+            <strong>{qualityState.label}</strong>
+            <p>
+              Release score {qualityState.release_score || 0} · Next tool{' '}
+              {qualityState.next_recommended_tools[0] ?? 'none'}
+            </p>
+          </div>
+          <div className="quality-stage-bar" aria-label="Quality loop stage">
+            {qualityStages.map((stage, index) => {
+              const active = qualityState.stage_index >= index + 1
+              return (
+                <span className={active ? 'active' : ''} key={stage}>
+                  <i />
+                  {stage}
+                </span>
+              )
+            })}
+          </div>
+          {qualityState.blockers.length ? (
+            <div className="quality-blocker-list">
+              {qualityState.blockers.map((blocker) => <span key={blocker}>{blocker}</span>)}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {lanes.length ? (
         <div className="quality-lane-grid">
           {lanes.map((lane) => (
@@ -1008,6 +1097,8 @@ function AgentGoalPanel({ goal }: { goal?: AgentGoal }) {
     .slice(-9)
   const totalSteps = goal.steps.length || goal.max_steps || 1
   const completedSteps = goal.steps.filter((step) => step.status === 'completed').length
+  const currentStep = [...visibleSteps].reverse().find((step) => step.status === 'running' || step.status === 'blocked') ?? visibleSteps.at(-1)
+  const detailSteps = visibleSteps.slice(-5)
 
   return (
     <div className="agent-goal-panel" data-testid="agent-goal-panel">
@@ -1019,6 +1110,18 @@ function AgentGoalPanel({ goal }: { goal?: AgentGoal }) {
         </div>
         <span className="agent-goal-progress">{completedSteps}/{totalSteps}</span>
       </div>
+      {currentStep ? (
+        <div className="agent-current-step" data-testid="agent-current-step">
+          <div>
+            <span className="eyebrow">Current agent step</span>
+            <strong>{currentStep.title}</strong>
+            <p>{agentStepNarrative(currentStep)}</p>
+          </div>
+          <span className={`agent-phase-pill ${currentStep.phase ?? currentStep.status}`}>
+            {currentStep.phase ?? currentStep.status}
+          </span>
+        </div>
+      ) : null}
       <div className="agent-step-rail">
         {visibleSteps.map((step) => (
           <div className={`agent-step-pill ${step.status}`} key={step.id}>
@@ -1028,8 +1131,41 @@ function AgentGoalPanel({ goal }: { goal?: AgentGoal }) {
           </div>
         ))}
       </div>
+      {detailSteps.length ? (
+        <div className="agent-loop-trace" data-testid="agent-loop-trace">
+          <div className="agent-loop-trace-header">
+            <span className="eyebrow">Agent loop trace</span>
+            <strong>Think · Act · Observe · Decide</strong>
+          </div>
+          <div className="agent-loop-card-grid">
+            {detailSteps.map((step) => (
+              <div className={`agent-loop-card ${step.status}`} key={`${step.id}-detail`}>
+                <div className="agent-loop-card-head">
+                  <span>{step.phase ?? 'step'}</span>
+                  <strong>{step.selected_tool_id ?? step.title}</strong>
+                </div>
+                <p>{agentStepNarrative(step)}</p>
+                <div className="agent-loop-card-meta">
+                  {step.tool_invocation_id ? <span>tool {step.tool_invocation_id}</span> : null}
+                  {step.memory_recent_turn_count ? <span>{step.memory_recent_turn_count} turns</span> : null}
+                  {step.decision ? <span>decision {step.decision}</span> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
+}
+
+function agentStepNarrative(step: AgentGoal['steps'][number]) {
+  if (step.reasoning) return step.reasoning
+  if (step.observation_summary) return step.observation_summary
+  if (step.decision_rationale) return step.decision_rationale
+  if (step.selected_tool_id) return `Executing ${step.selected_tool_id} through the canonical tool runtime.`
+  if (step.next_plan_hint) return `Next recommended tool: ${step.next_plan_hint}.`
+  return step.status === 'running' ? 'Agent is processing this step.' : 'Step is recorded in the agent loop trace.'
 }
 
 function SystemImageStrip({ systemImage, project }: { systemImage?: SystemImageData; project: ProjectCard }) {
@@ -1037,13 +1173,43 @@ function SystemImageStrip({ systemImage, project }: { systemImage?: SystemImageD
   const indexed = systemImage?.sources.filter((source) => source.ingestion_status === 'indexed').length ?? 0
   const metricGroups = systemImage?.metric_snapshots.map((metric) => metric.metric_group) ?? []
   const status = systemImage?.project.system_image_status ?? project.system_image_status
+  const buildState = systemImage?.build_state
+  const stages = ['Sources', 'Ingest', 'Index', 'Context', 'Baseline']
 
   return (
     <div className="system-image-strip" data-testid="system-image-strip">
       <div>
         <span className="eyebrow">System image</span>
-        <strong>{status}</strong>
+        <div className="system-image-title-row">
+          <strong>{status}</strong>
+          {buildState ? <span className={`system-image-state ${buildState.status}`}>{buildState.status.replaceAll('_', ' ')}</span> : null}
+        </div>
         <p>{systemImage?.summary ?? 'Waiting for source ingestion and baseline initialization.'}</p>
+        {buildState ? <div className="system-image-build-label">{buildState.label}</div> : null}
+        {buildState ? (
+          <div className="system-image-stage-bar" aria-label="System image build state">
+            {stages.map((stage, index) => {
+              const stageNumber = index + 1
+              const active = buildState.stage_index >= stageNumber
+              return (
+                <span className={active ? 'active' : ''} key={stage}>
+                  <i />
+                  {stage}
+                </span>
+              )
+            })}
+          </div>
+        ) : null}
+        {buildState?.missing_source_types.length ? (
+          <div className="system-image-hint">
+            Missing sources: {buildState.missing_source_types.join(', ')}
+          </div>
+        ) : null}
+        {buildState?.failed_source_ids.length ? (
+          <div className="system-image-hint failed">
+            Failed sources: {buildState.failed_source_ids.join(', ')}
+          </div>
+        ) : null}
       </div>
       <div className="source-stat-grid">
         <MetricMini label="Sources indexed" value={`${indexed}/${sourceCount || 3}`} />

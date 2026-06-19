@@ -13,6 +13,7 @@ from .models import (
     KnowledgeObject,
     QualityMetricSnapshot,
     RawAssetRecord,
+    SystemImageBuildState,
     SystemImageResponse,
     USItem,
 )
@@ -593,12 +594,13 @@ class SystemImageService:
         self.store._refresh_project_read_models(project_id)
         project = self.store.projects[project_id]
         baseline = self.store.baselines[project_id][0] if self.store.baselines.get(project_id) else None
+        build_state = self._build_state(project_id, baseline)
         source_counts = {
             source_type: sum(1 for source in self.store.raw_assets[project_id] if source.source_type == source_type)
             for source_type in ["code", "us_doc", "test_asset"]
         }
         summary = (
-            f"{project.name} system image is {project.system_image_status}. "
+            f"{project.name} system image is {project.system_image_status}; build state is {build_state.status}. "
             f"Sources: code={source_counts['code']}, us_doc={source_counts['us_doc']}, "
             f"test_asset={source_counts['test_asset']}. "
             f"Baseline {baseline.id if baseline else 'not initialized'} has "
@@ -608,12 +610,68 @@ class SystemImageService:
         return SystemImageResponse(
             project=project,
             summary=summary,
+            build_state=build_state,
             baselines=self.store.baselines[project_id],
             sources=self.store.raw_assets[project_id],
             objects=self.store.knowledge_objects[project_id],
             relationships=self.store.context_relationships[project_id],
             overlays=self.store.context_object_overlays[project_id],
             metric_snapshots=self.store.quality_metric_snapshots[project_id],
+        )
+
+    def _build_state(self, project_id: str, baseline: BaselineRecord | None) -> SystemImageBuildState:
+        sources = self.store.raw_assets[project_id]
+        failed_sources = [source for source in sources if source.ingestion_status == "failed"]
+        if failed_sources:
+            return SystemImageBuildState(
+                status="failed",
+                stage_index=1,
+                label="Source ingestion failed",
+                failed_source_ids=[source.id for source in failed_sources],
+                next_recommended_tools=["system_image.sources.register", "system_image.sources.ingest"],
+            )
+
+        missing_source_types = self.missing_source_types(project_id)
+        if missing_source_types:
+            return SystemImageBuildState(
+                status="source_required",
+                stage_index=0,
+                label="Source bindings required",
+                missing_source_types=missing_source_types,
+                next_recommended_tools=["system_image.sources.register"],
+            )
+
+        all_sources_indexed = bool(sources) and all(source.ingestion_status == "indexed" for source in sources)
+        has_context = bool(self.store.knowledge_objects[project_id]) and bool(self.store.context_relationships[project_id])
+        has_metrics = bool(self.store.quality_metric_snapshots[project_id])
+        baseline_ready = baseline is not None and baseline.status == "ready"
+
+        if baseline_ready and self.store.projects[project_id].system_image_status == "ready":
+            return SystemImageBuildState(
+                status="ready",
+                stage_index=5,
+                label="Official System Image ready",
+                next_recommended_tools=["query.system_image.status", "version.create", "quality.scenario.generate"],
+            )
+        if has_context and has_metrics:
+            return SystemImageBuildState(
+                status="materialized",
+                stage_index=4,
+                label="Context materialized, waiting for baseline promotion",
+                next_recommended_tools=["system_image.baseline.initialize"],
+            )
+        if all_sources_indexed:
+            return SystemImageBuildState(
+                status="indexed",
+                stage_index=3,
+                label="Sources indexed, context not materialized",
+                next_recommended_tools=["system_image.context.materialize"],
+            )
+        return SystemImageBuildState(
+            status="sources_registered",
+            stage_index=2,
+            label="Sources registered, ingestion pending",
+            next_recommended_tools=["system_image.sources.ingest"],
         )
 
     def _persist_system_image(self, project_id: str) -> None:
