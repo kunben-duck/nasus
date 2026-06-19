@@ -4,7 +4,17 @@ import asyncio
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from .models import AssetLane, ReleaseReadiness, RunDetail, RunSummary, ToolInvocation, ToolResult, USItem
+from .models import (
+    AssetLane,
+    ContextObjectOverlay,
+    QualityMetricSnapshot,
+    ReleaseReadiness,
+    RunDetail,
+    RunSummary,
+    ToolInvocation,
+    ToolResult,
+    USItem,
+)
 
 if TYPE_CHECKING:
     from .store import ApplicationStore
@@ -54,6 +64,7 @@ class QualityLoopToolHandler:
         object_refs = [f"project:{project_id}", f"us:{us_id}", "quality_asset_pack:current"]
         evidence_refs: list[str] = []
         next_tools: list[str] = []
+        metric_refs: list[str] = []
 
         if step == "scenarios":
             self._update_lane(
@@ -73,6 +84,20 @@ class QualityLoopToolHandler:
             self._touch_us(project_id, us_id, progress=42, status="scenario_ready", next_action="Generate test cases")
             summary = "Generated scenario pack"
             object_refs.append("scenario_set:current")
+            metric_refs.extend(
+                self._record_quality_image_update(
+                    project_id,
+                    us_id,
+                    step="scenarios",
+                    metrics={
+                        "scenario_groups": 8,
+                        "scenario_coverage": 0.82,
+                        "risk_edge_groups": 2,
+                        "asset_lane_status": "approved",
+                    },
+                    evidence_refs=["scenario_set:current", f"us:{us_id}"],
+                )
+            )
             next_tools = ["quality.case.generate"]
 
         elif step == "cases":
@@ -93,6 +118,20 @@ class QualityLoopToolHandler:
             self._touch_us(project_id, us_id, progress=58, status="cases_ready", next_action="Generate automation")
             summary = "Generated test case pack"
             object_refs.append("case_set:current")
+            metric_refs.extend(
+                self._record_quality_image_update(
+                    project_id,
+                    us_id,
+                    step="cases",
+                    metrics={
+                        "test_cases": 14,
+                        "assertion_coverage": 0.8,
+                        "regression_tags": 5,
+                        "asset_lane_status": "approved",
+                    },
+                    evidence_refs=["case_set:current", "scenario_set:current", f"us:{us_id}"],
+                )
+            )
             next_tools = ["automation.generate"]
 
         elif step == "automation":
@@ -115,6 +154,20 @@ class QualityLoopToolHandler:
             summary = "Generated automation and execution evidence"
             object_refs.extend([f"run:{run.id}", "execution_evidence:current"])
             evidence_refs.extend(run.evidence)
+            metric_refs.extend(
+                self._record_quality_image_update(
+                    project_id,
+                    us_id,
+                    step="automation",
+                    metrics={
+                        "automation_coverage": 0.74,
+                        "latest_run_status": run.status,
+                        "evidence_count": len(run.evidence),
+                        "healing_required": False,
+                    },
+                    evidence_refs=[f"run:{run.id}", *run.evidence],
+                )
+            )
             next_tools = ["release.assess"]
 
         elif step == "release":
@@ -129,6 +182,21 @@ class QualityLoopToolHandler:
             self._touch_us(project_id, us_id, progress=92, status="release_ready", next_action="Review release decision")
             summary = "Assessed release readiness"
             object_refs.append(f"release_readiness:{release.version_id}")
+            metric_refs.extend(
+                self._record_quality_image_update(
+                    project_id,
+                    us_id,
+                    step="release",
+                    metrics={
+                        "release_score": release.score,
+                        "blockers": release.blockers,
+                        "approvals_open": release.approvals_open,
+                        "pending_merge": release.pending_merge,
+                        "execution_health": release.execution_health,
+                    },
+                    evidence_refs=[f"release_readiness:{release.version_id}", f"us:{us_id}"],
+                )
+            )
             next_tools = ["query.version.status", "query.governance.status"]
 
         else:
@@ -154,6 +222,7 @@ class QualityLoopToolHandler:
             )
 
         self.store._refresh_project_read_models(project_id)
+        object_refs.extend(metric_refs)
         await self.store._emit_tool_status(
             invocation.id,
             "completed",
@@ -289,6 +358,83 @@ class QualityLoopToolHandler:
         self.store.us_items[project_id] = updated_items
         version_id = self.store.versions[project_id][0].id if self.store.versions.get(project_id) else None
         self.store.project_repository.replace_us_items(project_id, version_id, updated_items)
+
+    def _record_quality_image_update(
+        self,
+        project_id: str,
+        us_id: str,
+        *,
+        step: str,
+        metrics: dict[str, object],
+        evidence_refs: list[str],
+    ) -> list[str]:
+        version = self._active_or_create_version(project_id)
+        baseline_id = self._baseline_id(project_id, version.id)
+        captured_at = self._now()
+        metric_group = "release_readiness" if step == "release" else "test_quality"
+        metric_id = f"metric_{project_id}_{us_id}_{step}"
+        overlay_id = f"overlay_{project_id}_{us_id}_{step}"
+
+        metric = QualityMetricSnapshot(
+            id=metric_id,
+            project_id=project_id,
+            baseline_id=baseline_id,
+            version_id=version.id,
+            us_id=us_id,
+            metric_group=metric_group,
+            metrics={
+                **metrics,
+                "quality_loop_step": step,
+                "source": "quality_loop_tool",
+            },
+            evidence_refs=evidence_refs,
+            captured_at=captured_at,
+        )
+        self.store.quality_metric_snapshots[project_id] = [
+            metric,
+            *[
+                existing
+                for existing in self.store.quality_metric_snapshots.get(project_id, [])
+                if existing.id != metric_id
+            ],
+        ]
+
+        overlay = ContextObjectOverlay(
+            id=overlay_id,
+            project_id=project_id,
+            baseline_id=baseline_id,
+            object_id=us_id,
+            field_path=f"quality_loop.{step}",
+            operation="replace",
+            value_ref=f"quality_metric:{metric_id}",
+            source_refs=evidence_refs,
+            status="candidate",
+        )
+        self.store.context_object_overlays[project_id] = [
+            overlay,
+            *[
+                existing
+                for existing in self.store.context_object_overlays.get(project_id, [])
+                if existing.id != overlay_id
+            ],
+        ]
+
+        for baseline in self.store.baselines.get(project_id, []):
+            if baseline.id == baseline_id:
+                baseline.metric_snapshot_count = len(self.store.quality_metric_snapshots[project_id])
+                baseline.updated_at = captured_at
+                break
+        self.store.system_image_service._persist_system_image(project_id)
+        return [f"quality_metric:{metric_id}", f"context_overlay:{overlay_id}"]
+
+    def _baseline_id(self, project_id: str, version_id: str) -> str:
+        if not self.store.baselines.get(project_id):
+            self.store.system_image_service.ensure_state(
+                project_id,
+                ready=self.store.projects[project_id].system_image_status == "ready",
+                version_id=version_id,
+            )
+        return self.store.baselines[project_id][0].id
 
     def _upsert_automation_run(self, project_id: str, us_id: str) -> RunDetail:
         us = next((item for item in self.store.us_items.get(project_id, []) if item.id == us_id), None)

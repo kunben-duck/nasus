@@ -13,7 +13,7 @@ from .agent_runtime_models import (
     ToolInvocationPlan,
     ToolPlanStep,
 )
-from .conversation_orchestrator import ConversationOrchestrator
+from .conversation_orchestrator import ConversationOrchestrator, QualityStateResolver
 from .llm import LLMGateway
 from .models import ConversationSession, StudioSettings, ToolDefinition
 
@@ -42,6 +42,7 @@ class DeterministicAgentPlanner:
         project_name_extractor: NameExtractor,
         version_name_extractor: NameExtractor,
         summary_builder: SummaryBuilder,
+        quality_state_resolver: QualityStateResolver | None = None,
     ) -> "DeterministicAgentPlanner":
         return cls(
             orchestrator=ConversationOrchestrator(
@@ -49,6 +50,7 @@ class DeterministicAgentPlanner:
                 project_name_extractor=project_name_extractor,
                 version_name_extractor=version_name_extractor,
                 summary_builder=summary_builder,
+                **({"quality_state_resolver": quality_state_resolver} if quality_state_resolver else {}),
             )
         )
 

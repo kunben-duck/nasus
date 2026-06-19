@@ -1,89 +1,92 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom'
 
-import { PrototypeStudio } from './PrototypeStudio'
-import { WelcomePage } from '../pages/WelcomePage'
-import { BuildPage } from '../pages/BuildPage'
-import { DashboardPage } from '../pages/DashboardPage'
+import { NasusStudio } from './NasusStudio'
+
+const studioElement = <NasusStudio />
 
 export const router = createBrowserRouter([
   {
     path: '/',
-    element: <Navigate to="/welcome" replace />,
+    element: <Navigate to="/build" replace />,
   },
   {
     path: '/welcome',
-    element: <WelcomePage />,
+    element: <Navigate to="/build" replace />,
   },
   {
     path: '/build',
-    element: <BuildPage />,
+    element: studioElement,
   },
   {
     path: '/build/create-project',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/dashboard',
-    element: <DashboardPage />,
+    element: studioElement,
   },
   {
     path: '/documentation',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId/versions',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId/versions/create',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId/versions/new',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId/workspaces/:usId',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId/knowledge',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId/knowledge/:objectId',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId/runs',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId/runs/:runId',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId/governance',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId/governance/:approvalId',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId/approvals/:approvalId',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/projects/:projectId/release-readiness',
-    element: <PrototypeStudio />,
+    element: studioElement,
   },
   {
     path: '/prototype/:viewId?',
-    element: <PrototypeStudio />,
+    element: studioElement,
+  },
+  {
+    path: '*',
+    element: <Navigate to="/build" replace />,
   },
 ])

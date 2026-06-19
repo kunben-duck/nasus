@@ -17,6 +17,11 @@ from .models import ConversationMessage, ConversationSession, ToolDefinition
 
 SummaryBuilder = Callable[[ConversationSession], str]
 NameExtractor = Callable[[str], str]
+QualityStateResolver = Callable[[Optional[str], Optional[str]], dict[str, str]]
+
+
+def _empty_quality_state_resolver(project_id: Optional[str], us_id: Optional[str]) -> dict[str, str]:
+    return {}
 
 
 @dataclass
@@ -25,6 +30,7 @@ class ConversationOrchestrator:
     project_name_extractor: NameExtractor
     version_name_extractor: NameExtractor
     summary_builder: SummaryBuilder
+    quality_state_resolver: QualityStateResolver = _empty_quality_state_resolver
 
     def plan(self, conversation: ConversationSession, user_message: str) -> OrchestratorDecision:
         lowered = user_message.lower()
@@ -279,29 +285,11 @@ class ConversationOrchestrator:
     def _quality_loop_goal(self, conversation: ConversationSession, user_message: str) -> OrchestratorDecision:
         project_id = conversation.project_id or (conversation.space_id if conversation.space_type == "project" else "")
         us_id = conversation.us_id or (conversation.space_id if conversation.space_type == "workspace" else "")
+        quality_state = self.quality_state_resolver(project_id or None, us_id or None)
+        project_id = quality_state.get("project_id") or project_id
+        us_id = quality_state.get("us_id") or us_id
         subject = us_id or project_id or "current project"
-        planned_tools = [
-            ToolPlanStep(
-                tool_id="quality.scenario.generate",
-                input_payload={"project_id": project_id, "us_id": us_id},
-                reason="Generate risk-based scenario coverage from the current system image and US context.",
-            ),
-            ToolPlanStep(
-                tool_id="quality.case.generate",
-                input_payload={"project_id": project_id, "us_id": us_id},
-                reason="Turn approved scenario coverage into structured cases with assertions and data hints.",
-            ),
-            ToolPlanStep(
-                tool_id="automation.generate",
-                input_payload={"project_id": project_id, "us_id": us_id},
-                reason="Generate automation and attach execution evidence to the quality asset pack.",
-            ),
-            ToolPlanStep(
-                tool_id="release.assess",
-                input_payload={"project_id": project_id, "us_id": us_id},
-                reason="Score release readiness from approved assets, execution evidence, and governance state.",
-            ),
-        ]
+        planned_tools = self._quality_steps_for_request(user_message, project_id, us_id, quality_state)
         return OrchestratorDecision(
             kind="agent_goal",
             agent_goal=AgentGoalProposal(
@@ -317,11 +305,82 @@ class ConversationOrchestrator:
                 query_keys=[["project", project_id], ["conversation", conversation.id]]
                 + ([["workspace", project_id, us_id]] if project_id and us_id else []),
                 kickoff_message=(
-                    f"I'll take over the quality loop for **{subject}**. I will generate scenarios, cases, automation evidence, "
-                    "and a release-readiness assessment through the canonical tool chain."
+                    f"I'll take over the quality loop for **{subject}**. I will continue from "
+                    f"**{planned_tools[0].tool_id}** through the canonical tool chain."
                 ),
             ),
         )
+
+    def _quality_steps_for_request(
+        self,
+        user_message: str,
+        project_id: str,
+        us_id: str,
+        quality_state: dict[str, str],
+    ) -> list[ToolPlanStep]:
+        requested_step = self._requested_quality_step(user_message)
+        full_loop = self._requests_full_quality_loop(user_message)
+        start_step = requested_step or self._first_incomplete_quality_step(quality_state)
+        step_order = ["scenarios", "cases", "automation", "release"]
+        start_index = step_order.index(start_step)
+        selected_steps = step_order[start_index:] if full_loop or requested_step is None else [start_step]
+        return [self._quality_tool_step(step, project_id, us_id) for step in selected_steps]
+
+    @staticmethod
+    def _quality_tool_step(step: str, project_id: str, us_id: str) -> ToolPlanStep:
+        payload = {"project_id": project_id, "us_id": us_id}
+        if step == "scenarios":
+            return ToolPlanStep(
+                tool_id="quality.scenario.generate",
+                input_payload=payload,
+                reason="Generate risk-based scenario coverage from the current system image and US context.",
+            )
+        if step == "cases":
+            return ToolPlanStep(
+                tool_id="quality.case.generate",
+                input_payload=payload,
+                reason="Turn approved scenario coverage into structured cases with assertions and data hints.",
+            )
+        if step == "automation":
+            return ToolPlanStep(
+                tool_id="automation.generate",
+                input_payload=payload,
+                reason="Generate automation and attach execution evidence to the quality asset pack.",
+            )
+        return ToolPlanStep(
+            tool_id="release.assess",
+            input_payload=payload,
+            reason="Score release readiness from approved assets, execution evidence, and governance state.",
+        )
+
+    @staticmethod
+    def _requested_quality_step(user_message: str) -> str | None:
+        lowered = user_message.lower()
+        if any(token in lowered for token in ["release", "readiness", "放行"]):
+            return "release"
+        if any(token in lowered for token in ["automation", "script", "run", "自动化", "脚本", "执行"]):
+            return "automation"
+        if any(token in lowered for token in ["case", "用例"]):
+            return "cases"
+        if any(token in lowered for token in ["scenario", "scope", "场景", "范围"]):
+            return "scenarios"
+        return None
+
+    @staticmethod
+    def _requests_full_quality_loop(user_message: str) -> bool:
+        lowered = user_message.lower()
+        return any(token in lowered for token in ["complete", "continue", "quality loop", "end-to-end", "闭环", "完成", "继续"])
+
+    @staticmethod
+    def _first_incomplete_quality_step(quality_state: dict[str, str]) -> str:
+        complete_statuses = {"approved", "completed"}
+        if quality_state.get("scenarios") not in complete_statuses:
+            return "scenarios"
+        if quality_state.get("cases") not in complete_statuses:
+            return "cases"
+        if quality_state.get("automation") != "completed":
+            return "automation"
+        return "release"
 
     def _default_query_keys(self, conversation: ConversationSession) -> list[list[str]]:
         keys: list[list[str]] = [["conversation", conversation.id]]

@@ -700,6 +700,68 @@ def test_tool_invocation_runtime_is_canonical_store_entry_for_gated_tools():
     assert any(event["tool_invocation_id"] == body["id"] for event in conversation_audit)
 
 
+def test_approval_required_tool_requires_approved_project_approval():
+    project, conversation, _ = create_project_with_materialized_system_image("Approval Gate Project")
+    tool = store._tool_definition("system_image.baseline.initialize")
+    original_confirmation_mode = tool.confirmation_mode
+    approved = store.approval_details["approval_442"].model_copy(
+        update={
+            "id": "approval_ready_for_gate",
+            "title": "Approved baseline gate",
+            "status": "approved",
+            "summary": "Approved by governance reviewer.",
+        }
+    )
+
+    try:
+        tool.confirmation_mode = "approval_required"
+
+        missing = client.post(
+            "/v1/tool-invocations",
+            json={
+                "conversation_id": conversation["id"],
+                "tool_id": "system_image.baseline.initialize",
+                "input": {"project_id": project["id"]},
+            },
+        )
+        assert missing.status_code == 200
+        assert missing.json()["status"] == "waiting_approval"
+
+        wrong_project = client.post(
+            "/v1/tool-invocations",
+            json={
+                "conversation_id": conversation["id"],
+                "tool_id": "system_image.baseline.initialize",
+                "input": {"project_id": project["id"], "approval_id": "approval_442"},
+            },
+        )
+        assert wrong_project.status_code == 200
+        assert wrong_project.json()["status"] == "waiting_approval"
+        assert "not attached" in wrong_project.json()["summary"]
+
+        store.approval_details[approved.id] = approved
+        store.approvals[project["id"]] = [approved]
+        allowed = client.post(
+            "/v1/tool-invocations",
+            json={
+                "conversation_id": conversation["id"],
+                "tool_id": "system_image.baseline.initialize",
+                "input": {"project_id": project["id"], "approval_id": approved.id},
+            },
+        )
+        assert allowed.status_code == 200
+        assert allowed.json()["status"] == "completed"
+
+        audit = client.get(f"/v1/audit-events?tool_invocation_id={allowed.json()['id']}").json()
+        assert {"tool.invocation.created", "tool.invocation.executing", "tool.invocation.completed"}.issubset(
+            {event["action"] for event in audit}
+        )
+    finally:
+        tool.confirmation_mode = original_confirmation_mode
+        store.approval_details.pop(approved.id, None)
+        store.approvals[project["id"]] = []
+
+
 def test_build_message_creates_project():
     conversation = client.post(
         "/v1/conversations",
@@ -798,6 +860,43 @@ def test_tool_invocation_creates_project():
     wait_until(lambda: client.get(f"/v1/tool-invocations/{invocation_id}").json()["status"] == "completed")
     projects = client.get("/v1/projects").json()
     assert any(project["name"] == "Agent Ops Hub" for project in projects)
+
+
+def test_tool_invocation_idempotency_key_reuses_existing_invocation():
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "build", "space_id": "build", "title": "Build"},
+    ).json()
+    payload = {
+        "conversation_id": conversation["id"],
+        "tool_id": "project.create",
+        "input": {"name": "Idempotent Project"},
+        "idempotency_key": "project-create-idempotent-project",
+    }
+
+    first = client.post("/v1/tool-invocations", json=payload)
+    second = client.post("/v1/tool-invocations", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["id"] == first.json()["id"]
+    assert second.json()["input_payload"]["idempotency_key"] == payload["idempotency_key"]
+
+    projects = [project for project in client.get("/v1/projects").json() if project["name"] == "Idempotent Project"]
+    assert len(projects) == 1
+
+    invocations = [
+        invocation
+        for invocation in client.get(
+            "/v1/tool-invocations",
+            params={"conversation_id": conversation["id"], "tool_id": "project.create"},
+        ).json()
+        if invocation["input_payload"].get("idempotency_key") == payload["idempotency_key"]
+    ]
+    assert len(invocations) == 1
+
+    audit = client.get(f"/v1/audit-events?tool_invocation_id={first.json()['id']}").json()
+    assert sum(1 for event in audit if event["action"] == "tool.invocation.created") == 1
 
 
 def test_project_api_creation_is_backed_by_tool_invocation_and_audit():
@@ -2032,7 +2131,11 @@ def test_workspace_message_generates_agent_goal():
     assert response.status_code == 200
     wait_until(lambda: len(client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"]) == 1)
     refreshed = client.get(f"/v1/conversations/{conversation['id']}").json()
-    assert refreshed["agent_goals"][0]["status"] in {"running", "completed"}
+    goal = refreshed["agent_goals"][0]
+    assert goal["status"] in {"running", "completed"}
+    wait_until(lambda: len(client.get(f"/v1/tool-invocations?agent_goal_id={goal['id']}").json()) >= 1)
+    trace = client.get(f"/v1/tool-invocations?agent_goal_id={goal['id']}").json()
+    assert [item["tool_id"] for item in trace] == ["quality.scenario.generate"]
 
 
 def test_workspace_quality_loop_request_creates_agent_goal_proposal_and_runtime_goal():
@@ -2053,6 +2156,46 @@ def test_workspace_quality_loop_request_creates_agent_goal_proposal_and_runtime_
     wait_until(lambda: len(client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"]) >= 1)
     refreshed = client.get(f"/v1/conversations/{conversation['id']}").json()
     assert refreshed["agent_goals"][-1]["status"] in {"running", "completed"}
+
+
+def test_quality_loop_continue_starts_from_first_incomplete_asset_lane():
+    project, conversation, workspace = create_project_with_materialized_system_image("State Aware Quality Project")
+    us_id = workspace["us_items"][0]["id"]
+    scenario = client.post(
+        "/v1/tool-invocations",
+        json={
+            "conversation_id": conversation["id"],
+            "tool_id": "quality.scenario.generate",
+            "input": {"project_id": project["id"], "us_id": us_id},
+        },
+    )
+    assert scenario.status_code == 200
+    assert scenario.json()["status"] == "completed"
+
+    workspace_conversation = client.post(
+        "/v1/conversations",
+        json={
+            "space_type": "workspace",
+            "space_id": us_id,
+            "project_id": project["id"],
+            "us_id": us_id,
+            "title": f"{us_id} Workspace",
+        },
+    ).json()
+    response = client.post(
+        f"/v1/conversations/{workspace_conversation['id']}/messages",
+        json={"content": "Continue the quality loop for this US"},
+    )
+
+    assert response.status_code == 200
+    goal_id = response.json()["agent_goal"]["id"]
+    wait_until(lambda: len(client.get(f"/v1/tool-invocations?agent_goal_id={goal_id}").json()) >= 3)
+    trace = client.get(f"/v1/tool-invocations?agent_goal_id={goal_id}").json()
+    assert [item["tool_id"] for item in trace] == [
+        "quality.case.generate",
+        "automation.generate",
+        "release.assess",
+    ]
 
 
 def test_project_quality_loop_request_selects_first_us_and_completes_release_assessment():
@@ -2088,6 +2231,37 @@ def test_project_quality_loop_request_selects_first_us_and_completes_release_ass
     release = client.get(f"/v1/projects/{project['id']}/release-readiness").json()
     assert release["status"] == "Ready for release review"
     assert release["score"] >= 80
+
+    image = client.get(f"/v1/projects/{project['id']}/system-image").json()
+    quality_loop_metrics = [
+        metric
+        for metric in image["metric_snapshots"]
+        if metric["us_id"] == us_id and metric["metrics"].get("source") == "quality_loop_tool"
+    ]
+    assert {metric["metrics"]["quality_loop_step"] for metric in quality_loop_metrics} == {
+        "scenarios",
+        "cases",
+        "automation",
+        "release",
+    }
+    assert image["baselines"][0]["metric_snapshot_count"] == len(image["metric_snapshots"])
+    assert {
+        overlay["field_path"]
+        for overlay in image["overlays"]
+        if overlay["object_id"] == us_id and overlay["status"] == "candidate"
+    } >= {
+        "quality_loop.scenarios",
+        "quality_loop.cases",
+        "quality_loop.automation",
+        "quality_loop.release",
+    }
+
+    restored_store = InMemoryStore()
+    restored_image = restored_store.get_system_image(project["id"])
+    assert any(
+        metric.us_id == us_id and metric.metrics.get("quality_loop_step") == "release"
+        for metric in restored_image.metric_snapshots
+    )
 
 
 def test_agent_goal_interrupt_and_resume_update_conversation_snapshot():
@@ -2131,7 +2305,7 @@ def test_workspace_asset_lane_updates_are_persisted_across_store_restart():
 
     response = client.post(
         f"/v1/conversations/{conversation['id']}/messages",
-        json={"content": "Generate scenarios for this US"},
+        json={"content": "Complete the quality loop for this US"},
     )
     assert response.status_code == 200
 
@@ -2224,6 +2398,37 @@ def test_workspace_status_query_routes_through_workspace_query_tool():
     body = response.json()
     assert "tool_invocations" in body
     assert body["tool_invocations"][0]["tool_id"] == "query.workspace.status"
+
+
+def test_direct_conversation_answer_is_persisted_as_query_answer_tool_invocation():
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "build", "space_id": "build", "title": "Build"},
+    ).json()
+
+    response = client.post(
+        f"/v1/conversations/{conversation['id']}/messages",
+        json={"content": "Hello Nasus"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tool_invocation"]["tool_id"] == "query.answer"
+    assert body["tool_invocation"]["status"] == "completed"
+
+    invocation_id = body["tool_invocation"]["id"]
+    persisted = client.get(f"/v1/tool-invocations/{invocation_id}")
+    assert persisted.status_code == 200
+    assert persisted.json()["tool_id"] == "query.answer"
+    assert persisted.json()["input_payload"]["user_message"] == "Hello Nasus"
+
+    audit = client.get(f"/v1/audit-events?tool_invocation_id={invocation_id}").json()
+    assert {"tool.invocation.created", "tool.invocation.completed"}.issubset({event["action"] for event in audit})
+    assert all(event["conversation_id"] == conversation["id"] for event in audit)
+
+    refreshed = client.get(f"/v1/conversations/{conversation['id']}").json()
+    assistant_messages = [message for message in refreshed["messages"] if message["role"] == "assistant"]
+    assert assistant_messages[-1]["metadata"]["planner_kind"] == "direct_answer"
 
 
 def test_dashboard_message_uses_current_model_preset_metadata():

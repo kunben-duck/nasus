@@ -28,6 +28,15 @@ class ToolInvocationRuntime:
 
     async def create(self, payload: ToolInvocationRequest) -> ToolInvocation:
         canonical_tool_id = self.canonical_tool_id(payload.tool_id)
+        if payload.idempotency_key:
+            existing = self._find_idempotent_invocation(
+                conversation_id=payload.conversation_id,
+                tool_id=canonical_tool_id,
+                idempotency_key=payload.idempotency_key,
+            )
+            if existing is not None:
+                return existing
+
         invocation = ToolInvocation(
             id=f"tool_{uuid4().hex[:10]}",
             conversation_id=payload.conversation_id,
@@ -39,6 +48,7 @@ class ToolInvocationRuntime:
             target_scope=payload.target_scope,
             input_payload={
                 **payload.input,
+                **({"idempotency_key": payload.idempotency_key} if payload.idempotency_key else {}),
                 **({"requested_tool_id": payload.tool_id} if payload.tool_id != canonical_tool_id else {}),
             },
         )
@@ -170,6 +180,24 @@ class ToolInvocationRuntime:
     def tool_definition(self, tool_id: str) -> ToolDefinition | None:
         canonical_tool_id = self.canonical_tool_id(tool_id)
         return next((tool for tool in self.store.tools if tool.tool_id == canonical_tool_id), None)
+
+    def _find_idempotent_invocation(
+        self,
+        *,
+        conversation_id: str | None,
+        tool_id: str,
+        idempotency_key: str,
+    ) -> ToolInvocation | None:
+        return next(
+            (
+                invocation
+                for invocation in self.store.tool_invocations.values()
+                if invocation.conversation_id == conversation_id
+                and invocation.tool_id == tool_id
+                and invocation.input_payload.get("idempotency_key") == idempotency_key
+            ),
+            None,
+        )
 
     @staticmethod
     def canonical_tool_id(tool_id: str) -> str:

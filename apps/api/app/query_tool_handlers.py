@@ -23,8 +23,32 @@ class QueryToolHandler:
 
         fallback_text = "I reviewed the current workspace state and prepared a concise summary."
         query_keys: list[list[str]] = [["conversation", invocation.conversation_id]] if invocation.conversation_id else []
+        user_message = f"Summarize the current state for {invocation.tool_id}."
+        planner_kind = "tool_query"
+        system_prompt = (
+            "You are Nasus Agent. Summarize the current domain state concisely "
+            "and recommend the next best action."
+        )
 
-        if invocation.tool_id == "query.dashboard.progress":
+        if invocation.tool_id == "query.answer":
+            fallback_text = str(invocation.input_payload.get("fallback_text") or fallback_text)
+            raw_query_keys = invocation.input_payload.get("query_keys")
+            if isinstance(raw_query_keys, list):
+                parsed_query_keys = [
+                    [str(part) for part in key]
+                    for key in raw_query_keys
+                    if isinstance(key, list) and all(isinstance(part, (str, int, float)) for part in key)
+                ]
+                if parsed_query_keys:
+                    query_keys = parsed_query_keys
+            user_message = str(invocation.input_payload.get("user_message") or user_message)
+            planner_kind = "direct_answer"
+            system_prompt = (
+                "You are Nasus Agent, the agent-first operating interface for the QA workspace. "
+                "Answer the user's current message using the available conversation and workspace context. "
+                "Be concise, concrete, and action-oriented."
+            )
+        elif invocation.tool_id == "query.dashboard.progress":
             fallback_text = self.store._build_dashboard_summary("")
             query_keys.extend([["dashboard"], ["welcome"]])
         elif invocation.tool_id == "query.project.status" and project_id:
@@ -62,16 +86,13 @@ class QueryToolHandler:
         await asyncio.sleep(0.05)
 
         content = fallback_text
-        metadata: dict[str, Any] = {"planner_kind": "tool_query", "tool_id": invocation.tool_id}
+        metadata: dict[str, Any] = {"planner_kind": planner_kind, "tool_id": invocation.tool_id}
         if conversation:
             llm_update = await self.store._generate_llm_content(
                 conversation=conversation,
-                user_message=f"Summarize the current state for {invocation.tool_id}.",
+                user_message=user_message,
                 fallback_text=fallback_text,
-                system_prompt=(
-                    "You are Nasus Agent. Summarize the current domain state concisely "
-                    "and recommend the next best action."
-                ),
+                system_prompt=system_prompt,
             )
             content = llm_update["content"]
             metadata = {**metadata, **llm_update["metadata"]}

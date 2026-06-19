@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import { api } from '../features/api'
 import type {
@@ -26,6 +27,24 @@ type BuildSkillCard = {
   copy: string
   icon: 'git' | 'doc' | 'test' | 'graph' | 'loop' | 'shield'
   promptHint: string
+}
+type BackendStatus = 'loading' | 'live' | 'offline'
+
+function routeStateFromPath(pathname: string): { view: StudioView; projectId: string | null } {
+  const projectMatch = pathname.match(/^\/projects\/([^/]+)/)
+  if (projectMatch?.[1]) {
+    return { view: 'project', projectId: decodeURIComponent(projectMatch[1]) }
+  }
+  if (pathname.startsWith('/dashboard')) return { view: 'dashboard', projectId: null }
+  if (pathname.startsWith('/documentation')) return { view: 'documentation', projectId: null }
+  return { view: 'build', projectId: null }
+}
+
+function pathForView(view: StudioView, projectId?: string | null) {
+  if (view === 'dashboard') return '/dashboard'
+  if (view === 'documentation') return '/documentation'
+  if (view === 'project' && projectId) return `/projects/${encodeURIComponent(projectId)}`
+  return '/build'
 }
 
 const starterProjects: ProjectCard[] = [
@@ -189,9 +208,12 @@ function useTheme(settings?: StudioSettings) {
 }
 
 export function NasusStudio() {
+  const location = useLocation()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [view, setView] = useState<StudioView>('build')
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
+  const routeState = useMemo(() => routeStateFromPath(location.pathname), [location.pathname])
+  const [view, setViewState] = useState<StudioView>(routeState.view)
+  const [activeProjectId, setActiveProjectIdState] = useState<string | null>(routeState.projectId)
   const [prompt, setPrompt] = useState('')
   const [agentMode, setAgentMode] = useState<AgentMode>('planning')
   const [fallbackMessages, setFallbackMessages] = useState<MessageRow[]>([
@@ -210,6 +232,49 @@ export function NasusStudio() {
   const buildQuery = useQuery({ queryKey: ['build'], queryFn: api.getBuild })
   const buildConversation = useConversation('build', 'build', 'Build')
   useTheme(settingsQuery.data)
+  const backendStatus: BackendStatus = useMemo(() => {
+    if (settingsQuery.isLoading || dashboardQuery.isLoading || buildQuery.isLoading) return 'loading'
+    if (settingsQuery.isError || dashboardQuery.isError || buildQuery.isError) return 'offline'
+    return 'live'
+  }, [
+    buildQuery.isError,
+    buildQuery.isLoading,
+    dashboardQuery.isError,
+    dashboardQuery.isLoading,
+    settingsQuery.isError,
+    settingsQuery.isLoading,
+  ])
+  const settingsDisabled = backendStatus !== 'live' || !settingsQuery.data
+
+  useEffect(() => {
+    setViewState(routeState.view)
+    if (routeState.projectId) {
+      setActiveProjectIdState(routeState.projectId)
+    }
+  }, [routeState.projectId, routeState.view])
+
+  const setView = useCallback(
+    (nextView: StudioView) => {
+      setViewState(nextView)
+      const nextPath = pathForView(nextView, activeProjectId)
+      if (location.pathname !== nextPath) {
+        navigate(nextPath)
+      }
+    },
+    [activeProjectId, location.pathname, navigate],
+  )
+
+  const openProjectRoute = useCallback(
+    (projectId: string) => {
+      setActiveProjectIdState(projectId)
+      setViewState('project')
+      const nextPath = pathForView('project', projectId)
+      if (location.pathname !== nextPath) {
+        navigate(nextPath)
+      }
+    },
+    [location.pathname, navigate],
+  )
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -310,8 +375,7 @@ export function NasusStudio() {
       const requestedName = normalizeProjectName(text).toLowerCase()
       const created = dashboard.projects.find((project) => project.name.toLowerCase() === requestedName)
       if (created) {
-        setActiveProjectId(created.id)
-        setView('project')
+        openProjectRoute(created.id)
       }
     } catch {
       setFallbackMessages((messages) => [
@@ -345,8 +409,7 @@ export function NasusStudio() {
   }
 
   function openProject(project: ProjectCard) {
-    setActiveProjectId(project.id)
-    setView('project')
+    openProjectRoute(project.id)
     setFallbackMessages((messages) => [
       ...messages,
       {
@@ -438,6 +501,7 @@ export function NasusStudio() {
       <main className={`studio-main ${isProjectSpace ? 'with-right-panel' : ''}`}>
         <div className="terms-bar">
           <span>Nasus first production baseline · system image + agent + quality loop</span>
+          <BackendStatusPill status={backendStatus} />
           <button>Learn more</button>
           <button>Dismiss</button>
         </div>
@@ -485,6 +549,14 @@ export function NasusStudio() {
       {settingsOpen ? (
         <SettingsPopover
           settings={settingsQuery.data}
+          disabled={settingsDisabled}
+          statusMessage={
+            backendStatus === 'loading'
+              ? 'Settings are loading from the backend.'
+              : backendStatus === 'offline'
+                ? 'Backend is offline. Configuration is read-only preview and cannot be persisted.'
+                : 'Settings are connected to the backend and will be persisted securely.'
+          }
           testing={testSettingsConnection.isPending}
           testResult={testSettingsConnection.data}
           onTheme={(theme) => updateSettings.mutate({ theme })}
@@ -1037,8 +1109,26 @@ function RunSettingsPanel({ project, systemImage }: { project?: ProjectCard; sys
   )
 }
 
+function BackendStatusPill({ status }: { status: BackendStatus }) {
+  const label = status === 'live' ? 'Live' : status === 'loading' ? 'Connecting' : 'Offline preview'
+  const copy = status === 'live'
+    ? 'Backend connected'
+    : status === 'loading'
+      ? 'Checking backend'
+      : 'Using local preview data'
+
+  return (
+    <span className={`backend-status-pill ${status}`} title={copy} data-testid="backend-status-pill">
+      <span className="backend-status-dot" />
+      <span>{label}</span>
+    </span>
+  )
+}
+
 function SettingsPopover({
   settings,
+  disabled,
+  statusMessage,
   testing,
   testResult,
   onTheme,
@@ -1048,6 +1138,8 @@ function SettingsPopover({
   onTestModel,
 }: {
   settings?: StudioSettings
+  disabled: boolean
+  statusMessage: string
   testing: boolean
   testResult?: SettingsConnectionResult
   onTheme: (theme: 'dark' | 'light' | 'system') => void
@@ -1128,7 +1220,7 @@ function SettingsPopover({
       return (
         <div className="settings-submenu settings-submenu-compact">
           {(['light', 'dark', 'system'] as const).map((theme) => (
-            <button className={settings?.theme === theme ? 'selected' : ''} key={theme} onClick={() => onTheme(theme)} type="button">
+            <button className={settings?.theme === theme ? 'selected' : ''} disabled={disabled} key={theme} onClick={() => onTheme(theme)} type="button">
               <span>{settings?.theme === theme ? '●' : '○'}</span>
               <span>{theme === 'light' ? 'Light' : theme === 'dark' ? 'Dark' : 'System'}</span>
             </button>
@@ -1141,7 +1233,7 @@ function SettingsPopover({
       return (
         <div className="settings-submenu settings-submenu-compact">
           {(['en', 'zh'] as const).map((language) => (
-            <button className={settings?.language === language ? 'selected' : ''} key={language} onClick={() => onLanguage(language)} type="button">
+            <button className={settings?.language === language ? 'selected' : ''} disabled={disabled} key={language} onClick={() => onLanguage(language)} type="button">
               <span>{settings?.language === language ? '●' : '○'}</span>
               <span>{language === 'en' ? 'English' : '中文'}</span>
             </button>
@@ -1154,7 +1246,7 @@ function SettingsPopover({
       return (
         <div className="settings-submenu settings-submenu-compact">
           {(['important', 'all', 'muted'] as const).map((mode) => (
-            <button className={settings?.notification_mode === mode ? 'selected' : ''} key={mode} onClick={() => onNotification(mode)} type="button">
+            <button className={settings?.notification_mode === mode ? 'selected' : ''} disabled={disabled} key={mode} onClick={() => onNotification(mode)} type="button">
               <span>{settings?.notification_mode === mode ? '●' : '○'}</span>
               <span>{mode === 'important' ? 'Important only' : mode === 'all' ? 'All notifications' : 'Muted'}</span>
             </button>
@@ -1200,6 +1292,12 @@ function SettingsPopover({
     return (
       <div className="settings-submenu settings-model-submenu">
         <div className="settings-submenu-title">Model configuration</div>
+        <div className={`settings-provider-banner compact ${disabled ? 'readonly' : ''}`}>
+          <span className={`settings-provider-pill ${disabled ? 'fallback' : 'live'}`}>
+            {disabled ? 'read only' : 'connected'}
+          </span>
+          <span className="settings-provider-copy">{statusMessage}</span>
+        </div>
         <div className="model-route-tabs">
           {(['chat', 'embedding', 'rerank'] as ModelRoute[]).map((route) => (
             <button className={activeRoute === route ? 'active' : ''} key={route} onClick={() => setActiveRoute(route)} type="button">
@@ -1216,14 +1314,14 @@ function SettingsPopover({
         <div className="model-config-form">
           <label className="settings-field">
             <span className="settings-field-label">Route mode</span>
-            <select className="settings-field-control" value={modelPreset} onChange={(event) => updateModelDraft({ modelPreset: event.target.value as 'system_default' | 'custom' })}>
+            <select className="settings-field-control" disabled={disabled} value={modelPreset} onChange={(event) => updateModelDraft({ modelPreset: event.target.value as 'system_default' | 'custom' })}>
               <option value="system_default">System default</option>
               <option value="custom">Custom provider</option>
             </select>
           </label>
           <label className="settings-field">
             <span className="settings-field-label">Provider</span>
-            <select className="settings-field-control" value={providerKind} onChange={(event) => updateModelDraft({ providerKind: event.target.value as CustomModelConfig['provider_kind'] })}>
+            <select className="settings-field-control" disabled={disabled} value={providerKind} onChange={(event) => updateModelDraft({ providerKind: event.target.value as CustomModelConfig['provider_kind'] })}>
               <option value="openai_compatible">OpenAI compatible</option>
               <option value="openai">OpenAI</option>
               <option value="gemini">Gemini</option>
@@ -1232,21 +1330,21 @@ function SettingsPopover({
           </label>
           <label className="settings-field">
             <span className="settings-field-label">Base URL</span>
-            <input className="settings-field-control" placeholder="https://api.example.com/v1" value={baseUrl} onChange={(event) => updateModelDraft({ baseUrl: event.target.value })} />
+            <input className="settings-field-control" disabled={disabled} placeholder="https://api.example.com/v1" value={baseUrl} onChange={(event) => updateModelDraft({ baseUrl: event.target.value })} />
           </label>
           <label className="settings-field">
             <span className="settings-field-label">Model</span>
-            <input className="settings-field-control" placeholder={activeRoute === 'embedding' ? 'text-embedding-3-large' : activeRoute === 'rerank' ? 'rerank-model' : 'gpt-5.4'} value={modelName} onChange={(event) => updateModelDraft({ modelName: event.target.value })} />
+            <input className="settings-field-control" disabled={disabled} placeholder={activeRoute === 'embedding' ? 'text-embedding-3-large' : activeRoute === 'rerank' ? 'rerank-model' : 'gpt-5.4'} value={modelName} onChange={(event) => updateModelDraft({ modelName: event.target.value })} />
           </label>
           <label className="settings-field">
             <span className="settings-field-label">API Key</span>
-            <input className="settings-field-control" type="password" placeholder={maskedKey ? `Saved ${maskedKey}` : 'Paste API key'} value={apiKey} onChange={(event) => updateModelDraft({ apiKey: event.target.value })} />
+            <input className="settings-field-control" disabled={disabled} type="password" placeholder={maskedKey ? `Saved ${maskedKey}` : 'Paste API key'} value={apiKey} onChange={(event) => updateModelDraft({ apiKey: event.target.value })} />
           </label>
           <div className="settings-form-actions">
-            <button className="settings-save-button secondary" disabled={testing} onClick={() => onTestModel(testPayload)} type="button">
+            <button className="settings-save-button secondary" disabled={disabled || testing} onClick={() => onTestModel(testPayload)} type="button">
               {testing ? 'Testing...' : 'Test connection'}
             </button>
-            <button className="settings-save-button" onClick={() => onSaveModel(savePayload)} type="button">
+            <button className="settings-save-button" disabled={disabled} onClick={() => onSaveModel(savePayload)} type="button">
               Save {activeRoute}
             </button>
           </div>

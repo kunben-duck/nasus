@@ -12,13 +12,14 @@ test('agent-first build to project workspace path works end-to-end', async ({ pa
 
   await page.goto('/')
   await expect(page.getByRole('heading', { name: /Build quality projects with Nasus/i })).toBeVisible()
+  await expect(page.getByTestId('backend-status-pill')).toContainText(/Live/i)
 
   await page.getByTestId('build-agent-input').fill(`Help me create a new project called ${projectName}`)
   await page.getByTestId('build-agent-submit').click()
 
-  await expect(page.getByTestId('agent-workspace')).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByText(projectName).first()).toBeVisible()
+  await expect(page).toHaveURL(/\/projects\//, { timeout: 15_000 })
   await expect(page.getByRole('heading', { name: /Build with Agents/i })).toBeVisible()
+  await expect(page.getByText(projectName).first()).toBeVisible()
 
   await page.getByTestId('agent-card-system-image-builder').click()
   await expect(page.getByTestId('agent-goal-panel')).toContainText(/Build Official System Image/i, { timeout: 15_000 })
@@ -44,4 +45,17 @@ test('agent-first build to project workspace path works end-to-end', async ({ pa
   await expect(page.getByTestId('quality-asset-panel')).toContainText(/Release Assessment/i, { timeout: 20_000 })
   await expect(page.getByTestId('quality-asset-panel')).toContainText(/completed/i)
   await expect(page.getByTestId('quality-asset-panel')).toContainText(/Latest run/i)
+})
+
+test('studio routes are deep-linkable', async ({ page }) => {
+  await page.goto('/dashboard')
+  await expect(page.getByRole('heading', { name: /Global quality cockpit/i })).toBeVisible()
+  await expect(page.getByTestId('backend-status-pill')).toContainText(/Live/i)
+  await expect(page).toHaveURL(/\/dashboard$/)
+
+  await page.goto('/projects/proj_payment')
+  await expect(page.getByTestId('agent-workspace')).toBeVisible()
+  await expect(page.getByText(/Payment System/i).first()).toBeVisible()
+  await expect(page.getByRole('heading', { name: /Build with Agents/i })).toBeVisible()
+  await expect(page).toHaveURL(/\/projects\/proj_payment$/)
 })

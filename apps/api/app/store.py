@@ -93,7 +93,7 @@ class ApplicationStore:
         self.conversation_repository = ConversationRepository()
         self.project_repository = ProjectRepository()
         self.settings_persistence = SettingsPersistence()
-        self.tool_governance = ToolGovernance()
+        self.tool_governance = ToolGovernance(approval_verifier=self._approval_allows_tool_invocation)
         persisted_settings, persisted_custom_keys = self.settings_repository.load()
         self.settings = self.llm.build_settings(
             language=persisted_settings["language"],
@@ -171,6 +171,17 @@ class ApplicationStore:
                 description="Assess release readiness from quality assets, automation evidence, and governance state.",
                 required_context=["project_id", "us_id"],
                 produced_objects=["ReleaseReadiness", "QualityProfile"],
+            ),
+            ToolDefinition(
+                tool_id="query.answer",
+                label="Answer Conversation Query",
+                tool_kind="query",
+                scope="central",
+                risk_level="low",
+                confirmation_mode="none",
+                description="Answer a conversational request through the canonical ToolInvocation path.",
+                required_context=["conversation_id", "user_message"],
+                produced_objects=["ConversationSession"],
             ),
             ToolDefinition(
                 tool_id="query.dashboard.progress",
@@ -267,6 +278,7 @@ class ApplicationStore:
             project_name_extractor=self._extract_project_name,
             version_name_extractor=self._extract_version_name,
             summary_builder=self._conversation_summary_fallback,
+            quality_state_resolver=self._quality_state_for_planner,
         )
         self.planner = LLMStructuredAgentPlanner(
             fallback=deterministic_planner,
@@ -1807,42 +1819,6 @@ class ApplicationStore:
     def _conversation_context_snapshot(self, conversation: ConversationSession) -> str:
         return self.agent_memory.build_context(conversation).context_snapshot
 
-    async def _emit_llm_answer(
-        self,
-        conversation_id: str,
-        invocation: ToolInvocation,
-        *,
-        user_message: str,
-        fallback_text: str,
-        query_keys: List[List[str]],
-    ) -> None:
-        conversation = self.conversations[conversation_id]
-        llm_result = await self._generate_llm_content(
-            conversation=conversation,
-            user_message=user_message,
-            fallback_text=fallback_text,
-        )
-        await self.append_message(
-            conversation_id,
-            "assistant",
-            llm_result["content"],
-            metadata=llm_result["metadata"],
-        )
-        await self._push_event(
-            conversation_id,
-            "tool.invocation.updated",
-            "tool_invocation",
-            invocation.id,
-            "replace",
-            {
-                "status": "completed",
-                "llm_provider": llm_result["metadata"]["llm_provider"],
-                "llm_model": llm_result["metadata"]["llm_model"],
-                "llm_mode": llm_result["metadata"]["llm_mode"],
-            },
-            query_keys,
-        )
-
     async def _generate_llm_content(
         self,
         *,
@@ -1918,6 +1894,55 @@ class ApplicationStore:
             "Tell me which step you want to move forward."
         )
 
+    def _quality_state_for_planner(self, project_id: str | None, us_id: str | None) -> Dict[str, str]:
+        resolved_project_id = project_id or ""
+        resolved_us_id = us_id or ""
+        if not resolved_us_id and resolved_project_id:
+            first_us = next(iter(self.us_items.get(resolved_project_id, [])), None)
+            resolved_us_id = first_us.id if first_us is not None else ""
+        if not resolved_project_id and resolved_us_id:
+            for candidate_project_id, items in self.us_items.items():
+                if any(item.id == resolved_us_id for item in items):
+                    resolved_project_id = candidate_project_id
+                    break
+
+        state: Dict[str, str] = {"project_id": resolved_project_id, "us_id": resolved_us_id}
+        for lane in self.asset_lanes.get(resolved_us_id, []):
+            label = lane.label.strip().lower()
+            if "scenario" in label:
+                state["scenarios"] = lane.status
+            elif "case" in label:
+                state["cases"] = lane.status
+            elif "automation" in label:
+                state["automation"] = lane.status
+            elif "release" in label:
+                state["release"] = lane.status
+        return state
+
+    def _approval_allows_tool_invocation(self, invocation: ToolInvocation) -> tuple[bool, str]:
+        approval_id = str(invocation.input_payload.get("approval_id") or "")
+        project_id = str(invocation.input_payload.get("project_id") or "")
+        conversation = self.conversations.get(invocation.conversation_id or "")
+        if conversation:
+            project_id = project_id or conversation.project_id or (
+                conversation.space_id if conversation.space_type == "project" else ""
+            )
+        if not project_id:
+            return False, f"Approval {approval_id} cannot be verified without project context."
+
+        project_approval_ids = {approval.id for approval in self.approvals.get(project_id, [])}
+        if approval_id not in project_approval_ids:
+            return False, f"Approval {approval_id} is not attached to project {project_id}."
+
+        approval = self.approval_details.get(approval_id)
+        status = approval.status if approval is not None else next(
+            (item.status for item in self.approvals.get(project_id, []) if item.id == approval_id),
+            "",
+        )
+        if status in {"approved", "accepted", "completed"}:
+            return True, f"Approval {approval_id} is approved."
+        return False, f"Approval {approval_id} is {status or 'unknown'}; approved status is required."
+
     async def handle_message(self, conversation_id: str, content: str) -> Dict[str, Any]:
         conversation = self.conversations[conversation_id]
         await self.append_message(conversation_id, "user", content)
@@ -1963,26 +1988,21 @@ class ApplicationStore:
             goal = await self.agent_service.start_from_proposal(conversation_id, decision.agent_goal)
             return {"agent_goal": goal}
 
-        tool_invocation = ToolInvocation(
-            id=f"tool_{uuid4().hex[:10]}",
-            conversation_id=conversation_id,
-            tool_id="query.answer",
-            status="completed",
-            summary="Answer generated",
-            initiator_surface="chat",
-            initiator_actor="user",
-            target_scope="central",
-        )
         direct_answer = decision.direct_answer
         fallback_text = direct_answer.fallback_text if direct_answer else self._conversation_summary_fallback(conversation)
         query_keys = direct_answer.query_keys if direct_answer else [["conversation", conversation_id]]
-        asyncio.create_task(
-            self._emit_llm_answer(
-                conversation_id,
-                tool_invocation,
-                user_message=content,
-                fallback_text=fallback_text,
-                query_keys=query_keys,
+        tool_invocation = await self.create_tool_invocation(
+            ToolInvocationRequest(
+                conversation_id=conversation_id,
+                tool_id="query.answer",
+                input={
+                    "user_message": content,
+                    "fallback_text": fallback_text,
+                    "query_keys": query_keys,
+                },
+                initiator_surface="chat",
+                initiator_actor="user",
+                target_scope="central",
             )
         )
         return {"tool_invocation": tool_invocation}
