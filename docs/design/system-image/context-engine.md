@@ -58,6 +58,13 @@ UCE 固定由 7 个内部模块组成：
 - `normalize_asset(raw_input) -> RawAssetRecord`
 - `emit_checkpoint()`
 
+代码实现采用两级契约：
+
+- `SourceIngestionPort`：application 层使用的稳定端口，负责规范化 source、摄入快照和读取文本单元。
+- `SourceConnector`：infrastructure connector 防腐层，负责判断是否支持某个 source，并将外部源物化为 `MaterializedSource(local_path, connector_kind, source_ref, revision, evidence_refs)`。
+
+首版 `GitSourceConnector` 已覆盖受控 clone/fetch、host/scheme allowlist、credential reference、托管缓存、并发锁、超时和 commit revision 证据。上面的 `healthcheck/discover/pull_delta/checkpoint` 是后续 Connector Runtime 的完整目标；在形成对应持久化对象前，不得伪造这些状态。
+
 ### 4.2 统一输入类型
 
 V1 一等 source：
@@ -67,6 +74,12 @@ V1 一等 source：
   - 历史 US 文档
 - `historical_quality_asset`
   - 历史测试用例、测试脚本、自动化资产
+
+Baseline 输入策略：
+
+- `git_repository` 是 Official System Image 初始化的必选 source。
+- `document_bundle` 与 `historical_quality_asset` 是可选增强 source；缺失时记录 coverage gap 和较低 context confidence，不阻塞代码基线。
+- 默认 source slot 只是交互占位，不是已绑定事实，不参与摄入、embedding、Entity Resolution 或 baseline 统计。
 
 增强 source：
 
@@ -119,15 +132,20 @@ V1 一等 source：
 - PostgreSQL 存 `RawAssetRecord`、元数据、解析状态与索引字段。
 - 大文本切块后写：
   - `raw_asset_chunks`
+  - `content_ref`
+  - `content_hash`
   - `chunk_embedding_ref`
   - `chunk_metadata`
 - V1 必须对可检索文本类 chunk 生成 embedding。只有二进制、空内容、解析失败或明确标记 `embedding_excluded=true` 的 chunk 可以暂时不生成 embedding，并必须记录原因。
+- `RawAssetChunk` 的 payload 不能只存在数据库 JSON 字段中，必须写对象存储；领域表只保存可审计引用和元数据，避免后续 source 扩大后 PostgreSQL 膨胀。
 
 ## 6. 知识摄入管线
 
 ### 6.1 Git 仓库
 
-`clone/fetch -> snapshot -> OpenGrok indexing -> Tree-sitter parse -> symbol/reference extract -> anchor extract -> entity resolution -> ContextObject write`
+`clone/fetch -> snapshot -> Tree-sitter parse -> symbol/reference extract -> anchor extract -> entity resolution -> ContextObject write -> optional code-search projection`
+
+当前正式结构解析 provider 为 Tree-sitter；Codebase Memory 是 V1 选定的可替换代码图谱增强投影，OpenGrok 保留为未来全文搜索/导航投影。Git clone/fetch、revision snapshot 和 Tree-sitter parse 始终是 canonical fact 阶段；外部图谱只增强符号与关系，不成为领域事实源。任何 provider 不可用或语言不受支持时都必须明确记录实际 parser/index provider 和降级原因，不得冒充真实执行结果。
 
 ### 6.2 文档
 
@@ -158,13 +176,21 @@ V1 一等 source：
 
 ## 7. Code Intelligence
 
-### 7.1 OpenGrok
+### 7.1 外部代码图谱投影
 
 职责：
 
-- 全文搜索
-- 定义 / 引用 / 路径导航
-- 跨文件符号定位
+- 提供跨文件 `CALLS / IMPORTS / DEFINES / HANDLES` 等结构关系
+- 补充 Tree-sitter 单文件解析无法稳定恢复的跨模块路径
+- 为 Agent 的代码探索和影响分析提供分页图查询
+
+V1 provider 为 `DeusData/codebase-memory-mcp`，但接入只使用其公开 CLI/MCP tool contract：
+
+- `index_repository`
+- `search_graph(format=json)`
+- `query_graph(format=json)`
+
+Nasus 禁止直接读取 provider SQLite 文件。`CodebaseMemoryCodeIntelligenceAdapter` 负责把外部 label、edge 和节点 ID 映射为 `CodeEntityCandidate` / `CodeRelationshipCandidate`；`CompositeCodeIntelligenceAdapter` 再与 Tree-sitter 结果合并。OpenGrok 如后续启用，只能实现同一 projection port，不能改变 `ContextObject` 主键或跨域 API。
 
 ### 7.2 Tree-sitter
 
@@ -173,6 +199,16 @@ V1 一等 source：
 - 代码结构解析
 - 函数/类/接口/路由/依赖提取
 - 增量解析受影响文件
+
+当前实现约束：
+
+- application 层只依赖 `CodeIntelligencePort`，不 import Tree-sitter、OpenGrok 或外部 MCP schema。
+- infrastructure 默认实现为 `TreeSitterCodeIntelligenceAdapter`。
+- 首版原生 grammar 覆盖 Python、JavaScript、TypeScript、TSX、Java、Go。
+- 产出 `module / class / interface / enum / function / method / api_route / dependency` 候选实体。
+- 产出 `belongs_to / depends_on / calls` 内部关系，并映射为 Nasus `ContextRelationship`。
+- 不支持的语言允许进入显式 lexical fallback，但必须写入 `parser:lexical-fallback`、`parser-unsupported:{suffix}`，并降低对象 confidence。
+- `/readyz` 必须执行 Tree-sitter smoke parse；解析器或 grammar 不可用时服务不得报告 ready。
 
 ### 7.3 代码结构产物
 
@@ -185,6 +221,27 @@ V1 一等 source：
 - `code_modules`
 
 这些产物不是最终系统画像，而是 `Entity Resolution` 的输入。
+
+当前实现不直接持久化供应商节点 ID。`provider_node_id` 只用于一次物化过程中的关系映射；Nasus 使用 `project + source + provider node seed` 生成自己的稳定 ContextObject ID。后续替换为 codebase-memory、CodeGraph 或 OpenGrok 时，不改变领域主键和上层 API。
+
+### 7.4 组合、降级与运行配置
+
+组合规则：
+
+- Tree-sitter 是主结果，外部图谱按 `relative_path + entity_kind + line/name` 合并。
+- 命中同一实体时保留 Tree-sitter `provider_node_id`，只合并 evidence；外部 ID 不进入持久化主键。
+- 外部关系端点先重映射到合并后的候选 ID，再写 `ContextRelationship`。
+- 外部图谱返回绝对路径、越界路径、未知 schema 或变化中的 source snapshot 时必须拒绝该投影。
+
+运行模式：
+
+- `NASUS_CODE_GRAPH_MODE=disabled`：仅 Tree-sitter，并记录 `code-graph:disabled`。
+- `optional`：外部 provider 失败时继续 canonical parse，并记录 `code-graph:unavailable` 和受控 reason。
+- `required`：provider 不可用、版本探测失败或索引失败时 fail closed；staging/production 固定使用该模式并在启动时校验可执行文件。`disabled/optional` 仅用于本地开发、故障诊断和显式兼容验证。
+
+V1 发布门禁必须执行 `npm run verify:code-graph-provider`，对临时真实仓库验证实体、关系、源文件边界和 Provider 身份防泄漏。只通过 fake CLI 单元测试不能证明外部图谱契约可用。
+
+`/readyz` 必须分别报告 `backend/version` 与 `graph_backend/graph_status/graph_mode`。`ready` 不能用于暗示可选 provider 已启用。
 
 ## 8. Knowledge Intelligence
 
@@ -248,6 +305,28 @@ Anchor 是跨源关联的桥梁。
 - 共享上游/下游关系
 - 历史人工确认
 
+所有 parser、MCP code graph 或外部代码知识库必须先映射成 provider-neutral 候选契约：
+
+```text
+CodeEntityCandidate {
+  provider_node_id        # 仅本次 adapter 映射使用
+  name / qualified_name
+  entity_kind
+  relative_path / language / line_range
+  evidence_refs[]
+}
+
+CodeRelationshipCandidate {
+  from_provider_node_id
+  relationship_kind
+  to_provider_node_id
+  confidence
+  evidence_refs[]
+}
+```
+
+外部系统的节点 ID、图 schema、查询协议和存储结构只能保存在 adapter metadata/evidence 中，不得成为 Nasus `ContextObject` 主键或跨域 API 契约。这一防腐层保证后续可以替换 codebase-memory、CodeGraph、OpenGrok、Tree-sitter 或其他实现。
+
 ### 10.3 归并结果
 
 - `auto_merged`
@@ -260,6 +339,8 @@ Anchor 是跨源关联的桥梁。
 - `confidence`
 - `source_refs`
 - `review_required`
+
+增量 source 更新时，只撤销或重算受变更 candidate 影响的自动关系。人工确认关系必须保留 review provenance，不能被下一次自动解析静默覆盖。
 
 ## 11. ContextObject 存储
 
@@ -342,8 +423,9 @@ Embedding 是系统画像 V1 的必需能力。
 每条 embedding 记录至少包含：
 
 - `embedding_id`
-- `target_type=raw_asset_chunk|context_object|test_asset|failure_pattern|risk_pattern`
-- `target_id`
+- `source_ref` 可空
+- `object_ref` 可空
+- `chunk_ref` 可空
 - `project_id`
 - `version_id` 可空
 - `baseline_id` 可空
@@ -360,6 +442,7 @@ Embedding 是系统画像 V1 的必需能力。
 约束：
 
 - embedding 模型必须通过配置管理，不能写死到代码。
+- 一条 embedding 必须且只能绑定 `source_ref / object_ref / chunk_ref` 中至少一个明确 target；优先对 `RawAssetChunk` 建立 `chunk_ref`。
 - `embedding_model + embedding_version + embedding_dimension` 不一致的向量不能混排。
 - 源内容 hash 变化后，相关 embedding 必须标记为 `stale` 并进入重建队列。
 - embedding 只是检索投影，不是正式事实源；正式事实仍以 `ContextObject / ContextRelationship / Baseline / Evidence` 为准。
@@ -489,7 +572,7 @@ Rerank 输出：
 ## 14. 实现默认值
 
 - 原始内容在 MinIO / S3，元数据、对象、关系、基线、overlay 和指标在 PostgreSQL。
-- OpenGrok 负责代码检索与导航，Tree-sitter 负责结构解析。
+- Tree-sitter 负责 canonical 结构解析；Codebase Memory 通过防腐层提供 V1 可选代码图谱增强，OpenGrok 仅作为未来可替换全文搜索/导航投影。
 - 图谱首发采用 PostgreSQL 邻接表 + JSONB properties，但必须通过 graph query adapter 暴露，允许后续接入图投影。
 - Search / Vector / Rerank 从 V1 起作为长期架构的一部分落地。默认实现为 PostgreSQL FTS + pgvector + RerankService adapter；独立 Weaviate / OpenSearch / Qdrant / Milvus 只能作为后续检索投影替换，不改变 UCE 对上接口。
 - EmbeddingProvider 和 RerankProvider 必须通过系统 Settings 的 `model_profiles.embedding` 与 `model_profiles.rerank` 读取配置；`system_default` 可以来自 env 或平台托管配置，`custom` 来自用户保存的 provider/base URL/model/API key。

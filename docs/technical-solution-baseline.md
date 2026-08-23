@@ -38,7 +38,7 @@ P0 不是演示版，也不是全量长期愿景。P0 固定为一条能真实�
 
 ```text
 项目创建
-  -> 三源接入
+  -> 必需代码接入 + 可选历史 US / 测试资产增强
   -> 系统画像 ready
   -> Official Baseline
   -> Version fork
@@ -47,6 +47,7 @@ P0 不是演示版，也不是全量长期愿景。P0 固定为一条能真实�
   -> QualityProfile
   -> QualityAssetPack
   -> AutomationBlueprint
+  -> RunOrchestrator
   -> Run / Evidence
   -> FailureReport
   -> Release Readiness
@@ -57,19 +58,22 @@ P0 不是演示版，也不是全量长期愿景。P0 固定为一条能真实�
 P0 必须包含：
 
 - Web Portal 作为唯一正式入口。
-- 三源一等 source：代码、历史 US 文档、历史测试用例和自动化脚本。
+- 三类一等 source：代码为 Official Baseline 的必需输入；历史 US 文档、历史测试用例和自动化脚本是可选增强输入。
 - 主会话和 UI 动作全部进入 ToolInvocation。
 - AgentGoal 支持 pause / resume / gate / audit。
 - 系统画像能生成 `US -> code -> tests` 可追溯关系。
 - 系统画像检索链路必须包含 PostgreSQL FTS、pgvector embedding、hybrid retrieval、rerank adapter 和降级记录。
 - TaskContext 和 QualityProfile 是质量生成前置条件。
 - QualityAssetPack 支持 revision、review、局部重生成和 pending_merge。
+- Run 必须通过 `RunOrchestrator` 生命周期边界创建，记录 `task_context_id`、`runner_job_id`、`healing_depth` 和 `last_failure_fingerprint`。
+- ExecutionEvidence 必须通过 `ObjectStorage` adapter 物化证据 payload，`storage_ref` 使用 `s3://bucket/key`；仅本地测试允许 `local-object://bucket/key` fallback。
 - Run 和 ExecutionEvidence append-only。
 - FailureReport 和基础 HealingProposal。
 - Release Readiness 和正式 ReleaseDecision。
 - approval、resolution.merge、baseline.promote 的治理 gate。
 - 统一审计链：`conversation -> agent goal -> tool invocation -> domain object -> evidence -> approval`。
 - 生产非功能门禁：Auth/RBAC、PostgreSQL/Alembic、SSE replay/outbox、密钥保护、CI、备份和可观测性。
+- V1 在完整 OIDC/RoleBinding 前至少必须启用 `NASUS_AUTH_MODE=required` 的 Bearer Token API 门禁，并在 `ToolInvocationRuntime` 内执行最小工具级 RBAC；企业版仍必须进入 OIDC / RoleBinding / PolicySnapshot。
 
 P0 不包含：
 
@@ -118,6 +122,7 @@ P0 不包含：
 P0 开发前必须冻结共享契约：
 
 - 对象 schema：Project、SourceBinding、RawAssetRecord、ContextObject、TaskContext、QualityProfile、QualityAssetPack、Run、Evidence、Approval、ReleaseDecision。
+- 对象存储契约：`ExecutionEvidence.storage_ref` 指向对象存储，`content_hash` 是对象 payload 的 sha256；runner 原始 trace/log/screenshot ref 只能保存在对象 payload 元数据中。
 - 事件 schema：Conversation、AgentGoal、AgentStep、ToolInvocation、Task、Run、Approval、Release、SSE envelope。
 - 状态机：SystemImage、ToolInvocation、AgentGoal、TaskContext、QualityAssetPack、Run、MergedResolution、ReleaseDecision。
 - 错误响应：统一 `request_id / timestamp / error.code / error.message / details / retry_after`。
@@ -132,6 +137,7 @@ P0 开发前必须冻结共享契约：
 - SSE 通过 outbox 派发，不允许只依赖内存队列。
 - SSE 支持 `Last-Event-ID`、heartbeat、replay、dedupe、entity_version。
 - Workflow 重启后必须能恢复 AgentGoal、ToolInvocation、Approval 和 Run 状态。
+- SSE 事件必须先写 PostgreSQL outbox 再对客户端可见；内存队列只能作为通知优化，不能作为事件真相源。
 
 local fallback 只允许用于本地开发和测试，不能作为生产实现路径。
 
@@ -175,7 +181,16 @@ local fallback 只允许用于本地开发和测试，不能作为生产实现�
 - Tool Catalog 与 ToolInvocationRuntime 必须覆盖 P0 最小工具集。
 - OIDC / RBAC / PolicySnapshot / ApprovalWorkflow 必须进入写链路。
 - LLM 调用必须经过 Prompt Registry、provider adapter、structured output validation、token budget 和 LLMCall audit。
-- Runner 必须使用隔离环境、短期凭证、secret redaction 和 evidence artifact 管理。
+- Prompt Registry 必须使用独立 `prompt_definitions / prompt_selections` 表实现不可变版本和
+  active 选择；同版本正文不得被原地覆盖。Agent 公共治理约束、会话回复、查询工具回复、
+  Planner / Replanner 与质量生成必须解析实际 active 版本并写入 `LLMCall`，禁止审计版本与
+  实际 Prompt 不一致。
+- `LLMCall` 必须使用独立 PostgreSQL 事实表覆盖 `chat / embedding / rerank`，保存
+  provider、model、purpose、Prompt 版本、token/latency、outcome 和业务关联键；不得
+  在该表保存原始 Prompt、原始输出或 API key。
+- Runner 必须是独立的认证 HTTP 服务，使用隔离环境、host allowlist、结构化 Playwright steps、短期凭证、secret redaction 和 evidence artifact 管理；禁止任意 JavaScript 执行。
+- `staging/prod` 必须设置 `NASUS_RUNNER_MODE=http`、合法 `NASUS_RUNNER_ENDPOINT`、独立 `NASUS_RUNNER_SERVICE_TOKEN` 和非空 `NASUS_RUNNER_ALLOWED_HOSTS`，缺一项 API 启动即 fail-fast。
+- Runner 原始截图、trace、日志不是正式 Evidence；API 必须将其持久化到 MinIO/S3，并记录 content hash、runner job id 和审计关联链。
 
 ### 5.7 Governance Baseline
 
@@ -184,7 +199,11 @@ local fallback 只允许用于本地开发和测试，不能作为生产实现�
 - `AgentDecision` 是候选，不是正式结论。
 - `MergedResolution` 是冲突收敛结果。
 - `ReleaseAdvice` 是建议，不是正式放行。
-- `ReleaseDecision` 是正式放行记录，必须经 policy / approval / audit。
+- `ReleaseReadiness` 是放行评估结果，不是正式放行。
+- `ReleaseReadiness` 只能由 Run、ExecutionEvidence、QualityAssetPack、TaskContext、QualityProfile、FailureReport 和 ApprovalRecord 等持久化事实确定性计算；LLM 不得直接输出放行分数。
+- V1 评分权重固定为执行证据 35、质量资产 25、系统上下文 20、治理状态 20，并对失败、缺证据、待合并、待审批和 fallback 生成应用硬上限。
+- `ReleaseReadiness` 必须持久化 `score_breakdown` 与 `evidence_summary`，保证每一分都可解释、可回放。
+- `ReleaseDecision` 是正式放行记录，只能由 `release.decision.submit` 在 policy / approval / audit 通过后生成。
 - `baseline.promote` 是 critical 工具，必须同时满足确认、审批、证据完整和权限策略。
 
 ## 6. P0 Tool Catalog 最小集
@@ -215,6 +234,7 @@ P0 至少实现以下工具，并全部进入 `GET /v1/tools/catalog`：
 - `failure.analyze`
 - `release.advice.get`
 - `approval.request`
+- `approval.decide`
 - `resolution.merge`
 - `release.decision.submit`
 - `baseline.promote`
@@ -268,7 +288,7 @@ P0 至少实现以下工具，并全部进入 `GET /v1/tools/catalog`：
 
 验收：
 
-- 未授权写操作被拒绝。
+- 未授权 API 请求被拒绝；V1 过渡期至少要求 Bearer Token，并且 viewer/tester/qa_lead 等角色在 ToolInvocationRuntime 内得到一致的工具级授权结果；正式企业版必须进入 OIDC/RBAC/PolicySnapshot。
 - UI / chat / API 触发同一动作产生同类 ToolInvocation。
 - 服务重启后事件和状态可恢复。
 
@@ -289,8 +309,8 @@ P0 至少实现以下工具，并全部进入 `GET /v1/tools/catalog`：
 
 验收：
 
-- 缺三源时 AgentGoal pause。
-- 三源齐全时生成可追溯 `US -> code -> tests` 图谱。
+- 缺代码 source 时 AgentGoal pause；缺历史 US / 测试资产时记录 coverage gap，但允许生成低置信代码基线。
+- 可选源齐全时生成可追溯 `US -> code -> tests` 图谱。
 - 相似 US、相似测试用例和相似失败模式可通过 hybrid retrieval 召回，并经过 rerank 或 fallback fusion 后进入 TaskContext。
 - embedding 模型版本变化或 source 内容 hash 变化时，相关 `EmbeddingRecord` 进入 `stale` 并可重建。
 - rerank provider 不可用时系统降级为 rule-based fusion，并写入检索运行记录。
@@ -380,13 +400,13 @@ P0 至少实现以下工具，并全部进入 `GET /v1/tools/catalog`：
 
 ### 8.2 首批必须自动化的验收用例
 
-- 三源缺失时 AgentGoal pause，不能初始化 Official Baseline。
-- 三源齐全时完成 register / ingest / materialize / baseline confirm。
-- source 失败时 materialize 和 baseline 初始化被阻断。
+- 代码 source 缺失时 AgentGoal pause，不能初始化 Official Baseline。
+- 只有代码 source 时允许完成低置信 baseline；三源齐全时完成跨源关联和质量指标增强。
+- 必选代码 source 失败时 materialize 和 baseline 初始化被阻断；可选 US / 测试 source 失败时保留失败事实和 coverage gap，但允许低置信代码基线继续。
 - 创建 version、导入 US、生成 TaskContext 和 QualityProfile。
 - 缺失或 stale TaskContext 时禁止质量生成。
 - 生成 scope / scenario / case，并闭合 CoverageMatrix。
-- 生成 AutomationBlueprint 后 `run.start` 产出 Run 和 append-only Evidence。
+- 生成 AutomationBlueprint 后通过 `RunOrchestrator` 产出 Run 和 append-only Evidence；真实 runner 或本地 adapter 都必须回写同一 runner result envelope。
 - failed Run 生成 FailureReport。
 - 重复 failure fingerprint 或 max healing depth 触发 fallback-to-human。
 - Release Readiness 聚合 US、资产、Run、Evidence、Approval 和 pending_merge。

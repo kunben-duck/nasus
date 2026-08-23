@@ -1,0 +1,11 @@
+export type SpaceType =
+  | 'welcome'
+  | 'build'
+  | 'dashboard'
+  | 'documentation'
+  | 'project'
+  | 'version'
+  | 'workspace'
+  | 'knowledge'
+  | 'runs'
+  | 'governance'

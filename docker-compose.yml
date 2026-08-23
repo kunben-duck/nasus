@@ -1,0 +1,268 @@
+name: nasus
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nasus}
+      POSTGRES_USER: ${POSTGRES_USER:-nasus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nasus_dev_password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - nasus-postgres-data:/var/lib/postgresql/data
+      - ./infra/docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nasus} -d ${POSTGRES_DB:-nasus}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-nasus}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-nasus_dev_password}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - nasus-minio-data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-nasus}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-nasus_dev_password}
+      NASUS_S3_BUCKET: ${NASUS_S3_BUCKET:-nasus-artifacts}
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set nasus http://minio:9000 ${MINIO_ROOT_USER:-nasus} ${MINIO_ROOT_PASSWORD:-nasus_dev_password}; do sleep 1; done &&
+      mc mb --ignore-existing nasus/${NASUS_S3_BUCKET:-nasus-artifacts} &&
+      mc version enable nasus/${NASUS_S3_BUCKET:-nasus-artifacts}
+      "
+    restart: "no"
+
+  api-migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/api/Dockerfile
+    profiles: ["app"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NASUS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-nasus}:${POSTGRES_PASSWORD:-nasus_dev_password}@postgres:5432/${POSTGRES_DB:-nasus}
+      NASUS_AUTO_CREATE_TABLES: "false"
+    command: ["python", "-m", "alembic", "-c", "apps/api/alembic.ini", "upgrade", "head"]
+    restart: "no"
+
+  runner:
+    build:
+      context: .
+      dockerfile: infra/docker/runner/Dockerfile
+    profiles: ["app"]
+    environment:
+      NASUS_ENV: ${NASUS_ENV:-local}
+      NASUS_RUNNER_HOST: 0.0.0.0
+      NASUS_RUNNER_PORT: 8090
+      NASUS_RUNNER_SERVICE_TOKEN: ${NASUS_RUNNER_SERVICE_TOKEN:-nasus-dev-runner-service-token}
+      NASUS_RUNNER_ALLOWED_HOSTS: ${NASUS_RUNNER_ALLOWED_HOSTS:-portal,localhost,127.0.0.1}
+      NASUS_RUNNER_MAX_CONCURRENCY: ${NASUS_RUNNER_MAX_CONCURRENCY:-2}
+      NASUS_RUNNER_MAX_BODY_BYTES: ${NASUS_RUNNER_MAX_BODY_BYTES:-1048576}
+      NASUS_RUNNER_MAX_ARTIFACT_BYTES: ${NASUS_RUNNER_MAX_ARTIFACT_BYTES:-26214400}
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    shm_size: 512mb
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8090/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/api/Dockerfile
+    profiles: ["app"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      api-migrate:
+        condition: service_completed_successfully
+      runner:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    environment: &nasus-api-runtime-environment
+      NASUS_ENV: ${NASUS_ENV:-local}
+      NASUS_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-nasus}:${POSTGRES_PASSWORD:-nasus_dev_password}@postgres:5432/${POSTGRES_DB:-nasus}
+      NASUS_AUTO_CREATE_TABLES: "false"
+      NASUS_S3_ENDPOINT: http://minio:9000
+      NASUS_S3_BUCKET: ${NASUS_S3_BUCKET:-nasus-artifacts}
+      NASUS_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-nasus}
+      NASUS_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-nasus_dev_password}
+      NASUS_S3_REGION: ${NASUS_S3_REGION:-us-east-1}
+      NASUS_SOURCE_CACHE_DIR: /var/lib/nasus/source-cache
+      NASUS_GIT_ALLOWED_HOSTS: ${NASUS_GIT_ALLOWED_HOSTS:-github.com,gitlab.com,bitbucket.org}
+      NASUS_GIT_ALLOWED_SCHEMES: ${NASUS_GIT_ALLOWED_SCHEMES:-https,ssh,git}
+      NASUS_GIT_CLONE_TIMEOUT_SECONDS: ${NASUS_GIT_CLONE_TIMEOUT_SECONDS:-120}
+      NASUS_CODE_GRAPH_MODE: ${NASUS_CODE_GRAPH_MODE:-optional}
+      NASUS_CODE_GRAPH_BINARY: ${NASUS_CODE_GRAPH_BINARY:-codebase-memory-mcp}
+      NASUS_CODE_GRAPH_INDEX_MODE: ${NASUS_CODE_GRAPH_INDEX_MODE:-moderate}
+      NASUS_CODE_GRAPH_TIMEOUT_SECONDS: ${NASUS_CODE_GRAPH_TIMEOUT_SECONDS:-180}
+      NASUS_CODE_GRAPH_MAX_ENTITIES: ${NASUS_CODE_GRAPH_MAX_ENTITIES:-10000}
+      NASUS_CODE_GRAPH_MAX_RELATIONSHIPS: ${NASUS_CODE_GRAPH_MAX_RELATIONSHIPS:-25000}
+      NASUS_CODE_GRAPH_PAGE_SIZE: ${NASUS_CODE_GRAPH_PAGE_SIZE:-500}
+      NASUS_CODE_GRAPH_CACHE_DIR: /var/lib/nasus/code-graph-cache
+      NASUS_AUTH_MODE: ${NASUS_AUTH_MODE:-dev}
+      NASUS_AUTH_BEARER_TOKEN: ${NASUS_AUTH_BEARER_TOKEN:-}
+      NASUS_RATE_LIMIT_ENABLED: ${NASUS_RATE_LIMIT_ENABLED:-false}
+      NASUS_RATE_LIMIT_BACKEND: ${NASUS_RATE_LIMIT_BACKEND:-postgres}
+      NASUS_RATE_LIMIT_WINDOW_SECONDS: ${NASUS_RATE_LIMIT_WINDOW_SECONDS:-60}
+      NASUS_RATE_LIMIT_AUTH_PER_WINDOW: ${NASUS_RATE_LIMIT_AUTH_PER_WINDOW:-10}
+      NASUS_RATE_LIMIT_AGENT_PER_WINDOW: ${NASUS_RATE_LIMIT_AGENT_PER_WINDOW:-30}
+      NASUS_RATE_LIMIT_API_PER_WINDOW: ${NASUS_RATE_LIMIT_API_PER_WINDOW:-120}
+      NASUS_SETTINGS_ENCRYPTION_SECRET: ${NASUS_SETTINGS_ENCRYPTION_SECRET:-nasus-local-shared-settings-secret-change-me}
+      NASUS_DEFAULT_PROVIDER: ${NASUS_DEFAULT_PROVIDER:-mock}
+      NASUS_DEFAULT_BASE_URL: ${NASUS_DEFAULT_BASE_URL:-}
+      NASUS_DEFAULT_MODEL: ${NASUS_DEFAULT_MODEL:-}
+      NASUS_DEFAULT_API_KEY: ${NASUS_DEFAULT_API_KEY:-}
+      NASUS_EMBEDDING_PROVIDER: ${NASUS_EMBEDDING_PROVIDER:-mock}
+      NASUS_EMBEDDING_BASE_URL: ${NASUS_EMBEDDING_BASE_URL:-}
+      NASUS_EMBEDDING_MODEL: ${NASUS_EMBEDDING_MODEL:-}
+      NASUS_EMBEDDING_API_KEY: ${NASUS_EMBEDDING_API_KEY:-}
+      NASUS_RERANK_PROVIDER: ${NASUS_RERANK_PROVIDER:-mock}
+      NASUS_RERANK_BASE_URL: ${NASUS_RERANK_BASE_URL:-}
+      NASUS_RERANK_MODEL: ${NASUS_RERANK_MODEL:-}
+      NASUS_RERANK_API_KEY: ${NASUS_RERANK_API_KEY:-}
+      NASUS_AGENT_WORKFLOW_RUNTIME: ${NASUS_AGENT_WORKFLOW_RUNTIME:-temporal}
+      NASUS_AGENT_GRAPH_RUNTIME: ${NASUS_AGENT_GRAPH_RUNTIME:-langgraph}
+      NASUS_LANGGRAPH_CHECKPOINT_BACKEND: ${NASUS_LANGGRAPH_CHECKPOINT_BACKEND:-postgres}
+      NASUS_LANGGRAPH_AGENT_LOOP_GRAPH: ${NASUS_LANGGRAPH_AGENT_LOOP_GRAPH:-nasus-agent-loop}
+      NASUS_TEMPORAL_ADDRESS: ${NASUS_TEMPORAL_ADDRESS:-temporal:7233}
+      NASUS_TEMPORAL_NAMESPACE: ${NASUS_TEMPORAL_NAMESPACE:-default}
+      NASUS_TEMPORAL_TASK_QUEUE: ${NASUS_TEMPORAL_TASK_QUEUE:-nasus-agent}
+      NASUS_TEMPORAL_AGENT_GOAL_WORKFLOW: ${NASUS_TEMPORAL_AGENT_GOAL_WORKFLOW:-NasusAgentGoalWorkflow}
+      NASUS_TEMPORAL_QUERY_TIMEOUT_SECONDS: ${NASUS_TEMPORAL_QUERY_TIMEOUT_SECONDS:-30}
+      NASUS_TEMPORAL_QUERY_POLL_INTERVAL_SECONDS: ${NASUS_TEMPORAL_QUERY_POLL_INTERVAL_SECONDS:-0.1}
+      NASUS_TEMPORAL_MAX_CONCURRENT_ACTIVITIES: ${NASUS_TEMPORAL_MAX_CONCURRENT_ACTIVITIES:-1}
+      NASUS_RUNNER_MODE: ${NASUS_RUNNER_MODE:-http}
+      NASUS_RUNNER_ENDPOINT: ${NASUS_RUNNER_ENDPOINT:-http://runner:8090}
+      NASUS_RUNNER_SERVICE_TOKEN: ${NASUS_RUNNER_SERVICE_TOKEN:-nasus-dev-runner-service-token}
+      NASUS_RUNNER_ALLOWED_HOSTS: ${NASUS_RUNNER_ALLOWED_HOSTS:-portal,localhost,127.0.0.1}
+      NASUS_RUNNER_REQUEST_TIMEOUT_SECONDS: ${NASUS_RUNNER_REQUEST_TIMEOUT_SECONDS:-130}
+      NASUS_SEED_DEMO_DATA: ${NASUS_SEED_DEMO_DATA:-false}
+      NASUS_CORS_ALLOW_ORIGINS: ${NASUS_CORS_ALLOW_ORIGINS:-*}
+    ports:
+      - "${NASUS_API_PORT:-8000}:8000"
+    volumes:
+      - nasus-source-cache:/var/lib/nasus/source-cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/readyz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  workflow-service:
+    build:
+      context: .
+      dockerfile: infra/docker/api/Dockerfile
+    profiles: ["app", "temporal"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      api-migrate:
+        condition: service_completed_successfully
+      runner:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    environment:
+      <<: *nasus-api-runtime-environment
+      NASUS_AGENT_WORKFLOW_RUNTIME: temporal
+      NASUS_AGENT_GRAPH_RUNTIME: langgraph
+      NASUS_LANGGRAPH_CHECKPOINT_BACKEND: postgres
+    command:
+      [
+        "python",
+        "-m",
+        "apps.api.app.infrastructure.workflow.agent_goal_workflow_worker",
+      ]
+    volumes:
+      - nasus-source-cache:/var/lib/nasus/source-cache
+    restart: unless-stopped
+
+  portal:
+    build:
+      context: .
+      dockerfile: infra/docker/portal/Dockerfile
+    profiles: ["app"]
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${NASUS_PORTAL_PORT:-5173}:80"
+    restart: unless-stopped
+
+  temporal:
+    image: temporalio/auto-setup:1.25
+    profiles: ["app", "temporal"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-nasus}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-nasus_dev_password}
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/docker.yaml
+    ports:
+      - "${TEMPORAL_PORT:-7233}:7233"
+    restart: unless-stopped
+
+  temporal-ui:
+    image: temporalio/ui:2.31.2
+    profiles: ["temporal"]
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:${NASUS_PORTAL_PORT:-5173}
+    ports:
+      - "${TEMPORAL_UI_PORT:-8088}:8080"
+    restart: unless-stopped
+
+volumes:
+  nasus-postgres-data:
+  nasus-minio-data:
+  nasus-source-cache:

@@ -38,7 +38,8 @@ Agent Loop Runtime 是 Nasus 实现 `agent-first` 架构承诺的关键组件。
 
 与 `ToolInvocationPlan` 的区别：
 
-- `ToolInvocationPlan` 是 **静态计划** — 一次性产出多个步骤，按顺序执行。
+- `ToolInvocationPlan` 是 **有界初始计划** — 首发只用于低风险只读查询链；
+  计划中一旦包含写工具，Orchestrator 必须先提升为 `AgentGoalProposal`。
 - `AgentGoal` 是 **动态目标** — Agent 在每步执行后重新评估，决定下一步。
 
 最小字段：
@@ -144,7 +145,7 @@ loop:
      - 读取当前目标、上下文、历史步骤
      - 通过 `Agent Memory Manager` 组装统一 `AgentMemoryContext`
      - 在 `AgentStep` 记录 `memory_context_hash / memory_context_summary / available_tool_ids`，但不得把完整 prompt 和 context dump 当作长期事实写入 step
-     - 调用 LLM (planner model) 生成推理和下一步计划
+     - 调用 LLM (planner model) 生成结构化候选计划；输出必须经过 `AgentPlanPolicy`
      - 对欠规格目标，调用 Agent Goal Plan Compiler 基于当前领域状态补齐可执行工具步骤
      - 产出 AgentStep(phase=thinking, reasoning=...)
      - 流式推送 SSE: agent.step.thinking
@@ -160,7 +161,10 @@ loop:
      - 读取 ToolResult
      - Agent 生成观察摘要
      - 更新 AgentStep(phase=observing, observation_summary=...)
-     - 若此前因 `requires_followup` 暂停后恢复，OBSERVE 完成后必须基于最新领域状态触发增量重规划，并把剩余工具步骤插入同一个 AgentGoal
+     - OBSERVE 完成后，`llm_structured` 目标由 Agent Replanner 根据最新领域状态
+       在 `keep / replace_remaining / complete` 中重新决策
+     - 系统画像 `requires_followup` 恢复链同时保留确定性的状态感知计划补齐，
+       保证模型不可用时仍能恢复 canonical 构建链
      - 流式推送 SSE: agent.step.observing
 
   4. DECIDE
@@ -198,12 +202,21 @@ THINK 阶段调用 `LLM Gateway`，使用专用 Prompt 模板 `agent_loop_planne
 
 输出要求（Structured Output）：
 
-- `reasoning` — 当前思考链
+- `reasoning` — 可审计的决策摘要，不保存或暴露模型私有思维链
 - `next_tool_id` — 选择调用的工具
 - `tool_input_payload` — 工具输入参数
 - `confidence` — 对当前决策的置信度
 - `should_pause_for_review` — 是否建议暂停等用户复核
 - `estimated_remaining_steps` — 预估剩余步骤数
+
+候选输出治理：
+
+- `next_tool_id` 必须存在于当前用户和空间可见的 Tool Catalog
+- 所有作用域 ID 由会话绑定，模型不能跨项目、版本、US 或 Task 改写
+- 工具输入必须满足 `required_context`、目标 scope 和 JSON 大小限制
+- 高风险工具可以被选择，但不能绕过 Tool Runtime 的确认与审批
+- 多步计划最多 12 个工具动作；相同工具和相同输入不能重复
+- 含写动作的计划必须进入 `AgentGoal`，获得暂停、恢复、审计和预算控制
 
 ### 5.3 ACT 阶段与 Tool Invocation Runtime 的集成
 
@@ -262,7 +275,8 @@ Agent 的决策必须遵循以下硬约束：
 决策规则：
 
 - 若用户输入可映射到单个低风险只读工具 → 产出 `ToolInvocationPlan`
-- 若用户输入可映射到 2-3 个确定性步骤 → 产出 `ToolInvocationPlan`
+- 若用户输入可映射到只读的确定性步骤 → 产出 `ToolInvocationPlan`
+- 若结构化计划包含任意写工具 → 提升为 `AgentGoalProposal`
 - 若用户输入是一个高级目标，需要动态多步执行 → 产出 `AgentGoalProposal`
 - 若用户输入明确包含"帮我完成"、"自动"、"全部"等自驱暗示词 → 优先产出 `AgentGoalProposal`
 - 若用户在已有 `AgentGoal` 运行期间发消息 → 视为对当前目标的补充或打断
@@ -282,10 +296,19 @@ Agent 的决策必须遵循以下硬约束：
 对应 LangGraph 图结构：
 
 - **外层 Agent Loop Graph**
-  - `think_node` → `act_node` → `observe_node` → `decide_node` → 条件边回到 `think_node`
+  - `prepare_node` 根据 start/resume 和 PostgreSQL 业务事实恢复游标。
+  - `think_node` → `act_node` → `observe_node` → `decide_node`
   - `decide_node` 可输出 `GraphSuspension`（需要 Gate / 暂停）或 `GraphCompletion`（目标完成）
+  - `thread_id={graph_name}:{goal_id}`，避免不同 graph 或目标共享 checkpoint 命名空间。
 - **内层 Tool Graph**（不变）
   - 工具内部的 Skill 选择 → Worker 并行 → partial result 合并
+
+持久化权责：
+
+- `AgentGoal`、`AgentStep`、`ToolInvocation`、`AuditEvent` 是 PostgreSQL 中的 canonical business facts。
+- LangGraph checkpointer 只保存图状态和节点游标；它不能替代领域 repository，也不能被 API 直接作为业务查询源。
+- local/test 允许 `MemorySaver`；staging/prod 必须使用 `AsyncPostgresSaver` 和 `NASUS_LANGGRAPH_CHECKPOINT_BACKEND=postgres`。
+- 每个 ACT 节点使用由 `goal_id + step_id + attempt` 推导的稳定幂等键，Temporal activity 重试和 graph resume 不得重复创建业务动作。
 
 ### 6.3 与 Temporal 的关系
 
@@ -322,6 +345,41 @@ Agent 的决策必须遵循以下硬约束：
 - 当 Agent Loop 判断目标需要并行执行时，不能直接在 loop 内自行创建无管理的子任务；必须向 `Agent Supervisor` 请求创建 `AgentSwarmRun`。
 - `AgentSwarmRun` 完成后，其合并摘要作为 observation 输入下一次 DECIDE 阶段。
 
+### 6.6 V1 实现状态与强制收敛项
+
+当前首版实现已经具备：
+
+- live 模型基于当前 `AgentMemoryContext + Tool Catalog` 生成四类结构化决策
+- 任意目录工具都可进入候选计划，而不是只识别少量关键词
+- 写计划自动提升为可中断、可恢复、可审计的 `AgentGoal`
+- `AgentPlanPolicy` 执行工具白名单、作用域绑定、上下文、目标 scope、
+  计划长度、输入大小、重复动作和质量闭环完成条件校验
+- THINK / ACT / OBSERVE / DECIDE 事实写入 PostgreSQL，ACT 统一经过
+  `ToolInvocationRuntime`
+- 系统画像构建在补充 source 后可以在原 `AgentGoal` 内增量补齐剩余步骤
+- `llm_structured` 目标在每次存在待执行步骤的 OBSERVE 后调用通用
+  Agent Replanner，可保留或替换剩余计划，也可在完成契约满足后提前收尾
+- 每次重规划形成 `agent.goal.replanned` 审计事实；provider 失败、输出非法或
+  策略拒绝时保留原有已校验计划
+- 质量闭环在 `release.assess` 成功前不能由 Replanner 提前标记完成
+- staging/prod 的自由文本初始规划在 provider 失败或结构化输出非法时仅允许
+  回退到只读决策；若确定性候选包含写工具，必须返回
+  `planner_provider_unavailable` 澄清消息，并保证不创建 `AgentGoal`、
+  `ToolInvocation` 或领域事实
+- UI canonical action 必须携带受支持的 `canonical_action_id`，且消息内容与固定
+  Tool Contract 匹配后才可走确定性入口；不得仅凭文案猜测来源，并仍完整继承
+  RBAC、confirmation、approval 和 policy gate
+
+正式 V1 已实现并持久化 `max_steps / max_model_calls / max_thinking_tokens /
+max_runtime_seconds / max_no_progress_observations`，预算耗尽或
+重复无进展 observation 会在创建下一条业务 `ToolInvocation` 前暂停目标。仍必须完成、
+且当前不得被描述为已完成：
+
+- 货币成本预算与跨实例 per-provider rate budget
+- 连续低置信规划和跨不同工具组合的循环链路熔断
+- 通用 Agent Swarm 的拆分、结果合并和冲突治理；当前并行仅覆盖受控场景
+- candidate memory 的晋级、冲突合并和审批闭环
+
 ## 7. 版本质量管理 Goal Templates
 
 ### 7.1 `us.quality.complete` — US 质量闭环
@@ -332,6 +390,7 @@ Agent 的决策必须遵循以下硬约束：
 输入：
   - us_id
   - version_id
+  - base_url（进入 run.start 前必需，可在 Goal 运行中由用户补充）
 
 自驱链路：
   1. us.task.start                     # 启动 US 质量任务
@@ -339,8 +398,8 @@ Agent 的决策必须遵循以下硬约束：
   3. quality.scenario.generate        # 生成测试场景
   4. quality.plan.generate            # 生成验证计划
   5. quality.case.generate            # 生成测试用例
-  6. automation.generate              # 生成自动化脚本
-  7. run.start                        # 触发执行
+  6. automation.generate              # 生成并版本化可审阅自动化资产，不执行
+  7. run.start                        # 选择已保存资产 revision 和显式 base_url 后触发执行
   8. [观察执行结果]
      ├── 全部通过 → 进入 Step 11
      └── 存在失败 → 进入 Step 9
@@ -352,7 +411,8 @@ Agent 的决策必须遵循以下硬约束：
   12. quality.change-doc.generate     # 生成变更文档
 
 暂停点：
-  - Step 7 前暂停（semi_auto 模式下，确认执行计划）
+  - Step 7 前若缺少 base_url，暂停并请求目标环境
+  - Step 7 前暂停（semi_auto 模式下，确认资产 revision、目标环境和执行计划）
   - healing 超过 max_healing_depth 后暂停
   - approval.request 自动进入 Gate
 
@@ -395,14 +455,15 @@ Agent 的决策必须遵循以下硬约束：
 自驱链路：
   1. project.create                   # 创建项目空间
   2. project.assets.connect           # 创建 source slots 和项目资产引用
-  3. system_image.sources.register    # 注册三类一等 source
+  3. system_image.sources.register    # 注册必需代码 source 和已提供的可选 source
   4. system_image.sources.ingest      # 摄入真实 source
   5. system_image.context.materialize # 物化 ContextObject / 关系 / 指标
   6. system_image.baseline.initialize # 初始化 Official Baseline
   7. project.status.get               # 检查接入状态
 
 暂停点：
-  - 缺少代码、历史 US 或历史测试资产任一 source 时，进入 pause(reason=missing_source_binding)
+  - 缺少代码 source 时，进入 pause(reason=missing_source_binding)
+  - 缺少历史 US 或历史测试资产时，记录 coverage gap 并提示补充，但允许继续生成低置信代码基线
   - source ingestion 部分失败时，进入 pause(reason=requires_followup)
   - context materialize 输出低置信或冲突对象时，进入 pause(reason=requires_followup)
   - system_image.baseline.initialize 是高风险动作，自动进入 Gate
@@ -413,7 +474,7 @@ Agent 的决策必须遵循以下硬约束：
 
 硬规则：
 
-- `system_image.baseline.initialize` 不得在三源缺失、ingestion 失败或 context 未物化时执行。
+- `system_image.baseline.initialize` 不得在代码 source 缺失、必需 source ingestion 失败或 context 未物化时执行；可选 source 缺失不得单独阻断。
 - 用户补齐 source 或确认 gate 后，必须恢复同一个 `AgentGoal`，不得新建平行目标。
 - `project.assets.connect` 只能创建 source slots 或资产引用，不能替代 `system_image.sources.register / ingest / materialize`。
 
@@ -666,6 +727,7 @@ Agent Loop 在 ChatTimeline 中的展示方式：
 
 - `AgentGoal` 和 `AgentStep` 必须持久化到 PostgreSQL，不能只保存在 LangGraph 内存中。
 - Agent Loop 的 Temporal workflow 必须可重入，断连或服务重启后能从最后一个 `AgentStep` 恢复。
+- 正式 worker 入口固定为 `python -m apps.api.app.infrastructure.workflow.agent_goal_workflow_worker`；根目录同名模块只作为迁移期兼容转发层。
 - THINK 阶段的 LLM 调用必须通过 `LLM Gateway`，不能直接调用 Provider。
 - Agent 的 reasoning 文本默认保存到数据库，但可按策略控制敏感内容的存储粒度。
 - Agent Loop 的 Tool 调用与普通 UI/chat 触发的 Tool 调用共享同一个 `Tool Invocation Runtime`，不能建立绕过审计和治理的"快速通道"。

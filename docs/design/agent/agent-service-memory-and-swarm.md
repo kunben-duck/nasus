@@ -61,7 +61,7 @@ Conversation
 - 系统画像作为项目长期记忆进入 `context_snapshot`，包括 source 状态、baseline 状态、ContextObject、ContextRelationship 和质量 metric snapshot。
 - 高层 `AgentGoalProposal` 不一定必须带完整 `planned_tools`；`Agent Goal Plan Compiler` 必须能基于 `goal_template`、`target_refs`、会话 project 绑定和当前领域状态补全工具链。
 - 对系统画像构建，计划编译器必须按当前状态决定是否需要 `system_image.sources.register -> system_image.sources.ingest -> system_image.context.materialize -> system_image.baseline.initialize`，并跳过已经完成的阶段。
-- 若系统画像缺少真实 source 绑定，Agent 必须进入 `paused(pause_reason=missing_source_binding)` 并提示用户补充 code / US docs / test assets 来源；不得用默认占位 source 继续构建正式画像。
+- 若系统画像缺少真实代码 source 绑定，Agent 必须进入 `paused(pause_reason=missing_source_binding)` 并提示用户补充代码路径或 Git URI；不得用默认占位 source 继续构建正式画像。历史 US / 测试资产缺失或摄入失败时记录 coverage gap，但不阻塞低置信代码基线。
 - 用户在会话中补充 source 路径或 URI 后，Agent Service 必须把它绑定到被阻塞的 `system_image.sources.register` step 并恢复原 `AgentGoal`，不能创建第二个并行目标。
 - 恢复后，Agent Graph 必须调用 `Agent Goal Plan Compiler` 基于最新领域状态重编译剩余工具链，并把缺失的 `system_image.sources.ingest / system_image.context.materialize / system_image.baseline.initialize` 等步骤插入原 `AgentGoal`；不得因为初始计划只有 `system_image.sources.register` 就直接判定目标完成。
 
@@ -193,7 +193,7 @@ LLM 调用前必须由 `Agent Memory Manager` 组装上下文窗口，不能由�
 - `parent_goal_id`
 - `conversation_id`
 - `swarm_kind=impact|scenario|case|failure|release|ingestion`
-- `status=pending|running|merging|completed|failed|cancelled`
+- `status=pending|running|merging|completed|partially_failed|failed|cancelled`
 - `max_parallel_agents`
 - `budget_ref`
 - `merge_strategy`
@@ -214,6 +214,7 @@ LLM 调用前必须由 `Agent Memory Manager` 组装上下文窗口，不能由�
 - `tool_invocation_refs`
 - `candidate_result_ref`
 - `confidence`
+- `timeout_seconds`
 
 ### 6.3 Swarm 执行协议
 
@@ -232,7 +233,9 @@ Agent Supervisor
 
 - 同一 `ConversationSession` 默认只允许一个主 `AgentGoal` 运行，但该 `AgentGoal` 内可以启动一个或多个 `AgentSwarmRun`。
 - Swarm 并发数必须受 `max_parallel_agents` 和租户/项目预算控制。
+- 首版执行器必须使用有界并发，单个 assignment 失败不得取消其他已运行 assignment；最终状态必须区分 `completed`、`partially_failed` 和 `failed`。
 - 每个子 Agent 必须有明确目标、输入、输出 schema 和超时。
+- 只读、无副作用的证据分析 worker 可以在父 `ToolInvocation` 的追踪范围内运行；任何写动作、外部执行或正式事实变更都必须创建独立子 `ToolInvocation`，不得借父调用绕过治理。
 - 子 Agent 不得直接写正式事实对象。
 - Swarm 合并阶段必须保留冲突字段、来源、证据和置信度。
 

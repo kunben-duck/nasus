@@ -88,11 +88,13 @@ Nasus 的产品一级模块当前收敛为 3 个：
 ### 6.2 后端实现
 
 - [后端总设计](./design/backend/system-design.md)
+- [后端代码架构与 DDD 分层](./design/backend/code-architecture.md)
 - [后端领域模型](./design/backend/domain-model.md)
 - [后端运行时与工具协议](./design/backend/runtime-and-tool-protocol.md)
 - [后端 API 与事件契约](./design/backend/api-and-events.md)
 - [后端执行与治理](./design/backend/execution-governance.md)
 - [后端运维与测试基线](./design/backend/ops-and-test-baseline.md)
+- [备份与恢复运行手册](./design/backend/backup-and-recovery-runbook.md)
 - [端到端数据流示例](./design/backend/end-to-end-flow-examples.md)
 
 ### 6.3 平台能力

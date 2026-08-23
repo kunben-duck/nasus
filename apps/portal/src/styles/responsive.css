@@ -1,0 +1,136 @@
+@media (prefers-reduced-motion: reduce) {
+  .hero-composer::before,
+  .hero-composer::after,
+  .upgrade-card::before,
+  .upgrade-card::after {
+    animation: none;
+  }
+}
+
+@media (max-width: 960px) {
+  .nasus-app {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  .nasus-app.sidebar-collapsed {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+
+  .build-hero,
+  .nasus-app.sidebar-collapsed .build-hero {
+    --build-hero-width: min(100%, 874px);
+  }
+
+  .brand-row > div,
+  .nav-button span:nth-child(2),
+  .section-label,
+  .upgrade-card,
+  .account-pill span:last-child,
+  .project-mini {
+    display: none;
+  }
+
+  .terms-bar {
+    left: 72px;
+  }
+
+  .collapse-button {
+    left: 92px;
+  }
+
+  .nasus-app.sidebar-collapsed .terms-bar {
+    left: 0;
+  }
+
+  .nasus-app.sidebar-collapsed .collapse-button {
+    left: 20px;
+  }
+
+  .run-panel {
+    display: none;
+  }
+
+  .studio-main.with-right-panel {
+    padding-right: clamp(18px, 5vw, 32px);
+  }
+
+  .task-composer {
+    right: clamp(14px, 4vw, 24px);
+    left: 96px;
+  }
+
+  .agent-card-grid,
+  .metric-grid,
+  .system-image-strip,
+  .source-binding-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar-actions {
+    grid-template-columns: 48px;
+    justify-content: center;
+    gap: 7px;
+  }
+
+  .icon-tile {
+    width: 48px;
+    min-width: 48px;
+  }
+
+  .settings-pop {
+    left: 76px;
+    bottom: 16px;
+    max-width: calc(100vw - 92px);
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    scrollbar-width: none;
+  }
+
+  .settings-pop::-webkit-scrollbar {
+    display: none;
+  }
+
+  .settings-submenu {
+    position: static;
+    max-height: 360px;
+    margin-top: 6px;
+    box-shadow: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .studio-main,
+  .studio-main.with-right-panel {
+    padding: 64px 14px 142px;
+  }
+
+  .terms-bar {
+    justify-content: flex-start;
+    overflow: hidden;
+    padding: 0 10px;
+  }
+
+  .terms-bar span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .task-composer {
+    right: 12px;
+    left: 84px;
+  }
+
+  .project-gallery {
+    grid-template-columns: 1fr;
+  }
+
+  .source-field-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .source-upload-button {
+    width: 100%;
+  }
+}

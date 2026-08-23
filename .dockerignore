@@ -1,0 +1,12 @@
+.git
+.venv
+.pytest_cache
+.nasus
+node_modules
+apps/portal/node_modules
+apps/portal/dist
+test-results
+playwright-report
+__pycache__
+*.pyc
+.DS_Store

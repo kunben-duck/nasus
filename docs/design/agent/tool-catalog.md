@@ -46,6 +46,7 @@
 | `quality.scenario.generate` | 生成测试场景 | `central` | `low` |
 | `quality.plan.generate` | 生成验证计划 | `central` | `low` |
 | `quality.case.generate` | 生成测试用例 | `central` | `low` |
+| `automation.generate` | 从已批准 case set 生成带 revision、linked_case_ids 和受约束 runner steps 的可审阅自动化资产，不触发执行 | `central` | `low` |
 | `quality.change-doc.generate` | 生成变更文档 / 变更方案 | `central` | `low` |
 | `quality.asset-pack.refresh` | 汇总并刷新 `QualityAssetPack` | `central` | `medium` |
 | `us.status.get` | 查询某个 US 的闭环状态 | `central` | `low` |
@@ -54,8 +55,7 @@
 
 | tool_id | 用途 | 默认 scope | 风险 |
 | --- | --- | --- | --- |
-| `automation.generate` | 生成自动化资产 | `central` | `medium` |
-| `run.start` | 触发执行 | `central` | `medium` |
+| `run.start` | 选择当前版本化自动化资产中的脚本和目标环境，通过 RunOrchestrator 触发执行并附加 evidence；失败时生成 FailureReport | `central` | `medium` |
 | `run.retry` | 基于既有 Run 和失败策略重跑 | `central` | `medium` |
 | `run.progress.get` | 查询执行进度与证据摘要 | `central` | `low` |
 | `failure.analyze` | 分析失败原因 | `central` | `low` |
@@ -66,10 +66,18 @@
 | tool_id | 用途 | 默认 scope | 风险 |
 | --- | --- | --- | --- |
 | `approval.request` | 发起审批 | `central` | `high` |
+| `approval.decide` | 审批裁决，记录 approved / rejected | `central` | `high` |
 | `resolution.merge` | 处理 `pending_merge` 冲突 | `central` | `high` |
 | `release.advice.get` | 查询放行建议 | `central` | `low` |
 | `release.decision.submit` | 提交正式放行决策 | `central` | `high` |
 | `baseline.promote` | 推进基线晋级 / 回写 | `central` | `critical` |
+
+V1 规则：
+
+- `approval.request` 必须先经过 `user_confirm` gate，确认后才创建 `ApprovalRecord(waiting_approval)`，用于把高风险动作纳入治理队列。
+- `approval.decide` 必须经过 `user_confirm` gate，才能把审批写为 `approved` 或 `rejected`。
+- `release.assess` 只能物化 `ReleaseReadiness` 和 release assessment 资产，不能直接创建正式 `ReleaseDecision`。
+- `release.decision.submit` 和 `baseline.promote` 必须使用 `approval_required` gate，只有已批准且归属同一项目的 `approval_id` 才能通过。
 
 ### 3.6 Query / Insight Tools
 
@@ -115,6 +123,7 @@
 
 - 所有首发工具都必须进入 `GET /v1/tools/catalog`
 - 所有写工具都必须通过 `POST /v1/tool-invocations`
+- 所有工具调用都必须先通过工具级 RBAC，再进入 confirmation / approval gate 和 handler 执行。
 - 高风险工具默认进入 `waiting_confirmation` 或 `waiting_approval`
 - 前端工具面板只展示已注册到 catalog 的工具
 - `baseline.initialize` 是历史 alias，只允许在 API 入参层兼容并立即规范化为 `system_image.baseline.initialize`；不得出现在 Tool Catalog、Agent 规划结果、前端按钮或推荐工具中。
@@ -131,3 +140,18 @@
 - `owner_service`
 - `workflow_binding`
 - `events_emitted`
+
+### 5.1 V1 工具级 RBAC 默认规则
+
+V1 采用 `ToolInvocationRuntime` 内置的最小 RBAC 门禁。页面按钮、主会话、Agent Loop 和 API 触发同一工具时必须得到一致授权结果。
+
+| 工具分类 | 最小角色 |
+| --- | --- |
+| `query` 或低风险只读工具 | `viewer` |
+| `analysis` / `execution` / `us` / `sync` | `tester` |
+| `project` / `version` 写工具 | `qa_lead` |
+| `governance`、`high` 风险、需要 `user_confirm` 的工具 | `qa_lead` |
+| `critical`、`release.decision.submit`、`baseline.promote` | `project_admin` |
+| 全局平台管理 | `platform_admin` |
+
+授权失败时，运行时必须生成失败的 `ToolInvocation` 和 `tool.invocation.authorization_denied` 审计事件；不得调用具体 handler，也不得进入确认或审批 gate。

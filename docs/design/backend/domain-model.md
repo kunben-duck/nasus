@@ -55,8 +55,8 @@
 | `AgentStep` | `step_id`, `goal_id`, `step_index`, `phase`, `decision`, `selected_tool_id`, `tool_invocation_id`, `memory_context_hash`, `available_tool_ids` | 是 | 中心端 |
 | `AgentMemoryItem` | `memory_id`, `memory_scope`, `owner_ref`, `source_refs`, `summary`, `object_refs`, `expires_at` | 是 | 中心端 |
 | `AgentMemoryLink` | `link_id`, `memory_id`, `target_ref`, `link_kind`, `confidence` | 是 | 中心端 |
-| `AgentSwarmRun` | `swarm_run_id`, `parent_goal_id`, `conversation_id`, `swarm_kind`, `status`, `max_parallel_agents`, `merge_strategy` | 是 | 中心端 |
-| `AgentWorkerAssignment` | `assignment_id`, `swarm_run_id`, `worker_agent_kind`, `target_refs`, `status`, `tool_invocation_refs`, `candidate_result_ref` | 是 | 中心端 |
+| `AgentSwarmRun` | `swarm_run_id`, `parent_goal_id`, `conversation_id`, `swarm_kind`, `status`, `max_parallel_agents`, `budget_ref`, `merge_strategy` | 是 | 中心端 |
+| `AgentWorkerAssignment` | `assignment_id`, `swarm_run_id`, `worker_agent_kind`, `target_refs`, `status`, `tool_invocation_refs`, `candidate_result_ref`, `timeout_seconds` | 是 | 中心端 |
 | `SkillDefinition` | `skill_id`, `scope`, `mapped_tool_ids`, `internal_only` | 是 | 中心端 |
 | `WorkerJob` | `job_id`, `skill_id`, `task_id`, `status`, `retry_count`, `queue_name` | 否 | 中心端 |
 
@@ -71,6 +71,8 @@
 | `AgentDecision` | `decision_id`, `task_id`, `source`, `decision_kind`, `status`, `confidence`, `evidence_refs` | 否 | 中心端 |
 | `MergedResolution` | `resolution_id`, `task_id`, `resolution_kind`, `status`, `merged_from`, `approval_state` | 是 | 中心端 |
 | `ApprovalRecord` | `approval_id`, `approval_kind`, `target_object_ref`, `status`, `approver_id`, `notes` | 是 | 中心端 |
+| `ReleaseReadiness` | `version_id`, `status`, `score`, `blockers`, `approvals_open`, `pending_merge`, `score_breakdown`, `evidence_summary`, `blocker_items` | 是 | 中心端 |
+| `ReleaseDecision` | `decision_id`, `project_id`, `version_id`, `status`, `score`, `rationale`, `evidence_refs`, `approval_ref` | 是 | 中心端 |
 
 ### 2.5 执行对象
 
@@ -88,9 +90,9 @@
 | `ContextRelationship` | `relationship_id`, `from_object_id`, `relationship_type`, `to_object_id`, `baseline_id`, `confidence`, `source_refs` | 是 | 中心端 |
 | `ContextObjectOverlay` | `overlay_id`, `baseline_id`, `object_id`, `field_path`, `operation`, `value_ref`, `source_refs` | 是 | 中心端 |
 | `QualityMetricSnapshot` | `metric_snapshot_id`, `project_id`, `baseline_id`, `version_id`, `us_id`, `task_id`, `metric_group`, `metrics_ref` | 是 | 中心端 |
-| `RawAssetRecord` | `raw_asset_id`, `project_id`, `version_id`, `source_type`, `canonical_uri`, `content_ref`, `content_hash` | 是 | 中心端 |
-| `RawAssetChunk` | `chunk_id`, `raw_asset_id`, `chunk_kind`, `content_ref`, `section_path`, `metadata`, `embedding_ref` | 是 | 中心端 |
-| `EmbeddingRecord` | `embedding_id`, `target_type`, `target_id`, `project_id`, `version_id`, `baseline_id`, `embedding_model`, `embedding_dimension`, `embedding_version`, `content_hash`, `vector_ref`, `status` | 是 | 中心端 |
+| `RawAssetRecord` | `raw_asset_id`, `project_id`, `version_id`, `source_type`, `canonical_uri`, `content_ref`, `content_hash`, `file_count`, `byte_count` | 是 | 中心端 |
+| `RawAssetChunk` | `chunk_id`, `raw_asset_id`, `source_type`, `chunk_kind`, `content_ref`, `content_hash`, `section_path`, `token_estimate`, `metadata`, `embedding_record_id` | 是 | 中心端 |
+| `EmbeddingRecord` | `embedding_id`, `source_ref`, `object_ref`, `chunk_ref`, `project_id`, `baseline_id`, `embedding_model`, `embedding_dimension`, `embedding_version`, `content_hash`, `vector_ref`, `status` | 是 | 中心端 |
 | `RetrievalRun` | `retrieval_run_id`, `project_id`, `version_id`, `baseline_id`, `query_ref`, `query_intent`, `retrieval_strategy`, `candidate_count`, `rerank_status`, `result_refs` | 是 | 中心端 |
 | `RerankRecord` | `rerank_id`, `retrieval_run_id`, `rerank_model`, `rerank_version`, `input_count`, `output_count`, `status`, `latency_ms`, `fallback_reason` | 是 | 中心端 |
 | `ConnectorDefinition` | `connector_id`, `connector_type`, `status`, `config_ref` | 是 | 中心端 |
@@ -105,7 +107,7 @@
 
 ## 3. 正式事实边界
 
-- `UserIdentity / ProjectMembership / RoleBinding / AccessSession / ServicePrincipal / Project / Version / Session / ConversationSession / ConversationMessage / ConversationSummaryCheckpoint / ConversationLink / SessionKnowledgeBinding / USWorkItem / Baseline / AgentGoal / AgentStep / AgentMemoryItem / AgentMemoryLink / AgentSwarmRun / AgentWorkerAssignment / Task / TaskContext / QualityProfile / QualityAssetPack / Run / ExecutionEvidence / MergedResolution / ApprovalRecord / ContextObject / ContextRelationship / ContextObjectOverlay / QualityMetricSnapshot / RawAssetRecord / RawAssetChunk / EmbeddingRecord / RetrievalRun / RerankRecord / ConnectorDefinition / ConnectorBinding / ConnectorRun / ConnectorCheckpoint / MCPServerDefinition / MCPServerBinding / MCPServerHealth / PolicySnapshot / AuditEvent` 属于正式事实对象。
+- `UserIdentity / ProjectMembership / RoleBinding / AccessSession / ServicePrincipal / Project / Version / Session / ConversationSession / ConversationMessage / ConversationSummaryCheckpoint / ConversationLink / SessionKnowledgeBinding / USWorkItem / Baseline / AgentGoal / AgentStep / AgentMemoryItem / AgentMemoryLink / AgentSwarmRun / AgentWorkerAssignment / Task / TaskContext / QualityProfile / QualityAssetPack / Run / ExecutionEvidence / MergedResolution / ApprovalRecord / ReleaseReadiness / ReleaseDecision / ContextObject / ContextRelationship / ContextObjectOverlay / QualityMetricSnapshot / RawAssetRecord / RawAssetChunk / EmbeddingRecord / RetrievalRun / RerankRecord / ConnectorDefinition / ConnectorBinding / ConnectorRun / ConnectorCheckpoint / MCPServerDefinition / MCPServerBinding / MCPServerHealth / PolicySnapshot / AuditEvent` 属于正式事实对象。
 - `ToolResult / WorkerJob / AgentDecision / CandidateKnowledge` 属于候选或执行中间对象。
 - `AgentDecision` 不能直接推进正式放行、正式知识晋级或正式基线回写。
 - `ToolInvocation` 是正式命令记录，但不是正式业务结论。
@@ -253,7 +255,7 @@
 
 ### 4.12 AgentSwarmRun
 
-`pending -> running -> merging -> completed`
+`pending -> running -> merging -> completed / partially_failed`
 
 分支：
 
@@ -266,7 +268,9 @@
 - `AgentSwarmRun` 必须绑定一个 `parent_goal_id`。
 - `running` 状态下可并发存在多个 `AgentWorkerAssignment`，并发数不得超过 `max_parallel_agents`。
 - 所有 assignment 完成或达到预算阈值后进入 `merging`。
+- 至少一个 assignment 成功且至少一个失败时，合并后的终态必须为 `partially_failed`，不得伪装为 `completed`。
 - `completed` 只表示候选结果合并完成，不代表正式业务结论已批准。
+- `partially_failed` 表示可用候选已经合并，但下游必须保留失败 assignment 和缺失证据提示。
 - 取消 swarm 不回滚已完成工具调用和证据。
 
 ### 4.13 AgentWorkerAssignment
@@ -276,6 +280,7 @@
 迁移规则：
 
 - 每个 assignment 必须有明确 `worker_agent_kind`、`target_refs`、输入上下文和输出 schema。
+- 每个 assignment 必须持久化 `timeout_seconds`；超时按 `failed` 记录并保留可审计原因。
 - assignment 可以创建子 `AgentGoal` 或直接触发工具，但不得直接写正式领域对象。
 - `completed` 必须写出 `candidate_result_ref`、置信度和关联 `tool_invocation_refs`。
 - 失败的 assignment 可以重试，但必须受 swarm 级预算和 rate limit 控制。
@@ -310,6 +315,16 @@
 
 ### 5.1 USWorkItem 与 Task / QualityAssetPack 关系
 
+- `Official System Image` 是项目知识基线，不是业务 `Version`。系统画像可以在首个
+  `Version` 创建前发现候选 US 事实，但这些事实进入交付质量流程后必须归属且仅归属
+  一个 `Version`。
+- `USWorkItem.version_id` 是进入交付质量流程后的必填归属。版本输入导入、参与人分配、
+  风险初始化、任务启动和工作区查询都必须同时使用 `project_id + version_id` 作为边界。
+- US 集合替换是版本级操作，只允许替换目标 `(project_id, version_id)` 下的记录，不得
+  删除或覆盖同项目其他版本的 US。项目工作区默认只返回当前活动版本的 US。
+- 兼容系统画像先于版本创建的场景时，首个质量动作创建 `Initial Quality Loop`，并将
+  尚未版本化的 US 一次性迁入该版本。该规则只执行一次；后续新版本不得复制、重绑或
+  隐式继承历史版本 US，必须通过显式版本输入导入建立新事实。
 - `USWorkItem` 与 `Task` 固定为 `1:N`。
 - 一个 `USWorkItem` 下可以并行存在多个 `Task`，典型包括：
   - 场景分析任务
@@ -460,6 +475,11 @@ V1 必须把 embedding、hybrid retrieval 和 rerank 作为系统画像正式检
 `pending -> ready -> stale -> ready`  
 `pending -> failed`  
 `pending -> excluded`
+
+V1 降级状态：
+
+- 当 `model_profiles.embedding` 未配置为 live，系统仍必须为可检索 source/object 生成 `EmbeddingRecord(status=fallback)`，并记录本地 hash vector ref、fallback reason、embedding model/version。
+- fallback embedding 只能作为可审计降级投影，不能被描述为外部 embedding provider 已完成。
 
 规则：
 

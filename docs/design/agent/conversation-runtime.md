@@ -85,8 +85,10 @@
 ### 5.2 决策原则
 
 - 查询型、低风险、无需工作流推进的请求可产出 `DirectAnswer`
-- 单步或多步确定性动作产出 `ToolInvocationPlan`
+- 只读查询型的单步或多步确定性动作可产出 `ToolInvocationPlan`
 - 需要持续推进的高层目标产出 `AgentGoalProposal`
+- 结构化 Planner 产出的计划只要包含任意写工具，就必须在执行前提升为
+  `AgentGoalProposal`；不得把多步写计划作为不可中断的同步请求直接执行
 - 高风险治理动作可以被规划，但必须在计划中标注 `waiting_confirmation / waiting_approval`
 
 ### 5.3 与 Agent Loop / Tool Runtime 的边界
@@ -96,6 +98,27 @@
 - `Tool Invocation Runtime` 解决“如何统一执行这个动作”
 - `Agent Loop Runtime` 解决“如何围绕一个高层目标持续推进”
 - `LangGraph` 解决“单个工具或单次 goal step 内部如何思考和路由 Skill”
+
+### 5.4 结构化 Planner 的治理边界
+
+`LLM Structured Planner` 可以读取当前角色和空间可见的完整 `Tool Catalog`，
+但模型输出是不可信候选计划。进入执行层前必须经过 `AgentPlanPolicy`：
+
+- 只接受 Tool Catalog 中已经注册的 `tool_id`
+- 每个计划最多包含 12 个工具动作
+- 单个工具输入最大 32 KiB，且必须是可序列化 JSON
+- 禁止模型写入幂等键、审批状态、确认状态、策略快照等运行时保留字段
+- `conversation_id / project_id / version_id / us_id / task_id` 以当前会话绑定为准；
+  模型提供的冲突 ID 必须被拒绝，而不是覆盖会话作用域
+- 校验工具的 `scope` 和 `required_context`
+- 禁止同一计划中出现工具、作用域和输入完全相同的重复动作
+- `quality_loop` 和 `us.quality.complete` 目标必须以 `release.assess` 收尾，
+  防止 Agent 在未评估放行条件时宣称闭环完成
+
+如果校验发现缺少上下文、作用域冲突、计划超预算或闭环不完整，
+Orchestrator 必须返回 `ClarificationRequest`。高风险工具允许进入候选计划，
+但真正执行时仍由 `ToolInvocationRuntime` 的 confirmation / approval / policy gate
+决定是否挂起。
 
 ## 6. 会话核心对象
 

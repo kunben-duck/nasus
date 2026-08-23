@@ -90,6 +90,42 @@ Nasus 的意义，就是在 AI coding 时代，为组织补上一层专门面向
 - 以 **Web Portal** 作为正式工作入口
 - 以 **agent-first** 作为主交互原则
 - 以 **功能验收与上线判断闭环** 作为交付主线
+- 以 **Docker 化外部组件** 作为开发与迁移部署基线，数据库、S3/Object Store、索引服务等外部依赖不作为宿主机裸进程交付；具体启动方式见 [后端运维与测试基线](./docs/design/backend/ops-and-test-baseline.md)
+
+本地基础设施验收入口：
+
+```bash
+npm run verify:docker-stack
+```
+
+日常开发使用宿主机应用进程和 Docker 外部组件：
+
+```bash
+npm run dev:up
+npm run dev:status
+npm run dev:down
+```
+
+`dev:up` 会在 Docker 中启动 PostgreSQL、MinIO 和 Temporal，执行
+Alembic migration，然后在宿主机启动 Playwright Runner、Temporal
+workflow worker、API 和 Portal。运行日志位于 `.nasus/dev/logs/`。
+对于 Codex、CI 或需要单一终端持续监督全部宿主进程的调试会话，使用
+`npm run dev:foreground`；任一子进程退出时会输出日志并统一回收。
+单独调试 API 时使用 `npm run dev:api`，该命令同样加载统一开发环境并
+连接 PostgreSQL；不支持绕过 migration 继续写入历史 SQLite 状态文件。
+
+生产化 Compose 拓扑验收入口：
+
+```bash
+npm run verify:production-compose
+NASUS_VERIFY_PRODUCTION_COMPOSE_BUILD=true npm run verify:production-compose
+```
+
+V1 候选完整验收入口：
+
+```bash
+npm run verify:v1-release
+```
 
 ## 核心产品原则
 

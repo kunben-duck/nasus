@@ -87,25 +87,25 @@
 
 ## 5. 示例三：执行 -> 失败 -> 修复建议 -> 人工兜底
 
-1. 用户在 `Personal Workspace` 说：`生成自动化并执行`
-2. Agent 调用：
-   - `automation.generate`
-   - `run.start`
-3. `run.start` 创建 `Run(execution_channel=web_runner)`
-4. `runner` 执行 Playwright 资产并上传：
+1. 用户在 `Personal Workspace` 说：`生成自动化并在 https://staging.example.com 执行`
+2. Agent 先调用 `automation.generate`，将结构化脚本写入 `QualityAssetPack.automation_blueprint`，记录 revision、linked case、Prompt 版本和上下文 hash；此步骤不得创建 `Run`。
+3. Agent 展示可审阅资产。`semi_auto` 模式在执行前暂停；如果用户未提供目标环境，Agent 必须询问 `base_url`，不得猜测或使用隐式生产地址。
+4. 通过确认后，Agent 调用 `run.start(base_url, script_id?)`。后端只从已持久化的 automation revision 读取受约束 steps，忽略或拒绝调用方注入的 steps。
+5. `run.start` 通过 `RunOrchestrator` 创建 `Run(execution_channel=web_runner)`。
+6. `runner` 执行 Playwright 资产并上传：
    - logs
    - screenshots
    - trace
    - environment snapshot
-5. 运行失败后触发：
+7. 运行失败后触发：
    - `failure.analyze`
    - 若策略允许，再触发 `healing.propose`
-6. 若命中：
+8. 若命中：
    - `max_healing_depth`
    - 重复 `failure_fingerprint`
    - 风险超阈值
-7. Workflow 直接把状态转为 `fallback_to_human`
-8. 前端 `Runs` 页面收到：
+9. Workflow 直接把状态转为 `fallback_to_human`
+10. 前端 `Runs` 页面收到：
    - `run.updated`
    - `tool.failed`
    - `assistant.block.updated`

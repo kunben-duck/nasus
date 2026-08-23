@@ -1,6 +1,6 @@
 node_modules/
 dist/
-build/
+/build/
 .venv/
 __pycache__/
 .pytest_cache/
@@ -9,3 +9,12 @@ playwright-report/
 test-results/
 .DS_Store
 .nasus/
+.logs/
+.playwright-cli/
+.env
+.env.*
+!.env.example
+.coverage
+coverage.xml
+.mypy_cache/
+.ruff_cache/

@@ -70,7 +70,7 @@ Nasus 的产品一级模块固定为 3 个：
 4. Unified Context Engine：Source Connectors、Code/Knowledge Intelligence、Anchor Extraction、Entity Resolution、Context Assembler、Context Object Store，统一加工上下文对象并对上只暴露 `get_feature_context`、`build_task_context`、`build_quality_profile`、`assess_release_readiness`。[计划书](./nasus_assurance_studio_implementation_plan.md#L267)
 5. Three-Layer Context System：Historical System Baseline、Task Context Workspace、Quality Assurance Profile 支撑任务理解与质量画像。[计划书](./nasus_assurance_studio_implementation_plan.md#L123)
 6. Integration Fabric（防腐层）：Asset Ingestion、Execution、Storage、Review/Policy、Provider Contracts、Adapter Registry，隔离具体 Git、文档系统和执行器差异。[计划书](./nasus_assurance_studio_implementation_plan.md#L393)
-7. Infrastructure Providers：Git、Docs、OpenAPI、OpenGrok、Object Store、PostgreSQL、Playwright、Queue、Scheduler 等外部能力。[计划书](./nasus_assurance_studio_implementation_plan.md#L403)
+7. Infrastructure Providers：Git、Docs、OpenAPI、Tree-sitter、Codebase Memory（可替换图投影）、Object Store、PostgreSQL、Playwright、Queue、Scheduler 等外部能力。
 
 ### 3.1 七层架构与三大产品模块的映射
 
@@ -90,7 +90,7 @@ Nasus 的产品一级模块固定为 3 个：
 - **工具契约面（Tool Contract Layer）**：`Conversation Orchestrator` + `Tool Registry` + `Tool Invocation Service` + `Confirmation / Approval Gate`，负责把会话输入、页面动作和外部 API 请求统一映射成可治理的工具调用。
 - **智能面（Intelligence Plane）**：Unified Context Engine + Domain Intelligence Services + `Agent Service` + `Agent Memory Manager` + `Agent Swarm Coordinator` + `Skill Registry` + `Merge/Score`，负责构建 `Task Context` + `Quality Profile`，并为工具执行提供可直接消费的编排能力。
 - **执行面（Execution Plane）**：Web Execution Fabric + Runner + Failure/Healing + Execution Evidence Store，负责网页端工具、Playwright/MCP 调用、确定性执行、失败归因和 patch 建议。
-- **数据面（Data Plane）**：PostgreSQL + pgvector + MinIO + OpenGrok + Tree-sitter + Audit/Event Store，提供事实源、证据归档、关键词检索、语义检索、检索运行审计和可替换检索投影能力。
+- **数据面（Data Plane）**：PostgreSQL + pgvector + MinIO + Tree-sitter + Codebase Memory projection + Audit/Event Store，提供事实源、证据归档、结构解析、可替换代码图谱、语义检索和检索运行审计。OpenGrok 可作为后续全文导航投影接入，不是 V1 canonical 依赖。
 
 运行平面说明：
 
@@ -117,6 +117,20 @@ Nasus 的产品一级模块固定为 3 个：
 3. 质量闭环主体把 Agent 的规划落成正式对象、执行证据和放行判断。
 
 ## 5 核心组件职责矩阵
+
+### 5.0 代码分层落地约束
+
+整体架构在代码中按 DDD 渐进式落地，详细规范见
+[后端代码架构与 DDD 分层](./design/backend/code-architecture.md)。
+
+当前后端代码必须遵守以下约束：
+
+- `interface/http` 只负责协议转换和错误映射，不允许直接 import 全局 `store`。
+- `application/<domain>` 是 router 和 workflow activity 调用的唯一业务入口；HTTP 与 Temporal 入口统一从 `bootstrap/ApplicationContainer` 获取应用服务，禁止 import 全局 `store`。迁移期兼容投影只能被 bootstrap 内部组装，不能泄漏到入口层或承载新增业务规则。
+- 系统画像读模型入口必须通过 `application/system_image`，不继续塞进项目 BFF。
+- `domain/<domain>` 只保存纯领域规则，不依赖 FastAPI、ORM、LLM、对象存储或工作流引擎。
+- `infrastructure/*` 承接 PostgreSQL、MinIO、LLM、Temporal/LangGraph 和 Runner 适配。
+- 所有正式写动作仍以 `ToolInvocationRuntime` 为审计主线。
 
 | 组件 | 主要职责 | 依赖 |
 | --- | --- | --- |
@@ -147,7 +161,7 @@ Nasus 的产品一级模块固定为 3 个：
 | `Conversation Session` | 新建 -> 活跃 -> 暂停 -> 完成 | 用户发言、Agent 响应、工具执行完成 | 形成 `ToolInvocation` 与对象引用主链路 |
 | `ToolInvocation` | pending -> running -> waiting_confirmation / waiting_approval -> completed / failed / cancelled | 会话输入、页面动作、外部 API 请求 | 驱动 workflow、写入对象、产生审计事件 |
 | `AgentGoal` | pending -> running -> paused -> completed / failed / cancelled | 主会话高级目标、用户打断、Gate、预算耗尽 | 驱动 Agent Loop、工具调用和 Swarm |
-| `AgentSwarmRun` | pending -> running -> merging -> completed / failed / cancelled | 复杂目标拆分、多 US 分析、多模块归因 | 产出多个候选结果并进入 Merge/Score |
+| `AgentSwarmRun` | pending -> running -> merging -> completed / partially_failed / failed / cancelled | 复杂目标拆分、多 US 分析、多模块归因 | 产出多个候选结果并进入 Merge/Score；部分失败时保留缺失证据 |
 | `Task Context Workspace` | 构建中 -> 完成 -> 失效 | Agent/Tool 执行、证据补全 | 供 `Quality Profile`、自动化执行使用 |
 | `Quality Assurance Profile` | Draft -> Reviewed -> Approved | Verification/Scenario/Case 完成、人工确认 | 触发 automation.run 与 release.assess |
 | `AgentDecision` | provisional -> merged -> approved / rejected | 中心端推理完成、Conflict Resolver、Approval Control | 推动正式任务结论、正式放行或知识晋级 |
@@ -205,18 +219,18 @@ Nasus 的产品一级模块固定为 3 个：
 
 ## 9 部署架构与运行单元
 ### 9.1 计划书明确的部署线索
-- Experience Layer 对应 `portal`（Web UI/CLI/API），Domain/Orchestration Layer 集中在 `api/orchestrator` 服务，Integration Fabric 封装 Asset/Execution/Storage 接入，Infrastructure Providers 提供 Git/Docs/OpenGrok/PostgreSQL/MinIO/Playwright/Queue。文档本身并未明确拆分服务进容器，只给出分层与所需组件。[计划书](./nasus_assurance_studio_implementation_plan.md#L346)
-- Storage/Index 明确选 PostgreSQL、MinIO、OpenGrok、Tree-sitter，Execution 明确选 Node.js + Playwright，指引部署时优先满足这些单元。[计划书](./nasus_assurance_studio_implementation_plan.md#L673)
+- Experience Layer 对应 `portal`，Domain/Orchestration Layer 集中在 `api/orchestrator` 服务，Integration Fabric 封装 Asset/Execution/Storage 接入，Infrastructure Providers 提供 Git/Docs/PostgreSQL/MinIO/Tree-sitter/Codebase Memory/Playwright/Temporal。
+- Storage/Index 基线为 PostgreSQL + pgvector、MinIO、Tree-sitter 和可替换代码图谱；Execution 为 Node.js + Playwright。
 
 ### 9.2 基于计划书的最小推断
-- 推断部署模型：四类中心运行单元 `portal`（React 前端）、`api/orchestrator`（FastAPI）、`workflow-service`（`Durable Workflow Runtime`，默认采用 Temporal 或等价实现）、`worker-runtime`（异步 worker 池）、`runner`（Playwright 执行 job）。存储层为 PostgreSQL + MinIO，代码索引/解析由 OpenGrok + Tree-sitter 实现。
+- 部署模型：`portal`、`api/orchestrator`、`workflow-service`、`runner` 四类中心运行单元；PostgreSQL + pgvector、MinIO 和 Temporal 为外部服务。代码 canonical parse 由 Tree-sitter 完成，Codebase Memory 以 API 镜像内固定版本 CLI 形成可持久化图投影。
 - 任务流：Web 发起任务 -> API/Agent 组装统一 Task Context -> `workflow-service` 启动耐久任务 -> `worker-runtime` 生成质量方案和自动化属性 -> Web 触发 Playwright/MCP -> 中心端提交 `AgentDecision` -> 统一 `Run` 和证据回写 PostgreSQL/MinIO -> 冲突时进入 `pending_merge` -> `Approval Control` 决定基线走向。
 - 运行环境建议：中心端先以 Docker 模式部署 4 到 5 个运行单元，再按需求扩展到多 worker 池。V1 必须在 PostgreSQL FTS + pgvector 上落地 hybrid retrieval、embedding 和 rerank adapter；若中心检索规模或召回质量逼近瓶颈，再把检索投影迁移到 Weaviate / OpenSearch / Qdrant / Milvus 等独立服务。
 
 ## 10 首轮建设到后续演进
 
 - 建议先跑通 Phase0-3（对象协议、项目/版本初始化、任务上下文、质量方案生成），Phase4 补自动化执行与失败分析，Phase5 加审批与基线回写。[计划书](./nasus_assurance_studio_implementation_plan.md#L764)
-- 随着成熟度提升，可把 worker 按 Context/Impact/Scenario/Failure 进一步分池、把 runner 做成隔离 job、把 OpenGrok/Tree-sitter 解析从实时路径剥离、把 V1 的 PostgreSQL FTS + pgvector 检索投影平滑替换为专用向量/检索层。[文档未明示，此为可演进建议]
+- 随着成熟度提升，可把 worker 按 Context/Impact/Scenario/Failure 进一步分池、把代码图谱索引从在线请求路径剥离为异步任务，并把 PostgreSQL FTS + pgvector 检索投影平滑替换为专用检索层。
 
 ## 11 可靠性、审计、权限与可观测性
 
@@ -225,7 +239,7 @@ Nasus 的产品一级模块固定为 3 个：
 - **证据保留**：所有 `Run` 的日志、截图、trace、Failure 归因、patch 建议、审批决定永远 append-only，并关联 `Task Context`/`Version`。
 - **Tool 可调用性与执行权**：所有业务动作都应可被主 Agent 通过工具发起，但是否能够执行必须同时满足 `RBAC + policy`。高风险工具默认进入确认或审批闸口。
 - **交互通道**：Portal 到 `api/orchestrator` 的写操作通过 `Conversation` 和 `ToolInvocation` 的 REST 入口完成；任务、执行、审批的长时状态回传采用 SSE；Runner/Worker 与 Orchestrator 之间走队列和内部事件，不直接暴露给前端。
-- **执行隔离**：Runner 运行在隔离环境，依赖 `Environment Manager` 的短期凭证。
+- **执行隔离**：Runner 是独立的 Node.js + Playwright 内部 HTTP 服务，只接受带服务身份的结构化步骤；禁止任意 JavaScript，目标受 host allowlist 约束。Runner 运行在只读、无特权、有限进程和有限并发的隔离容器中，原始截图、trace、日志由 API 写入 MinIO/S3 后才形成正式 Evidence。
 - **正式事实来源**：中心端推理只能提交 `provisional` 候选结果；正式事实必须由 `Merge/Score + Approval Control` 写入。
 - **命令入口统一**：主会话、页面动作和外部 API 的写操作都应统一形成 `ToolInvocation`；对象查询接口作为 read model 存在，但不再是主业务动作入口。
 - **可观测性**：为 Control/Intelligence/Execution 平面提供统一链路追踪、运行指标、队列延迟和失败率；任何 Worker 重启必须能恢复任务状态。
@@ -236,16 +250,17 @@ Nasus 的产品一级模块固定为 3 个：
 
 | 环境 | 目标 | 默认组成 | 要求 |
 | --- | --- | --- | --- |
-| `local` | 单开发者调试与联调 | `portal` `api/orchestrator` `worker-runtime` `runner` `PostgreSQL` `MinIO` | 支持最小数据集、假 Provider、低成本重置 |
-| `dev` | 多人共享开发环境 | 本地同构部署 + 共享 `OpenGrok` / 文档索引 | 支持真实任务流、事件追踪、最小审批流 |
+| `local` | 单开发者调试与联调 | 宿主机直启 `portal` `api/orchestrator` `worker-runtime` `runner`；Docker 提供 `PostgreSQL` `MinIO` | 支持断点调试、最小数据集、假 Provider、低成本重置 |
+| `dev` | 多人共享开发环境 | 应用直启或同构部署 + 容器化外部组件 + 持久化代码图谱/文档索引 | 支持真实任务流、事件追踪、最小审批流 |
 | `staging` | 预发布验证 | 完整中心平面 + 审计/策略/执行网关 | 接近生产配置，验证权限、审批、回放、恢复 |
 | `prod` | 企业正式运行 | 私有化部署、隔离执行环境、备份与监控全量开启 | 强制审计、强制审批、证据长期保留 |
 
 部署建议：
 
-- 默认以 Docker Compose 或等价容器编排作为中心端 `local/dev` 基线。
+- `local/dev` 调试默认直接启动 API、Portal、workflow worker 和 Runner；Docker Compose 只承载 PostgreSQL、MinIO、Temporal、索引/检索等外部组件。候选发布、staging 和 production 必须使用容器化应用运行单元。
+- V1 本地与迁移部署的外部组件基线为 `PostgreSQL + pgvector`、`MinIO/S3`。仓库根目录 `docker-compose.yml` 是 local/dev 的权威入口；staging/prod 可以替换为企业托管 Postgres/S3 或 k8s chart，但服务协议、环境变量和 migration 流程必须保持一致。
 - `staging/prod` 推荐迁移到 k8s 或企业内部等价编排平台，并将 `worker-runtime`、`runner`、索引服务拆成独立扩缩容单元。
-- `prod` 环境中 `runner` 必须使用隔离网络与短期凭证，不得与控制面共享高权限凭据。
+- `prod` 环境中 `runner` 必须使用隔离网络、独立 service token、host allowlist 与短期任务凭证，不得与控制面共享高权限凭据；API `/readyz` 必须把 Runner 作为强依赖检查。
 
 ## 13 开发先后依赖
 

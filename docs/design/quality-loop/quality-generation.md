@@ -181,6 +181,45 @@ class SkillExecutor:
 - 没有 `TaskContext + QualityProfile` 不进入生成阶段
 - 输出必须是结构化对象
 - 产物必须写回 `QualityAssetPack` 明确字段
+- `quality.scenario.generate`、`quality.case.generate`、`automation.generate`、`release.assess` 都必须通过 `ToolInvocationRuntime` 物化领域对象，不能只更新 UI lane 或返回自然语言摘要。
+- 首版最小物化对象：
+  - `QualityAssetPack`：US 级 1:1 current pack，包含 scenario / case / automation / release 四类 part、revision、source refs 和 evidence refs。
+  - `ExecutionEvidence`：append-only 证据对象，保存 storage ref、hash、producer、captured_at、run/case 关联。
+  - `ReleaseReadiness`：由 `release.assess` 阶段生成，保存 score、blockers、execution_health 和 evidence refs。
+- `ReleaseDecision` 不是质量生成阶段产物，只能由治理链路 `approval.request -> approval.decide -> release.decision.submit` 生成。
+- `AssetLane` 只是工作台展示层状态，不是正式质量资产事实源。
+
+### 8.0 V1 运行时契约
+
+V1 的 `quality.scope.generate`、`quality.scenario.generate`、`quality.case.generate` 必须通过
+`QualityGenerationPort` 调用当前激活的 chat 模型，并遵守以下顺序：
+
+1. 从 `TaskContext`、`QualityProfile`、当前 `QualityAssetPack` 和 Tool input 组装不可变请求快照。
+2. 使用 Prompt Registry 中的版本化 Prompt 请求 JSON structured output。
+3. 服务端按对应 Pydantic schema 校验完整输出。
+4. 校验通过后，才一次性更新 AssetLane、US 状态、质量指标和 QualityAssetPack part。
+5. 生成失败、provider fallback 或 schema 校验失败时不得写入半完成资产。
+
+Prompt Registry 首版种子：
+
+| Tool | prompt_id | prompt_version | output_schema_ref |
+| --- | --- | --- | --- |
+| `quality.scope.generate` | `quality.scope.generate` | `1.0.0` | `quality-scope-output/v1` |
+| `quality.scenario.generate` | `quality.scenario.generate` | `1.0.0` | `quality-scenario-output/v1` |
+| `quality.case.generate` | `quality.case.generate` | `1.0.0` | `quality-case-output/v1` |
+
+每个 QualityAssetPack part 必须持久化：
+
+- `structured_content`：经过 schema 校验的正式结构化产物
+- `generation.prompt_id / prompt_version`
+- `generation.provider / model_name / mode / reason`
+- `generation.input_context_hash / generated_at`
+
+运行策略：
+
+- `production/staging`：模型不可用、返回 fallback、JSON 非法或 schema 不通过时 fail-closed，ToolInvocation 进入 `failed`。
+- `local/test`：允许确定性 fallback 以支持离线开发，但必须写入 `mode=fallback` 和明确原因，不能伪装成 live 模型产物。
+- fallback 只用于可恢复的草稿生成；任何 release decision、审批和正式证据仍必须经过独立治理链路。
 
 ### 8.1 `quality.scope.generate`
 
@@ -264,6 +303,11 @@ class SkillExecutor:
 - 不直接从自然语言跳脚本，必须基于 case set
 - selector 优先使用稳定属性和业务锚点
 - 脚本必须带 `linked_case_ids`
+- 输出必须符合 `automation-blueprint-output/v1`，Runner action 只允许 `goto / click / fill / press / assert_text / assert_visible / assert_url / wait_for`
+- `automation.generate` 只生成和版本化资产，不得创建 `Run` 或执行浏览器
+- 生成结果以 `QualityAssetPack.automation_blueprint` part 保存，`revision`、Prompt 版本、模型、输入上下文 hash 和结构化脚本必须可追溯
+- `run.start` 必须从当前 automation part 选择脚本并显式提供目标 `base_url`，禁止客户端绕过已保存资产直接注入执行 steps
+- 执行成功或失败后新增 automation part revision，保留生成内容并附加 `Run`、`ExecutionEvidence` 和可选 `FailureReport`
 
 写入：
 
@@ -310,6 +354,12 @@ class SkillExecutor:
 - `evidence_refs`
 - `matching_historical_fingerprints`
 
+V1 落地要求：
+
+- 必须通过 `ToolInvocation` 调用，不能由 Run Detail 页面直接写失败结论。
+- 必须生成正式 `FailureReport`，并关联 `run_id`、`us_id`、`failure_fingerprint`、`evidence_refs`。
+- 如果 Run 只有原始 trace/log/screenshot ref，服务端必须先物化为 `ExecutionEvidence`，再由 `FailureReport.evidence_refs` 引用。
+
 ### 8.9 `healing.propose`
 
 patch proposal 必须带：
@@ -318,6 +368,12 @@ patch proposal 必须带：
 - `patch_summary`
 - `risk_note`
 - `retry_recommendation`
+
+V1 落地要求：
+
+- `healing.propose` 只生成候选修复/处置建议，不直接修改代码、不直接重跑高风险动作。
+- 每次同一 `failure_fingerprint` 的自动自愈尝试必须累计 `healing_attempt_count`。
+- 达到 `Max Healing Depth` 后，`FailureReport.status` 必须转为 `fallback_to_human`，Run 的 `healing_status` 也必须同步为 `fallback_to_human`。
 
 命中以下条件必须 `fallback_to_human`：
 

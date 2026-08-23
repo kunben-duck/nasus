@@ -1,0 +1,116 @@
+:root {
+  color-scheme: dark;
+  --bg: #131314;
+  --sidebar: #131314;
+  --surface: #1e1f20;
+  --surface-2: #242526;
+  --surface-3: #2b2c2f;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.13);
+  --text: #e3e3e3;
+  --muted: #b6b8bb;
+  --subtle: #86898d;
+  --green: #45c46f;
+  --blue: #7aa2ff;
+  --yellow: #e5b74d;
+  --red: #f07373;
+  --purple: #b28cff;
+  --flow-green: #43d17d;
+  --flow-blue: #72a5ff;
+  --flow-amber: #e8bc54;
+  --flow-pink: #f06aa6;
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f5f7fb;
+  --sidebar: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #eef2f8;
+  --surface-3: #e4eaf3;
+  --border: rgba(33, 38, 45, 0.1);
+  --border-strong: rgba(33, 38, 45, 0.16);
+  --text: #1f2328;
+  --muted: #59636e;
+  --subtle: #77808c;
+  --blue: #4d79d8;
+  --green: #219653;
+  --yellow: #b47b00;
+  --red: #cf3f4b;
+  --purple: #7457d8;
+  --shadow: 0 24px 80px rgba(32, 45, 64, 0.14);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Google Sans Text", "Google Sans", Roboto, Arial, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+@keyframes nasus-flow-border {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes nasus-flow-glow {
+  0% {
+    opacity: 0.42;
+    transform: translate3d(-5%, -2%, 0) rotate(0deg);
+  }
+
+  100% {
+    opacity: 0.72;
+    transform: translate3d(5%, 2%, 0) rotate(8deg);
+  }
+}
+
+@property --nasus-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 25deg;
+}
+
+@keyframes nasus-conic-border {
+  0% {
+    --nasus-angle: 25deg;
+  }
+
+  100% {
+    --nasus-angle: 385deg;
+  }
+}

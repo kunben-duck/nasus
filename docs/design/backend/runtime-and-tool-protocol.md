@@ -12,7 +12,7 @@
 
 - 接收主会话输入
 - 读取当前空间、任务、版本、系统画像和最近执行状态
-- 生成 `ToolInvocationPlan`
+- 生成 `ClarificationRequest / DirectAnswer / ToolInvocationPlan / AgentGoalProposal`
 - 为工具执行绑定上下文
 
 输出：
@@ -21,6 +21,15 @@
 - `tool_invocation_plan`
 - `agent_goal_proposal`
 - `recommended_tools`
+
+执行前治理：
+
+- Planner 可以从当前可见的完整 Tool Catalog 中选择工具，但输出必须由
+  `AgentPlanPolicy` 校验工具注册、作用域、必需上下文、输入大小和重复动作。
+- 只读查询链可以保留为 `ToolInvocationPlan`。
+- 计划中包含任意写工具时必须提升为 `AgentGoalProposal`，不能作为不可中断的
+  直接执行序列。
+- 高风险工具允许进入计划，但确认和审批仍由 Tool Invocation Runtime 决定。
 
 ### 2.2 Agent Service Runtime
 
@@ -106,7 +115,7 @@
 
 默认采用 `LangGraph`，但其职责已经从“单次工具执行窗口”扩展为双层编排：
 
-#### 2.4.1 外层 Agent Loop Graph
+#### 2.6.1 外层 Agent Loop Graph
 
 承接高级目标的自主循环：
 
@@ -126,8 +135,14 @@
 - `Agent Goal Plan Compiler` 负责把高层 `AgentGoalProposal` 编译为 `ToolPlanStep[]`。
 - `Agent Graph Runtime` 负责执行编译后的 Think / Act / Observe / Decide 步骤，不应内联系统画像、质量闭环等领域计划补全逻辑。
 - 若 `AgentGoalProposal` 只包含目标模板和 project 上下文，计划编译器必须能基于当前领域状态补齐工具链；例如系统画像构建可自动补齐或跳过 `system_image.sources.register / system_image.sources.ingest / system_image.context.materialize / system_image.baseline.initialize`。
+- `llm_structured` 目标在每次存在待执行步骤的 OBSERVE 后调用通用
+  `AgentReplanner`，输出只能是 `keep / replace_remaining / complete`。
+- Replanner 的替换步骤必须再次经过 `AgentPlanPolicy`；provider 失败、输出非法
+  或策略拒绝时保留原计划。质量闭环在 `release.assess` 成功前不能提前完成。
+- 系统画像 follow-up 恢复链额外保留确定性的状态感知计划编译，以便模型不可用时
+  仍能补齐 canonical 构建步骤。
 
-#### 2.4.2 内层 Tool Graph
+#### 2.6.2 内层 Tool Graph
 
 承接单个 Tool 内部的规划和路由：
 
@@ -159,6 +174,8 @@
 - 工具结果若返回 `requires_followup=true`，Agent Graph 必须暂停当前 `AgentGoal`，写入明确 `pause_reason`，等待用户或外部系统补齐输入后恢复；不得继续执行后续工具。
 - `missing_source_binding` 是系统画像首版的标准 follow-up pause reason，用于阻止默认占位 source 直接进入正式画像构建链路。
 - 恢复 follow-up pause 后，Agent Graph 不能只重放原始静态 step list。它必须让 `Agent Goal Plan Compiler` 基于最新领域状态重编译剩余工具链，将新增 `AgentStep` 插入同一个 `AgentGoal`，并保留原 `conversation -> agent goal -> tool invocation -> domain object` 审计链。
+- 结构化 Planner 的候选计划最多包含 12 个工具动作；会话作用域 ID、
+  幂等键、策略快照、确认状态和审批状态不能由模型控制。
 
 ### 2.7 Temporal / LangGraph 交接规则
 
@@ -249,6 +266,12 @@
 - `input_payload`
 - `input_evidence_refs`
 - `policy_snapshot_id`
+- `idempotency_key`
+
+服务端为幂等请求生成规范化 payload fingerprint，并以
+`idempotency_scope + tool_id + idempotency_key` 建立数据库唯一约束。同一 key
+与相同 payload 返回原 ToolInvocation；同一 key 与不同 payload 返回
+`409 tool_idempotency_conflict`，不能静默复用或重复执行。
 
 ### 4.3 ToolInvocationResult
 
@@ -261,6 +284,15 @@
 - `requires_followup`
 - `next_recommended_tools`
 - `followup_gate_state`
+
+### 4.3.1 执行占用与跨进程一致性
+
+- PostgreSQL 是 ToolInvocation 状态的正式事实源；进程内 projection 仅用于兼容展示。
+- 执行前必须原子占用：普通请求只允许 `pending -> running`，用户确认只允许
+  `waiting_confirmation -> running`。
+- 占用使用数据库行锁和状态前置条件；未取得占用的 API/Worker 必须读取并返回
+  当前事实，不能再次调用 handler。
+- API 重启、Temporal Worker 重启或多 API 副本不得改变确认、幂等和执行语义。
 
 ### 4.4 SkillInvocationRequest
 
@@ -294,7 +326,7 @@
 - `parent_goal_id`
 - `conversation_id`
 - `swarm_kind=impact|scenario|case|failure|release|ingestion`
-- `status=pending|running|merging|completed|failed|cancelled`
+- `status=pending|running|merging|completed|partially_failed|failed|cancelled`
 - `max_parallel_agents`
 - `budget_ref`
 - `merge_strategy`
@@ -312,6 +344,7 @@
 - `agent_goal_id`
 - `tool_invocation_refs`
 - `candidate_result_ref`
+- `timeout_seconds`
 - `confidence`
 
 ### 4.8 WorkerResult

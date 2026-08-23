@@ -41,7 +41,7 @@
 
 | route | 用途 | 主要调用方 | 是否允许 fallback |
 | --- | --- | --- | --- |
-| `chat` | 主会话、Conversation Orchestrator、Agent Loop THINK、质量生成 Skill | Agent Service / Tool Runtime / Skill Runtime | 允许 fallback 到 deterministic response，但必须标记 `runtime_mode=fallback` |
+| `chat` | 主会话、Conversation Orchestrator、Agent Loop THINK、质量生成 Skill | Agent Service / Tool Runtime / Skill Runtime | 允许 fallback 到 deterministic response，但必须标记 `runtime_mode=fallback`；staging/prod 的自由文本写规划必须 fail closed |
 | `embedding` | RawAssetChunk、ContextObject 摘要、测试资产、失败模式的向量化 | System Image / UCE / Retrieval Pipeline | 允许任务排队或降级到 keyword-only，但必须标记 embedding stale/excluded |
 | `rerank` | hybrid retrieval 候选重排、上下文组装候选排序 | Retrieval Pipeline / Context Assembler | 允许降级到 rule-based fusion，但必须写入 RetrievalRun |
 
@@ -64,6 +64,29 @@
 - Agent 主会话只读取 `chat` route；系统画像向量化只读取 `embedding` route；hybrid retrieval 重排只读取 `rerank` route。
 - 修改 `embedding` route 后，相关 `EmbeddingRecord` 必须按 `embedding_model + embedding_version + embedding_dimension` 标记 stale 并进入重建流程。
 - 修改 `rerank` route 不改变正式事实对象，但会影响后续 `RetrievalRun` 的候选排序和 `RerankRecord`。
+
+### 3.1.1 system_default 环境变量
+
+首个正式版本必须支持部署级 `system_default` route，不允许把组织级 Provider 密钥写入代码或作为默认种子数据落库。
+
+| route | provider env | base URL env | model env | API key env |
+| --- | --- | --- | --- | --- |
+| `chat` | `NASUS_DEFAULT_PROVIDER` | `NASUS_DEFAULT_BASE_URL` | `NASUS_DEFAULT_MODEL` | `NASUS_DEFAULT_API_KEY` |
+| `embedding` | `NASUS_EMBEDDING_PROVIDER` | `NASUS_EMBEDDING_BASE_URL` | `NASUS_EMBEDDING_MODEL` | `NASUS_EMBEDDING_API_KEY` |
+| `rerank` | `NASUS_RERANK_PROVIDER` | `NASUS_RERANK_BASE_URL` | `NASUS_RERANK_MODEL` | `NASUS_RERANK_API_KEY` |
+
+OpenAI-compatible provider 允许使用共享 fallback：
+
+- `NASUS_OPENAI_COMPATIBLE_BASE_URL`
+- `NASUS_OPENAI_COMPATIBLE_API_KEY`
+
+解析规则：
+
+- route-specific env 优先于共享 OpenAI-compatible env。
+- `chat` route 服务主会话和 Agent Loop，不得复用 `embedding` 或 `rerank` route 的模型。
+- `embedding` 和 `rerank` route 的 provider 状态必须独立暴露给 Settings UI。
+- 缺少任一必需值时，该 route 必须进入 `runtime_mode=fallback`，并在 `active_provider_status.reason` 中说明缺失项。
+- `.env.example` 只能使用占位符，真实 API key 只能通过本地 `.env`、部署 Secret 或 Settings 自定义配置注入。
 
 ## 4. Provider 抽象
 
@@ -124,6 +147,30 @@ Prompt 不是硬编码字符串，必须进入 `Prompt Registry`。
 - `output_schema_ref`
 - `safety_rules_ref`
 - `rollback_to`
+
+正式实现使用两张 PostgreSQL 表：
+
+- `prompt_definitions`：以 `prompt_id + version` 为不可变主键，保存模板、schema 引用、
+  安全规则引用和内容哈希。同版本内容哈希发生变化时启动失败，必须发布新版本。
+- `prompt_selections`：独立保存每个 `prompt_id` 的 active version，用于灰度切换和回滚，
+  不通过覆盖历史模板完成切换。
+
+启动时允许幂等注册受版本控制的内置模板；这属于运行时契约初始化，不属于 demo 数据
+seed。Agent runtime guardrail、Conversation Reply、Query Tool Reply、Planner、Replanner 和
+质量资产生成必须在每次调用前读取 active definition，并将实际 `prompt_id + version`
+写入 `LLMCall`。业务服务不得用硬编码 Prompt 冒充某个已登记版本。
+
+V1 首批注册：
+
+- `agent_runtime_guardrails`
+- `agent_conversation_reply`
+- `platform_query_tool_reply`
+- `agent_loop_planner`
+- `agent_loop_replanner`
+- `quality.scope.generate`
+- `quality.scenario.generate`
+- `quality.case.generate`
+- `automation.generate`
 
 Prompt 分类至少包括：
 
@@ -204,6 +251,14 @@ Token 统计维度至少包括：
 3. 关闭非关键 reasoning，只保留结构化工具选择
 4. 回退到 read-only 建议，不执行高风险生成
 
+`chat` route 的确定性降级必须区分请求来源和副作用：
+
+- 本地开发与测试环境允许使用确定性 Planner 验证完整工具链。
+- staging/prod 中，主会话的自由文本只允许降级为直接回答、澄清或只读查询计划。
+- 若自由文本原本会产生任意写工具或 `AgentGoal`，Provider 不可用、超时、输出非法或 schema 校验失败时必须返回 `planner_provider_unavailable`，不得创建领域事实或工具调用。
+- 用户已在 UI 中明确点击、携带受支持的 `canonical_action_id`、且消息内容匹配固定版本 Tool Contract 的 canonical action 可以走确定性入口；不得仅凭自然语言文案猜测来源。该入口仍必须经过 RBAC、confirmation、approval 和 policy gate。
+- 已经持久化并通过策略校验的 `AgentGoal` 在 Replanner 暂时不可用时可以保留原计划，但不得凭降级逻辑追加新的写步骤。
+
 以下情况必须触发降级或阻断：
 
 - Provider 429 / 5xx 持续失败
@@ -227,6 +282,22 @@ Token 统计维度至少包括：
 - `task_id`
 - `outcome`
 
+正式 V1 采用独立 `llm_calls` 事实表，而不是把调用详情塞入通用 JSON 日志。
+`chat / embedding / rerank` 三条 route 均由 `Model Gateway` 在返回结果前写入
+审计记录，并补充：
+
+- `purpose`、`route`、`runtime_mode`、`reason`
+- `project_id / version_id / conversation_id / agent_goal_id / tool_invocation_id`
+- `task_id`、`model_calls`、`usage_source`
+- `selected_provider / selected_model_name`，用于区分目标路由与实际 fallback
+- `input_item_count / output_item_count`
+- `request_hash / response_hash`，用于去重和排障但不泄露正文
+
+原始 Prompt、原始模型输出和 API key 不进入 `llm_calls`。Prompt 正文由版本化
+Prompt Registry 管理；业务产出进入各自领域对象和 Evidence，只有在独立的数据分级
+策略允许时才可持久化原文。平台管理员可通过 `GET /v1/llm-calls` 按 route 和关联
+事实查询脱敏记录。
+
 敏感内容默认不完整落日志；原始 prompt 和原始输出应按策略分级存储。
 
 ## 11. 工程默认值
@@ -241,6 +312,9 @@ Token 统计维度至少包括：
 - `chat` route 连接测试必须真实调用目标模型的轻量 prompt。
 - `embedding` route 连接测试必须优先执行 provider adapter 轻量向量化探测；若 provider 暂无 adapter，只能返回配置级状态并明确说明。
 - `rerank` route 连接测试必须优先执行 provider adapter 样例重排探测；若 provider 暂无统一接口，返回配置级状态并把真实探测交给 retrieval job。
+- 自定义 active route 的 `live` 状态必须来自已保存模型的最近一次真实连接测试；连接
+  失败需回写 `last_test_result` 并立即将 route 标记为 `fallback`。仅配置了 base URL、
+  model 和 API key 不得作为 live 证据。
 
 ## 12. 首发模型路由建议
 

@@ -30,11 +30,13 @@
 ### 3.2 后端
 
 - [后端总设计](./backend/system-design.md)
+- [后端代码架构与 DDD 分层](./backend/code-architecture.md)
 - [后端领域模型](./backend/domain-model.md)
 - [后端运行时与工具协议](./backend/runtime-and-tool-protocol.md)
 - [后端 API 与事件契约](./backend/api-and-events.md)
 - [后端执行与治理](./backend/execution-governance.md)
 - [后端运维与测试基线](./backend/ops-and-test-baseline.md)
+- [备份与恢复运行手册](./backend/backup-and-recovery-runbook.md)
 - [端到端数据流示例](./backend/end-to-end-flow-examples.md)
 
 ### 3.3 平台能力

@@ -622,18 +622,18 @@ Agent 不得直接写 Official Baseline，也不得直接输出正式上线结�
 
 ## 13. 分阶段落地
 
-### 13.1 Phase A：三源可信接入
+### 13.1 Phase A：必需代码与可选质量源可信接入
 
 目标：
 
-- 真实代码、US、测试资产进入 RawAsset。
+- 真实代码必须进入 RawAsset；历史 US、测试资产在提供时进入同一 RawAsset 主线。
 - 禁止占位 source 初始化正式画像。
 - 建立 source 状态、失败和审计。
 
 验收：
 
-- 三源缺失时 Agent 追问。
-- 三源齐全时可生成 source checkpoint。
+- 代码缺失时 Agent 追问并阻断 baseline。
+- 只有代码时可生成低置信 source checkpoint；三源齐全时生成跨源增强 checkpoint。
 - 失败 source 不污染基线。
 
 ### 13.2 Phase B：系统画像图谱
@@ -699,4 +699,3 @@ Agent 不得直接写 Official Baseline，也不得直接输出正式上线结�
 - 系统能判断历史功能是否受影响且有证据保护。
 - 系统能给出可解释的 ready / conditional / needs_evidence / blocked 放行建议。
 - 系统能在版本结束后通过审批把高价值知识沉淀回 Official Baseline。
-

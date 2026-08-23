@@ -8,6 +8,10 @@
 - 读操作通过 read API 提供。
 - 所有写操作都必须能回溯到 `tool_invocation_id` 或 `agent_goal_id`。
 - 所有异步写操作都必须提供 SSE 事件流。
+- 所有响应包含 `X-Request-ID`；调用方可以传入符合约束的同名请求头用于链路关联。
+- `GET /metrics` 为受保护的 Prometheus scrape 端点，不列入公开 API。
+- 超过共享预算返回 `429`，包含 `Retry-After`、`X-RateLimit-Limit`、
+  `X-RateLimit-Remaining`、`X-RateLimit-Reset` 和 `X-RateLimit-Scope`。
 
 ## 2. REST 接口分组
 
@@ -16,10 +20,32 @@
 | 接口 | 用途 |
 | --- | --- |
 | `GET /v1/auth/me` | 获取当前身份、角色和会话范围 |
+| `POST /v1/auth/register` | 创建本地 V1 账号与访问会话；默认全局角色为 `qa_lead` |
+| `POST /v1/auth/login` | 使用本地账号创建持久化访问会话 |
+| `GET /v1/auth/sessions` | 列出当前账号的访问会话 |
+| `DELETE /v1/auth/sessions/{sessionId}` | 撤销当前账号指定会话 |
 | `POST /v1/auth/device-code` | CLI / Device Code 登录 |
 | `POST /v1/auth/token` | token 交换 |
 | `POST /v1/auth/refresh` | refresh token rotation |
 | `POST /v1/auth/logout` | 注销当前访问会话 |
+| `GET /v1/admin/users` | 平台管理员分页查询账号 |
+| `PATCH /v1/admin/users/{userId}` | 平台管理员修改账号显示名、角色或状态 |
+| `GET /v1/admin/users/{userId}/sessions` | 平台管理员查询指定账号会话 |
+| `DELETE /v1/admin/users/{userId}/sessions/{sessionId}` | 平台管理员撤销指定账号会话 |
+| `GET /v1/projects/{projectId}/members` | 项目管理员查询项目成员和角色绑定 |
+| `GET /v1/projects/{projectId}/member-candidates` | 项目管理员按名称或邮箱搜索可加入项目的活跃账号 |
+| `PUT /v1/projects/{projectId}/members/{userId}` | 项目管理员创建或更新项目角色绑定 |
+| `DELETE /v1/projects/{projectId}/members/{userId}` | 项目管理员撤销项目角色绑定 |
+
+V1 过渡实现：
+
+- 本地开发可使用 `NASUS_AUTH_MODE=dev|disabled|off`。
+- 非本地环境必须使用 `NASUS_AUTH_MODE=required|prod|production`，并对所有非公开 API 校验 `Authorization: Bearer <token>`。
+- `/healthz` 与 `OPTIONS` 为公开端点。
+- SSE 端点允许临时使用 `?access_token=` 传递同一个 Bearer Token，以兼容浏览器 `EventSource`。
+- 该方案不替代长期 `OIDC / OAuth 2.1 + RBAC + PolicySnapshot`，只作为 V1 API 不裸奔的最低门禁。
+- 本地账号、访问会话、账号状态和项目角色绑定均持久化到 PostgreSQL；停用账号时必须立即撤销全部活动会话。
+- 项目成员管理只能由该项目 `project_admin` 或 `platform_admin` 执行，不能撤销或降级最后一个项目管理员。
 
 ### 2.2 Conversation / Tool
 
@@ -66,12 +92,15 @@
 | 接口 | 用途 |
 | --- | --- |
 | `POST /v1/projects` | 创建项目对象 |
+| `POST /v1/projects/{projectId}/source-files` | 上传可选 US / 测试资产文件并返回不可变对象存储 URI；不直接注册领域 source |
 | `POST /v1/versions` | 创建版本对象 |
 | `POST /v1/sessions` | 创建工作会话 |
 | `POST /v1/tasks` | 显式创建任务对象 |
 | `GET /v1/tasks/{id}` | 获取任务详情 |
 | `GET /v1/tasks/{id}/events` | 获取任务事件流 |
 | `GET /v1/tasks/{id}/conflicts` | 获取任务冲突 |
+| `GET /v1/projects/{projectId}/conflicts` | 获取项目或指定任务的未解决冲突 |
+| `GET /v1/projects/{projectId}/merged-resolutions/{id}` | 获取持久化合并事实及审批状态 |
 | `GET /v1/context-objects/{id}` | 获取上下文对象详情 |
 | `GET /v1/context-objects/search` | 搜索上下文对象 |
 | `POST /v1/retrieval/query` | 执行系统画像 hybrid retrieval，返回候选、rerank 和证据引用 |
@@ -81,6 +110,15 @@
 | `GET /v1/context-graph` | 图谱查询 |
 | `GET /v1/features/{featureId}/context` | 获取对象/特性上下文 |
 | `GET /v1/objects/{id}` | 获取对象详情 |
+
+`POST /v1/projects/{projectId}/source-files` 使用 `multipart/form-data`，字段为
+`source_type=us_doc|test_asset` 与一个或多个 `files`。接口必须先完成项目访问
+校验，再读取受文件数、单文件字节数和总字节数限制的请求体。成功响应包含
+`source_uri`、`content_hash`、`file_count`、`byte_count` 和 `evidence_refs`。
+该接口仅完成原始字节暂存；将 `source_uri` 变成 `RawAssetRecord`、执行摄入、
+物化画像和初始化基线，仍必须经过 `system_image.sources.register ->
+system_image.sources.ingest -> system_image.context.materialize ->
+system_image.baseline.initialize` 的审计工具链。
 
 ### 2.4 Execution / Governance
 
@@ -131,6 +169,15 @@
 | `PATCH /v1/settings` | 更新主题、语言、通知策略或指定模型 route 配置 |
 | `POST /v1/settings/test-connection` | 测试指定模型 route 的连接或 adapter 配置状态 |
 | `GET /v1/settings/test-connection` | 返回连接测试接口的人类可读说明 |
+
+### 2.9 LLM Call Audit
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /v1/llm-calls` | 由 `platform_admin` 按 route、项目、会话、AgentGoal 或 ToolInvocation 查询脱敏模型调用事实 |
+
+该接口不返回 Prompt、模型正文或凭据，只返回调用关联关系、运行模式、结果、耗时、
+usage 和请求/响应摘要哈希。
 
 ## 3. 接口语义规则
 
@@ -194,7 +241,8 @@
 - 同步返回：`tool_invocation_id`、初始 `status`
 - 异步行为：通过事件流推进到 `running / waiting_confirmation / waiting_approval / completed / failed`
 - 幂等：按 `idempotency_key` 去重
-- 审计要求：每次工具调用至少写入 `tool.invocation.created`，进入 gate 时写入 `tool.invocation.gated`，确认时写入 `tool.invocation.confirmed`，执行完成或失败时写入 `tool.invocation.completed / tool.invocation.failed`
+- 授权：运行时必须先执行工具级 RBAC。授权失败时返回 `ToolInvocation.status=failed`、`ToolResult.followup_reason=authorization_denied`，并且不得进入 confirmation / approval gate 或具体 handler。
+- 审计要求：每次工具调用至少写入 `tool.invocation.created`，授权失败时写入 `tool.invocation.authorization_denied`，进入 gate 时写入 `tool.invocation.gated`，确认时写入 `tool.invocation.confirmed`，执行完成或失败时写入 `tool.invocation.completed / tool.invocation.failed`
 
 `GET /v1/tool-invocations`
 
@@ -323,10 +371,17 @@
 
 `GET /v1/tasks/{id}/conflicts`
 
+项目级治理页面使用 `GET /v1/projects/{projectId}/conflicts?task_id={taskId}`；
+合并详情使用 `GET /v1/projects/{projectId}/merged-resolutions/{id}`。三者返回同一
+`MergedResolution` read model，不允许形成独立的前端冲突状态。
+
 - 返回用途：给前端 `Conflict Panel` 和治理页面展示结构化冲突
 - 最小返回字段：
+  - `id`
+  - `project_id`
+  - `version_id`
   - `task_id`
-  - `conflict_state`
+  - `status=pending_merge|ready_for_approval|approved|rejected`
   - `object_ref`
   - `base_ref`
   - `left_candidate_ref`
@@ -334,6 +389,8 @@
   - `auto_merged_patch`
   - `conflict_entries`
   - `recommended_resolution`
+  - `approval_state`
+  - `approval_ref`
 - `conflict_entries` 的最小字段：
   - `path`
   - `conflict_kind=scalar|object|array|text`
@@ -598,6 +655,13 @@
 ### 5.4 Conversation Streaming 协议
 
 首发对话流式输出固定采用 SSE，不额外引入自定义双向流协议。
+
+鉴权规则：
+
+- 常规 API 调用使用 `Authorization: Bearer <token>`。
+- 浏览器原生 `EventSource` 无法设置自定义 header，因此 V1 SSE 可以使用 `?access_token=<token>`。
+- 服务端必须对 header token 和 query token 使用同一套认证逻辑。
+- 长期方案应迁移到短期 streaming token、受保护 cookie 或支持 header 的 streaming transport。
 
 `GET /v1/conversations/{id}/events` 必须支持以下事件序列：
 

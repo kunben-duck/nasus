@@ -47,6 +47,7 @@
 - `quality.plan.generate`
 - `quality.case.generate`
 - `automation.generate`
+- `run.start`
 - `performance.generate`
 - `quality.change-doc.generate`
 
@@ -55,6 +56,7 @@
 - `Personal Workspace` 必须保持 `agent-first`，中间主画布优先展示会话和 Agent Goal，不得退化为表单页。
 - 质量资产必须以 `QualityAssetPack` 为统一聚合，不允许每类资产散落在无关联对象中。
 - 资产重生成必须支持局部重生成和 revision 语义。
+- `automation.generate` 只创建可审阅资产；`run.start` 必须选择已持久化的 automation revision 并显式提供目标 `base_url`，页面不得把未保存的客户端 steps 直接发给 Runner。
 
 ## 6. 验收标准
 

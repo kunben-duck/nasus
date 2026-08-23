@@ -64,7 +64,7 @@
 | Workflow | local fallback | local runtime 作为正式长任务执行器 | Temporal 或等价 durable workflow |
 | Graph runtime | local wrapper | LangGraph 只委托本地函数 | 真实 graph node、checkpoint、resume |
 | SSE | 内存事件流 | 无 replay / heartbeat / Last-Event-ID | outbox + replay + entity_version |
-| Auth | 固定开发用户 | 固定用户或无权限校验 | OIDC / RBAC / PolicySnapshot |
+| Auth | dev 模式固定开发用户；required 模式 Bearer Token 门禁 | 无权限校验或生产静默降级为开发用户 | OIDC / RBAC / PolicySnapshot；V1 过渡期至少启用 Bearer Token 门禁 |
 | LLM | mock fallback | 生产默认 mock | Provider adapter、Prompt Registry、LLMCall audit |
 
 任何生产代码合入前，必须证明没有依赖 demo seed、in-memory queue 或无迁移 schema。
@@ -94,26 +94,45 @@
 - `worker-runtime`
 - `runner`
 
-代码组织建议：
+当前 `apps/api/app` 采用渐进式 DDD 分层迁移，不做一次性大搬家：
 
-- `api`
-- `auth`
-- `orchestrator`
-- `workflow`
-- `agent_graph`
-- `agent_service`
-- `agent_memory`
-- `agent_swarm`
-- `llm_gateway`
-- `prompt_registry`
-- `tools`
-- `skills`
-- `workers`
-- `context_engine`
-- `domain`
-- `execution`
-- `governance`
-- `shared_contracts`
+```text
+apps/api/app/
+  interface/
+    http/                 # FastAPI router/controller，只做协议转换
+    sse/                  # SSE envelope、outbox、streaming
+  application/
+    system_image/         # source/ingestion/context use case
+    agent/                # conversation、goal、memory、swarm use case
+    quality_loop/         # task、asset、run、release use case
+    platform/             # auth、settings、audit、tool invocation use case
+  domain/
+    system_image/
+    agent/
+    quality_loop/
+    platform/
+    shared/
+  infrastructure/
+    persistence/
+    llm/
+    storage/
+    workflow/
+    runner/
+  composition.py
+```
+
+准入规则：
+
+- `main.py` 只保留应用创建和 `app` 暴露，具体路由挂载由 `composition.py` 组装。
+- `interface/http/routers` 只处理 FastAPI 请求、响应、错误映射和 SSE envelope，不承载业务规则。
+- `application/<domain>` 是新业务逻辑入口，跨模块调用只能通过 use case / port。
+- `domain/<domain>` 只能包含纯领域对象、值对象、策略和状态机，禁止 import ORM、FastAPI、LLM、S3、Temporal。
+- `infrastructure/*` 承载数据库、LLM、对象存储、workflow、runner 等适配器。
+- `store.py` 当前仅允许承载迁移期 `RuntimeAssembly` 依赖组装与
+  `ApplicationRuntime` compatibility facade；生产入口只能通过
+  `get_runtime_assembly()` 获取唯一依赖图，再由 `ApplicationContainer`
+  暴露 application services。不得向其中新增业务规则或创建第二套运行时状态。
+- platform 支撑域优先迁移，因为 `ToolInvocation`、settings、audit、RBAC 和 gate 是 agent-first 写操作链路的基础。
 
 ### 3.4 服务间通信矩阵
 
@@ -122,13 +141,13 @@
 | Frontend UI | `api/orchestrator` | REST + SSE | 主入口 |
 | `api/orchestrator` | `workflow-service` | Temporal Client / Workflow Signal | 启动、恢复、取消 workflow |
 | `workflow-service` | `worker-runtime` | 队列分发 `WorkerJob` | 队列产品可替换，协议固定 |
-| `workflow-service` | `runner` | run queue / command dispatch | 承接确定性执行 |
+| `quality-loop application` | `runner` | authenticated internal HTTP | 提交结构化 Playwright steps；生产目标受 host allowlist 限制 |
 | `worker-runtime` | `llm_gateway` | 内部 SDK / service call | 统一模型调用 |
-| `runner` | PostgreSQL / MinIO | ORM / object storage client | 写对象和证据 |
+| `api/orchestrator` | PostgreSQL / MinIO | ORM / object storage client | 将 Runner 原始 artifacts 物化为正式 Evidence；Runner 不直写领域事实 |
 
 ### 3.5 代码骨架建议
 
-建议按应用与共享包拆分：
+中长期可按应用与共享包继续拆分：
 
 - `apps/api-orchestrator`
 - `apps/workflow-service`
@@ -150,6 +169,7 @@
 - 共享 schema、事件、对象引用协议都放在 `packages/shared-contracts`。
 - Alembic migration 统一放在 `infra/migrations`。
 - `docker-compose.yml`、本地启动脚本和示例环境变量应落在 `infra/docker` 与仓库根目录。
+- 在拆出多服务前，模块化单体内部必须先满足上述 DDD 依赖方向；不能为了未来拆服务而保留当前大 `main.py`、大 `store.py`、大 repository 的无边界状态。
 
 ## 4. 控制流主线
 
@@ -159,7 +179,9 @@
 
 1. 用户在主会话输入自然语言，或点击 UI 动作入口。
 2. `Conversation Orchestrator` 读取上下文，理解意图，产出 `ToolInvocationPlan` 或 `AgentGoalProposal`。
-3. 若是确定性计划，则 `Tool Invocation Runtime` 创建 `ToolInvocation`，绑定 `conversation_id`、`space_id`、`task_id` 等上下文。
+3. 结构化 Planner 输出先经过 `AgentPlanPolicy`；只读确定性计划可由
+   `Tool Invocation Runtime` 创建 `ToolInvocation`，包含写工具的计划必须提升为
+   `AgentGoalProposal`。
 4. 若是高级目标，则 `Agent Service` 创建 `AgentGoal`，通过 `Agent Memory Manager` 组装上下文，并在 `Temporal + LangGraph` 中持续推进。
 5. 若目标复杂且可并行，则 `Agent Supervisor` 创建 `AgentSwarmRun` 和多个 `AgentWorkerAssignment`，并发执行子 Agent。
 6. 工具调用先经过：
@@ -187,7 +209,7 @@
 
 | 组件 | 作用 |
 | --- | --- |
-| `Conversation Orchestrator` | 将自然语言与 UI 动作转成 `ToolInvocationPlan` |
+| `Conversation Orchestrator` | 将自然语言转成 `ClarificationRequest / DirectAnswer / ToolInvocationPlan / AgentGoalProposal`；UI 动作直接使用同一工具契约 |
 | `Agent Service / Supervisor` | 管理 `AgentGoal`、自主级别、预算、目标拆分、Swarm 并行和执行策略 |
 | `Agent Memory Manager` | 为 LLM 调用组装短期记忆、会话记忆、长期系统画像和候选知识 |
 | `Agent Swarm Coordinator` | 创建并调度多个 `AgentWorkerAssignment`，并把候选结果交给 Merge/Score |

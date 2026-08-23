@@ -30,24 +30,61 @@
 ## 3. 工程目录建议
 
 ```text
-apps/
-  portal/
-    src/
-      app/
-      routes/
-      features/
-      pages/
-      components/
-      stores/
-      reducers/
-      hooks/
-packages/
-  ui/
-  tokens/
-  api-client/
-  contracts/
-  state/
+apps/portal/src/
+  app/
+    router.tsx
+    providers.tsx
+    shells/
+      TopLevelStudioShell.tsx
+      ProjectWorkspaceShell.tsx
+  routes/
+    build/
+    dashboard/
+    documentation/
+    project-overview/
+    version-space/
+    workspace/
+    knowledge/
+    runs/
+    governance/
+    release-readiness/
+  domains/
+    system-image/
+    agent/
+    quality-loop/
+    platform/
+  shared/
+    api/
+    ui/
+    tokens/
+    event-reducer/
 ```
+
+迁移准入：
+
+- `app/providers.tsx` 统一组装 QueryClient、全局 store、主题、语言、错误边界和通知宿主。
+- `app/router.tsx` 只能挂载 route page，不得把所有 canonical route 统一指向单体原型组件。
+- `routes/*` 是页面入口，负责 shell slot、页面级加载/空态/错误态和 route params 解析。
+- `domains/*` 提供对应产品域的 view model、query key、mutation 和事件 reducer 适配。
+- `shared/ui` 沉淀 AI Studio 风格 primitive：composer、settings popover、icon button、skill chip、project card、status badge。
+- `shared/ui` 只沉淀产品无关 primitive。Nasus 顶层侧栏、项目空间导航、设置锚点和账户 chrome 属于 `app/shells`，不能放入 shared。
+- `shared/tokens` 是唯一视觉 token 来源，所有线性图标遵循 AI Studio 轻线条风格：约 `1.5px` stroke、圆角端点、16-18px 视觉盒、不可被压扁或拉伸。
+- 生产 Portal 的字体和图标字体必须随应用自托管并保留上游许可证，不允许把 Google Fonts、Material Symbols 或 Font Awesome CDN 作为首屏加载依赖；网络隔离或第三方 CDN 抖动不得阻塞 route `load` 与 E2E。
+- `NasusStudio`、`PrototypeStudio`、`TopLevelStudio` 仅作为迁移期视觉参考，不允许新增业务逻辑。
+- 登录 token 的浏览器持久化属于 `domains/platform/authTokenStorage.ts`。
+  `shared/api/client.ts` 只能通过可配置 token provider 附加 auth header，
+  不得直接读写 `localStorage` 或持有具体 storage key。
+
+写动作边界：
+
+- route 层只负责 UI 锁、导航、参数解析和 query invalidation。
+- 项目空间按钮、卡片和 chip 触发的写动作必须进入 `domains/platform/tool-actions/projectActionExecutor.ts`、`domains/platform/toolInvocationCommands.ts` 或对应 Agent command module。
+- 路由目录不得新增薄代理 action executor 文件；route action handler 应直接 import 领域命令模块，保持写动作命令面只有一个 canonical owner。
+- 项目空间 query invalidation 规则必须进入 `domains/platform/projectWorkspaceInvalidation.ts`，route 只能调用该 domain helper，不得新增 `projectRouteInvalidation.ts` 这类 route-local 刷新策略。
+- ToolInvocation 确认必须通过 `domains/platform/useToolInvocationConfirmation.ts`，route 不得直接持有 `useMutation` 或调用 `platformApi.confirmToolInvocation`。
+- 项目空间聚合读模型必须进入 `domains/platform/useProjectWorkspaceData.ts`，由该 hook 组合 Quality Loop 与 System Image 读 API；route 模块只传入 URL 参数和处理导航，不直接 import `qualityLoopApi` 或 `systemImageApi`。
+- route 层不得直接调用 `platformApi.invokeTool`、`platformApi.confirmToolInvocation`、`agentApi.postMessage` 或 `agentApi.resumeAgentGoal`。
+- 如果新增按钮不能映射到 Agent 可调用的 tool/conversation command，则不得进入页面实现。
 
 ## 4. Canonical 页面层级树
 
@@ -159,6 +196,19 @@ L2 Project Space
   - 中间内容工作区
   - 右侧 inspector / context rail 常驻或可折叠
 - 顶层壳层和项目壳层不能同时渲染左侧二级菜单；下钻必须是整栏替换。
+- 壳层必须拆分为 container 与 view：`TopLevelStudioShell` /
+  `ProjectWorkspaceShell` 可以组合 settings/account 的 platform hooks，
+  但 `*ShellView.tsx` 只能处理布局 chrome、折叠状态、settings popover
+  锚点和 slots，不能 import `domains/*` 或执行业务 workflow。
+- 顶层侧栏这类产品 chrome 放在 `app/shells`。导航副作用由 shell
+  container 使用 router hook 处理，再以 `onNavigate` callback 注入 view；
+  shared UI 不得 import `react-router-dom`、持有具体路由 path 或渲染
+  Nasus 产品导航。
+- 前端依赖方向必须由 `tests/test_portal_boundaries.py` 的 import-boundary
+  gate 自动校验：`shared` 不得 import `app/routes/domains`；`domains`
+  不得 import `app/routes` 或 `shared/ui`；`*ShellView.tsx` 不得 import
+  domain 代码；route modules 不得绕过 domain command surface 直接调用 raw
+  API 写动作。
 
 ### 6.4 设置菜单与顶层对话样式
 
@@ -231,6 +281,24 @@ L2 Project Space
 
 所有 UI 写动作必须通过前端 Action Registry 进入同一工具调用链。
 
+当前首批实现位置：
+
+- `apps/portal/src/domains/platform/tool-actions/`
+- `apps/portal/src/domains/platform/toolInvocationCommands.ts`
+- `Build / Project Workspace` 中的系统画像、质量闭环、Release gate、系统画像状态查询等按钮和 chip 都必须通过该 registry 生成 `conversation_message` 或 `tool_invocation` command。
+- registry 允许少数高层目标先进入 `POST /v1/conversations/{id}/messages`，例如 `system-image.build-goal` 与 `quality-loop.continue-goal`，但这些会话目标后续仍必须由 Orchestrator / AgentGoal 生成正式 `ToolInvocation`。
+
+首批 action id：
+
+- `system-image.build-goal`
+- `system-image.register-sources`
+- `system-image.ingest-sources`
+- `system-image.materialize-context`
+- `system-image.initialize-baseline`
+- `system-image.status`
+- `quality-loop.continue-goal`
+- `release.assess`
+
 Action 定义至少包含：
 
 - `action_id`
@@ -250,6 +318,7 @@ Action 定义至少包含：
 - composer 可以先调用 `POST /v1/conversations/{id}/messages`，但 Orchestrator 输出写计划后仍必须创建 `ToolInvocation`。
 - 高风险 action 必须显示 gate 状态和阻断原因。
 - action pending 期间必须锁定互斥动作，并在 `tool.invocation.updated` 后恢复。
+- US 文档和测试资产的浏览器上传通过 `domains/system-image/sourceUploadCommands.ts` 进入托管对象存储，只返回 source URI；页面不得把上传成功解释为领域 source 已注册。注册、摄入、物化和基线初始化仍由上述 Action Registry / ToolInvocation 链路执行。
 
 ### 7.6 SSE Reducer 矩阵
 

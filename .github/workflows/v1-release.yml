@@ -1,0 +1,47 @@
+name: V1 Release Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - dev-Phase0
+      - nasus_snapshot_v1
+
+jobs:
+  v1-release-gate:
+    name: V1 candidate verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install backend dependencies
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r apps/api/requirements.txt
+
+      - name: Install frontend dependencies
+        run: |
+          npm ci
+          npm --prefix apps/portal ci
+
+      - name: Install Playwright browser
+        run: npx playwright install chromium
+
+      - name: Run V1 release gate
+        run: npm run verify:v1-release

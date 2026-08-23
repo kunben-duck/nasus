@@ -3,11 +3,26 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
+    "dev:up": "scripts/dev-up.sh",
+    "dev:foreground": "NASUS_DEV_FOREGROUND=true scripts/dev-up.sh",
+    "dev:down": "scripts/dev-down.sh",
+    "dev:status": "scripts/dev-status.sh",
     "dev:portal": "npm --prefix apps/portal run dev -- --host 0.0.0.0 --port 5173",
+    "lint:portal": "npm --prefix apps/portal run lint",
     "build:portal": "npm --prefix apps/portal run build",
-    "dev:api": "./.venv/bin/python -m uvicorn apps.api.app.main:app --app-dir . --host 0.0.0.0 --port 8000 --reload",
+    "dev:api": "bash -lc 'source scripts/dev-runtime-env.sh && exec ./.venv/bin/python -m uvicorn apps.api.app.main:app --app-dir . --host 0.0.0.0 --port 8000 --reload'",
+    "test:portal-boundaries": "./.venv/bin/python -m pytest tests/test_portal_boundaries.py -q",
+    "test:runner": "npm --prefix apps/runner test",
     "test:e2e": "playwright test",
-    "test:smoke": "node tests/e2e/smoke.js"
+    "test:smoke": "node tests/e2e/smoke.js",
+    "verify:docker-stack": "scripts/verify-docker-stack.sh",
+    "backup:data": "scripts/backup-data.sh",
+    "restore:data": "scripts/restore-data.sh",
+    "verify:backup-restore": "scripts/verify-backup-restore.sh",
+    "verify:code-graph-provider": "scripts/verify-code-graph-provider.sh",
+    "verify:production-compose": "scripts/verify-production-compose.sh",
+    "verify:release-hygiene": "scripts/verify-release-hygiene.sh",
+    "verify:v1-release": "scripts/verify-v1-release.sh"
   },
   "devDependencies": {
     "@playwright/test": "^1.54.2"

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from logging.config import fileConfig
+import os
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from apps.api.app.database import Base, get_database_url
+from apps.api.app.database import Base
 from apps.api.app import db_models  # noqa: F401
 
 
@@ -13,7 +14,20 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_database_url())
+database_url = os.getenv("NASUS_DATABASE_URL", "").strip()
+if not database_url:
+    raise RuntimeError(
+        "NASUS_DATABASE_URL is required for Alembic migrations. "
+        "Load the deployment environment before running upgrade/downgrade."
+    )
+if database_url.startswith("sqlite") and os.getenv(
+    "NASUS_ALLOW_SQLITE_MIGRATIONS", ""
+).lower() not in {"1", "true", "yes"}:
+    raise RuntimeError(
+        "Alembic migrations are restricted to PostgreSQL. "
+        "Set NASUS_ALLOW_SQLITE_MIGRATIONS=true only for an isolated migration test."
+    )
+config.set_main_option("sqlalchemy.url", database_url)
 target_metadata = Base.metadata
 
 

@@ -69,9 +69,9 @@ Nasus 的实现组织遵循两条同时成立的原则：
 ## 2 技术栈选型与理由
 - **中心后端**：`Python + FastAPI + durable workflow（默认 Temporal） + LangGraph`。FastAPI 提供会话入口、工具调用入口、对象查询和 SSE 事件输出；durable workflow 负责长生命周期任务、审批等待、重试和恢复；LangGraph 负责 Agent Goal iteration、Tool 选择后的 Skill 路由、Worker 并行与人机节点。
 - **Web 前端**：`React + TypeScript + Tailwind + Zustand/Redux Toolkit + TanStack Query`（§14.1、§13）。这个组合支持 Prompt-first、Workspace-oriented 的复杂工作台，Tailwind 负责快速构建三列工作台与结构化侧栏，样式实现必须以 `ux/` 目录中的原型为基线抽象出 design tokens 和共享组件，而不是回退到通用后台模板。
-- **执行层**：`Node.js/TypeScript + Playwright Test`（§14.1、§9.6），作为脱离推理层的确定性 runner，专门执行 `automation.generate` 产出的 Playwright 资产并返送 Logs/断言/痕迹。
+- **执行层**：`RunOrchestrator + Node.js/TypeScript + Playwright Test`（§14.1、§9.6）。`automation.generate` 只生成并版本化可审阅资产；`run.start` 必须选择已持久化的资产 revision 和显式目标环境，再由 `RunOrchestrator` 创建 `Run`、绑定 `TaskContext`、接收 runner result、写入 `ExecutionEvidence`，并在失败时打开 `FailureReport`。Playwright runner 是可替换的确定性执行 adapter，只执行后端下发的受约束结构化 steps 并返送 Logs/断言/痕迹。
 - **存储**：`PostgreSQL` 存对象模型、版本/会话/审批状态、Agent 目标、记忆、Swarm 与审计元数据；`MinIO` 存 Raw Assets、UX/文档/执行产物和证据等大文件（§4.1、§7.3、§14.1）。
-- **索引/解析/检索**：`OpenGrok`（代码导航）+ `Tree-sitter`（AST/增量解析）支撑 Code Intelligence；Knowledge Intelligence 从 V1 起必须包含文档切块、PostgreSQL FTS、pgvector embedding、hybrid retrieval、RerankService adapter 和降级记录。独立 Weaviate / OpenSearch / Qdrant / Milvus 集群不是 P0 必需，但检索 adapter、embedding/rerank 模型配置和运行审计必须在第一个正式版本落地。
+- **索引/解析/检索**：Tree-sitter 负责 canonical AST/符号解析，Codebase Memory 经防腐层提供可选跨文件图谱增强，OpenGrok 作为未来全文导航投影；Knowledge Intelligence 从 V1 起包含文档切块、PostgreSQL FTS、pgvector embedding、hybrid retrieval、RerankService adapter 和降级记录。
 
 前端视觉与交互实现以 [UX 原型 HTML](../ux/index.html)、[UX 原型样式](../ux/styles.css)、[UX 原型脚本](../ux/app.js) 为直接实现基线，[前端视觉与交互规范](./design/frontend/visual-style.md) 作为高层视觉说明补充。后续正式前端必须保留 `ux/` 原型确立的三列壳层、深色 token、对话优先和结构化右侧面板语言，并将其工程化为 React 组件、主题变量和状态模型。与此同时，前后端交互必须采用 `agent-first + tool-first` 模式：主会话是第一入口，页面按钮、快捷 chip 和右侧卡片动作都只是同一套 `ToolInvocation` 的不同触发方式。
 
@@ -191,6 +191,15 @@ Nasus 的实现组织遵循两条同时成立的原则：
 | `Release Readiness` | 评分摘要、阻塞项、执行健康、知识晋级状态、会话区 | `ReleaseAdvice` `ApprovalRecord[]` `RiskSummary` | 生成放行建议、提交放行 |
 
 ## 5 后端分层与服务边界
+
+后端代码落地采用渐进式 DDD，代码级规范以
+[后端代码架构与 DDD 分层](./design/backend/code-architecture.md) 为准。
+当前阶段必须把 HTTP router 与业务 facade 隔离：router 只调用
+`request.app.state` 上的 application service，不直接引用全局 `store`。
+`ApplicationStore` 仍是 bootstrap 内部的兼容投影运行时，但不再由 HTTP、Temporal worker 或 application facade 直接获取。生产入口统一通过显式 `ApplicationContainer` 注入服务，Store 采用惰性初始化以避免 import-time 数据库和投影副作用，并且不再是新增业务逻辑的默认归宿。
+系统画像相关读接口优先进入 `application/system_image`，项目工作区 BFF
+只保留跨域页面聚合与项目/版本级写入口。
+
 - **Agent-first Orchestration Layer**：`Conversation Orchestrator` + `Agent Service` + `Agent Memory Manager` + `Agent Swarm Coordinator` + `Tool Registry` + `Tool Invocation Runtime` + `Durable Workflow Runtime` + `Agent Graph Runtime` + `Skill Registry` + `Worker Scheduler` + `Merge/Score` + `Approval Control`。这层接收用户发起的会话、按钮或外部 API 请求，先转成工具调用或 Agent 目标，再绑定记忆、规划阶段、路由 skill、调度 worker / swarm，收敛结果并推进审批。
 - **Domain Intelligence Layer**：Baseline/Change Impact/Verification Planning/Scenario/Case/Automation/Failure Analysis/Healing/Release Advice（§9）。每个服务清楚边界：Baseline 生成 `Official/Version Working Baseline`，Impact 产出变更影响，Verification 产出验证计划，Automation 负责 Playwright 资产，Failure/Healing 负责执行证据归因与 patch 建议，Release Advice 输出上线准备度。
 - **Unified Context Engine**：负责 Source Connectors、Code/Knowledge Intelligence、Anchor Extraction、Entity Resolution、Context Assembler、Context Object Store（§7）。当前工程建议对工作台不直接暴露底层 `search_code/search_docs`，而是通过统一能力封装；若后续按最终特性说明书支持 Agent 原生检索与执行，也必须通过策略网关、审计事件和证据落点统一收口。
@@ -234,7 +243,7 @@ Nasus 的实现组织遵循两条同时成立的原则：
 
 - Web Portal 到 Orchestrator 的命令链路采用“`Conversation + ToolInvocation` 写入口 + Read API 查询”模式；任务分析、工具执行进度、审批状态更新使用 SSE 作为默认实时通道，避免在首版引入过重的双向状态同步。
 - 建议提供 `GET /v1/tasks/{taskId}/events`、`GET /v1/runs/{runId}/events`、`GET /v1/approvals/{approvalId}/events` 三类以上事件流接口，前端通过 TanStack Query + Event reducer 合并实时状态。
-- 文件上传采用 MinIO 预签名上传，前端只向后端申请上传凭据和对象元数据；Runner、Worker、Web Portal 都通过 `evidenceRef` 关联二进制产物。
+- 文件上传采用 MinIO 预签名上传，前端只向后端申请上传凭据和对象元数据；Runner、Worker、Web Portal 都通过 `evidenceRef` 关联二进制产物。后端必须通过 `ObjectStorage` adapter 写入 evidence payload：本地测试可返回 `local-object://`，Docker/部署环境必须通过 `NASUS_S3_*` 配置返回 `s3://bucket/key`。
 - 只有在后续确实出现多人协同编辑、共享游标、交互式回放控制等需求时，再引入 WebSocket；当前开发基线不依赖 WebSocket。
 
 ### 5.4 前端 SSE 消费与状态合并规范
@@ -280,14 +289,15 @@ Nasus 的实现组织遵循两条同时成立的原则：
 - `ChatTimeline`、`Tool Invocation Timeline`、`Conflict Panel` 都必须订阅同一 reducer 输出，禁止各自独立维护“局部真相”。
 
 ## 6 执行层设计
-- **Web Runner**：独立 Job/容器，使用 Node.js/TypeScript + Playwright Test（§14.1、§9.6）。它与 `worker-runtime` 解耦，仅接收 `automation.generate` 的执行配置和资产，执行完成后将日志、断言、截图、环境快照回写 MinIO/PostgreSQL。
+- **RunOrchestrator**：后端执行生命周期边界，所有 `run.start` 的执行结果都必须通过它落成 `Run`、`ExecutionEvidence` 和必要的 `FailureReport`。它只能消费当前 `QualityAssetPack.automation_blueprint` 中已持久化的 script revision，不接受调用方注入任意 steps，并记录 `task_context_id`、`runner_job_id`、`healing_depth` 和 `last_failure_fingerprint`，避免质量闭环直接伪造 Run 对象。
+- **Web Runner**：独立 Job/容器，使用 Node.js/TypeScript + Playwright Test（§14.1、§9.6）。它与 `worker-runtime` 解耦，仅接收 `RunOrchestrator` 下发的执行配置和资产，执行完成后将日志、断言、截图、环境快照以 runner result envelope 回写。
 - **确定性执行**：Web Runner 不做独立推理，依赖后端策略和 Agent 触发的执行请求。无论请求由页面触发还是由 Agent 原生触发，Failure/Healing worker 都必须消费统一的执行 evidence，输出归因和修复建议（§9.7-9.8）。
-- **调度**：`Workflow Runtime` 将执行任务投递到 Queue/Scheduler，Runner 订阅特定任务类型（比如 Playwright automation.run），确保并行但可追踪，符合 “Deterministic Core” 的要求（§2.2、§10.1）。
+- **调度**：`Workflow Runtime` 将执行任务投递到 Queue/Scheduler，Runner 订阅特定任务类型（比如 Playwright automation.run），确保并行但可追踪，符合 “Deterministic Core” 的要求（§2.2、§10.1）。V1 本地 adapter 可先返回 deterministic runner result，但协议必须与真实 runner result 一致。
 
 ## 7 存储/索引/解析方案
 - **PostgreSQL**：存 Raw Assets 元数据、Context Objects、Baseline Snapshots、Version/Session 状态、Conversation/ToolInvocation、AgentGoal、AgentMemory、AgentSwarm、Candidate/Approval 记录、Run Result、Patch/Healing 记录，满足结构化查询与审批逻辑（§4.2、§6.1、§14.2）。
-- **MinIO**：存 Raw Assets（代码仓、文档、UX、OpenAPI、历史验证资产、临时材料）和执行产物（Playwright 日志、截图、trace、patch 附件），保证 append-only（§4.1、§12.1）。
-- **OpenGrok + Tree-sitter + Hybrid Retrieval**：OpenGrok 负责代码搜索与跨文件引用，Tree-sitter 负责 AST、符号提取与增量解析，组成 Code Intelligence Backend（§7.3）。Knowledge Intelligence Backend 通过文档切块、PostgreSQL FTS、pgvector、RerankService 和检索运行记录支撑文档理解与上下文召回。
+- **MinIO**：存 Raw Assets（代码仓、文档、UX、OpenAPI、历史验证资产、临时材料）和执行产物（Playwright 日志、截图、trace、patch 附件），保证 append-only（§4.1、§12.1）。API 层通过 `ObjectStorage` adapter 写证据对象，`ExecutionEvidence.storage_ref` 只允许对象存储引用或兼容的迁移引用，不能长期停留在 runner 内部逻辑 URI。
+- **Tree-sitter + Codebase Memory + Hybrid Retrieval**：Tree-sitter 负责 canonical AST 与符号提取；Codebase Memory 只通过 `CodeIntelligencePort` 的 CLI 防腐适配器补充跨文件图关系；Knowledge Intelligence 通过文档切块、PostgreSQL FTS、pgvector、RerankService 和检索运行记录支撑上下文召回。
 - **上下文对象存储**：Context Object Store 保存 Candidate/Trusted Objects、Baseline Snapshots、Version Working Baselines（§7.3）；API 调用 `Context Assembler` 时，总是附带证据/置信度/状态，便于前端审计。
 
 ### 7.1 数据模型建议
@@ -357,11 +367,11 @@ Nasus 的实现组织遵循两条同时成立的原则：
 
 ## 10 分阶段落地建议
 
-1. **Phase 0（对象与协议固化）**：先建 Raw Assets/Context Objects schema、Baseline/Version/Session/Candidate 模型、Unified Context Engine 接口（§15）。至少先搭 PostgreSQL + MinIO + OpenGrok/Tree-sitter + FastAPI 服务，确保数据结构到位。
+1. **Phase 0（对象与协议固化）**：先建 Raw Assets/Context Objects schema、Baseline/Version/Session/Candidate 模型和 Unified Context Engine 接口。至少搭建 PostgreSQL + MinIO + Tree-sitter + provider-neutral code graph port + FastAPI，确保事实结构和防腐边界到位。
 2. **Phase 1（项目初始化接入）**：实现 Asset Connectors、代码/文档索引、Historical Baseline 生成、管理员校正流程，前端在 `Build / Project Overview / Knowledge` 层提供材料上传与差错展示（§11.1、§12）。
 3. **Phase 2（版本、会话与 Agent Service）**：实现版本 fork、Version Working Baseline、Session-only/Candidate Knowledge 流转、Feature Graph/Change Graph、`AgentGoal`、Agent Memory Context 和基础 Agent Loop；前端 `Version Space / Personal Workspace` 提供版本/会话/目标切换视图（§11.2-11.4）。
 4. **Phase 3（质量方案生成与 Swarm）**：完善 Tool/Skill/Worker 的 impact、verification、scenario、case，`Personal Workspace` 页承接多轮审核与重生成；Agent 需提供 `toolId` 级动作调度、`AgentSwarmRun` 并行分析和 `ToolInvocation -> Merge/Score` 输出（§14.2、§13.3）。
-5. **Phase 4（执行）**：构建 automation.generate -> runner -> failure.analysis -> release.assess 范式，Web 页面展示执行证据与失败归因（§9.6-9.9、§14.1）。
+5. **Phase 4（执行）**：构建 `automation.generate -> review/versioned asset -> run.start(base_url) -> RunOrchestrator -> runner result -> FailureReport / release.assess` 范式，Web 页面展示资产 revision、目标环境、执行证据与失败归因（§9.6-9.9、§14.1）。
 6. **Phase 5（治理与沉淀）**：实现 Candidate 审批流、Baseline 回写、Official Baseline 更新；`Governance / Knowledge / Project Overview` 提供审批状态与沉淀结果（§6.3、§12.2）。
 
-整体落地顺序：建议先以单个 project + 2~3 模块建立主链路，采用模块化单体部署（portal、api/orchestrator、worker-runtime、runner + Postgres/MinIO/OpenGrok/Queue）。随着容量增长，再按 context/impact/scenario/failure 分池扩展、runner 变 job、索引脱离在线路径，并逐步补齐更细粒度的治理与策略控制。
+整体落地顺序：先以单个 project + 2~3 模块建立主链路，采用模块化单体部署（portal、api/orchestrator、workflow-service、runner + PostgreSQL/MinIO/Temporal）。随着容量增长，再按 context/impact/scenario/failure 分池扩展、索引异步化，并逐步补齐更细粒度治理。

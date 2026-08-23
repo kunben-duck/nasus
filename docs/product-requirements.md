@@ -23,7 +23,7 @@ Nasus 的核心目标是帮助团队判断：
 
 首个正式版本必须围绕一条真实质量闭环交付，而不是堆叠零散功能。目标链路固定为：
 
-`项目创建 -> 三源接入 -> 系统画像初始化 -> 版本创建 -> US 质量闭环 -> 执行证据 -> 失败归因 -> 放行建议 -> 知识沉淀`
+`项目创建 -> 代码接入（历史 US / 测试资产可选增强） -> 系统画像初始化 -> 版本创建 -> US 质量闭环 -> 执行证据 -> 失败归因 -> 放行建议 -> 知识沉淀`
 
 Nasus 是 agent-first 产品，但不是通用聊天系统。Agent 的职责是理解目标、补齐上下文、规划步骤、调用工具和收敛结果；正式事实、审批、执行证据和基线回写必须由确定性领域链路完成。
 
@@ -77,8 +77,8 @@ Nasus 是 agent-first 产品，但不是通用聊天系统。Agent 的职责是�
 ### 4.2 端到端旅程
 
 1. 管理员在 Build 创建项目。
-2. Agent 引导补充代码、历史 US 文档、历史测试资产。
-3. 系统摄入三类 source，抽取对象、关系和指标。
+2. Agent 必须引导补充代码，并建议补充历史 US 文档和历史测试资产。
+3. 系统摄入已绑定 source，抽取对象、关系和指标；可选源齐全时额外构建跨源质量关系。
 4. 管理员确认后初始化 Official Baseline。
 5. 版本负责人创建版本，系统 fork Version Working Baseline。
 6. 版本负责人导入 US、绑定开发分支或变更范围、分配负责人。
@@ -104,18 +104,18 @@ Nasus 是 agent-first 产品，但不是通用聊天系统。Agent 的职责是�
 
 | Source | V1 要求 | 延后能力 |
 | --- | --- | --- |
-| 代码 | Git URL、本地仓库路径、分支、commit、目录过滤、文件 hash、语言识别、符号抽取 | 深度 blame、跨仓库依赖、全量安全扫描 |
-| 历史 US 文档 | Markdown、TXT、可抽文本的 DOCX/PDF、US 编号、标题、验收标准、流程和风险词 | 复杂版式理解、外部需求系统双向同步 |
-| 历史测试资产 | 测试用例文档、Playwright/Cypress/Jest/Pytest 等脚本、测试名、断言、页面/API 调用 | 完整测试管理平台同步、非 Web 专项工具 |
+| 代码（必需） | Git URL、本地仓库路径、分支、commit、目录过滤、文件 hash、语言识别、符号抽取 | 深度 blame、跨仓库依赖、全量安全扫描 |
+| 历史 US 文档（可选增强） | Markdown、TXT、可抽文本的 DOCX/PDF、US 编号、标题、验收标准、流程和风险词 | 复杂版式理解、外部需求系统双向同步 |
+| 历史测试资产（可选增强） | 测试用例文档、Playwright/Cypress/Jest/Pytest 等脚本、测试名、断言、页面/API 调用 | 完整测试管理平台同步、非 Web 专项工具 |
 
 增强 source 如 OpenAPI、UX、缺陷和执行日志可以作为补充输入，但不得成为 V1 主链路的前置依赖。
 
 ### 5.3 Source 绑定需求
 
 - 用户可以通过 UI 或主会话绑定三类 source。
-- Agent 必须能识别缺失 source，并追问代码、US 文档和测试资产的位置。
-- 缺少真实 source 时，只能创建 source slots，并返回 `requires_followup=true`。
-- 缺少真实 source 时，不得执行正式摄入、物化画像或初始化 Official Baseline。
+- Agent 必须能识别缺失代码 source 并阻断画像初始化；历史 US 和测试资产缺失时应提示补充，但不能阻断代码基线。
+- 缺少真实代码 source 时，只能创建 source slots，并返回 `requires_followup=true`。
+- 只有缺少真实代码 source 时，才不得执行正式物化或初始化 Official Baseline；可选源缺失必须记录 coverage gap、降低 confidence，并允许后续增量补齐。
 - Source 绑定必须记录来源、触发者、时间、凭据引用、hash、权限校验结果和失败原因。
 
 ### 5.4 生命周期
@@ -126,7 +126,7 @@ Nasus 是 agent-first 产品，但不是通用聊天系统。Agent 的职责是�
 
 状态规则：
 
-- `source_required` 表示缺少一等 source，AgentGoal 必须暂停等待补充。
+- `source_required` 表示缺少必需的代码 source，AgentGoal 必须暂停等待补充。
 - `partially_failed` 表示至少一个 source 摄入失败，不能初始化 Official Baseline。
 - `materialized` 表示已生成候选对象、关系和指标，但尚未确认。
 - `pending_review` 表示等待管理员或质量负责人确认。
@@ -172,7 +172,8 @@ V1 至少支持三条核心关系路径：
 
 ### 5.8 验收标准
 
-- 无真实三源绑定时，系统只能创建 slots 和追问，不能初始化正式基线。
+- 无真实代码绑定时，系统只能创建 slots 和追问，不能初始化正式基线。
+- 只有代码 source 时可以初始化低置信 Official Baseline；后续引入历史 US 或测试资产时必须增量生成跨源关系和更新指标，不得重建无关事实。
 - 给定真实代码、US 文档和测试资产，系统能生成可审计 RawAsset、ContextObject、ContextRelationship 和 QualityMetricSnapshot。
 - 失败 source 不污染 Official Baseline。
 - 输入一个 US，系统能返回相关代码对象、历史相似 US、测试资产、覆盖缺口、风险和证据。
@@ -531,11 +532,11 @@ Release Readiness 状态：
 
 ## 9. V1 验收总标准
 
-- 在一个真实或真实结构的 Web 项目上完成三源接入。
+- 在一个真实或真实结构的 Web 项目上完成代码接入，并验证历史 US / 测试资产的可选增量接入。
 - 系统画像能生成可追溯对象、关系和指标。
 - 主会话能驱动系统画像初始化、版本创建、US 质量闭环和进度查询。
 - 单个 US 能完成 TaskContext、QualityProfile、QualityAssetPack、Run、Evidence、FailureReport 和 Release Readiness。
-- Release Readiness 必须能形成正式 `ReleaseDecision`，并说明 ready / conditional / needs_evidence / blocked 的依据。
+- Release Readiness 必须能通过审批治理链形成正式 `ReleaseDecision`，并说明 ready / conditional / needs_evidence / blocked 的依据。
 - 高风险动作必须进入 confirmation 或 approval。
 - 刷新页面后关键状态不丢失。
 - 所有正式结论和基线回写都有审批与审计链路。
@@ -545,7 +546,7 @@ Release Readiness 状态：
 
 | 优先级 | 需求 |
 | --- | --- |
-| P0 | 三源接入、系统画像 ready、PostgreSQL FTS + pgvector hybrid retrieval、embedding / rerank adapter、AgentGoal 工具链、ToolInvocation、TaskContext、QualityProfile、QualityAssetPack、Run、Evidence、FailureReport、Release Readiness、ReleaseDecision、approval、pending_merge、baseline.promote、生产非功能 gate |
+| P0 | 必需代码 source + 可选 US / 测试资产接入、系统画像 ready、PostgreSQL FTS + pgvector hybrid retrieval、embedding / rerank adapter、AgentGoal 工具链、ToolInvocation、TaskContext、QualityProfile、QualityAssetPack、Run、Evidence、FailureReport、Release Readiness、ReleaseDecision、approval、pending_merge、baseline.promote、生产非功能 gate |
 | P1 | Agent Step streaming 增强、MemoryContextPanel 深化、Swarm V1 扩展、局部重生成增强、复杂失败归因、多策略评分 |
 | P2 | UX / OpenAPI / 缺陷 / 执行日志增强 source、独立 Weaviate / OpenSearch / Qdrant 检索投影、高级召回评测和知识晋级自动建议 |
 | P3 | Desktop / Edge、本地高权限工具、公网 SaaS 多租户、大规模外部集成 |

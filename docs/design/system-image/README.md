@@ -85,15 +85,19 @@ OpenAPI、UX、缺陷系统和运行日志可以作为增强 source 接入，但
 - 存储方案从 V1 起采用长期逻辑架构：
   - PostgreSQL 作为 canonical source of truth，保存对象、关系、基线、overlay、质量指标和审计。
   - MinIO / S3 作为 raw assets、测试脚本、截图、trace、报告等大对象存储。
-  - OpenGrok + Tree-sitter 作为代码理解与代码导航后端。
+  - Tree-sitter 作为 canonical 代码结构后端；Codebase Memory 通过 `CodeIntelligencePort` 防腐层提供可选图谱增强；OpenGrok保留为可替换搜索/导航投影。所有 projection 都不进入领域主键和跨域契约。
   - PostgreSQL FTS + pgvector 作为 V1 hybrid retrieval 默认实现。
   - RerankService adapter 作为 V1 标准检索阶段；provider 不可用时降级到 rule-based fusion。
   - Search / Vector / Rerank / Graph 都作为 projection 或 index，不作为正式事实源。
 - 首发可以先用 PostgreSQL 邻接表承担 graph query，但 schema 与服务接口必须按可投影到图查询引擎的方式设计。
 - 首发必须有 embedding 与 rerank 的模型配置、版本记录、调用审计和重建机制；不能把向量检索与重排推迟到后续版本才设计。
 - embedding 与 rerank 的模型配置必须使用平台 Settings 中独立的 `model_profiles.embedding` 和 `model_profiles.rerank`，不能复用主会话 `chat` route。
+- 当 embedding provider 未配置或不可用时，V1 必须生成 `EmbeddingRecord(status=fallback)` 和本地 hash vector ref，确保 `EmbeddingRecord -> RetrievalRun -> RerankRecord -> TaskContext` 链路仍可追踪；不得静默跳过 embedding 投影。
+- 三类 source 摄入后必须物化 `RawAssetChunk`：chunk payload 存入 MinIO/S3 或本地对象存储，领域对象保存 `content_ref / content_hash / section_path / token_estimate / embedding_record_id`。`TaskContext.evidence_refs` 必须能回溯到 `raw_asset_chunk:{id}` 和对应 `content_ref`。
 - 版本基线遵循 `overlay first, parent fallback`，overlay 必须是长期模型，不是临时 diff。
 - 系统画像必须同时支撑代码质量、US 完成质量和测试质量三类判断。
+- Code Intelligence readiness 必须执行真实 parser smoke parse；`parser:tree-sitter` 证据只能由 Tree-sitter adapter 的真实解析结果产生。
+- 外部代码图谱 readiness 必须单独报告 `graph_mode/graph_status`；`optional` 失败要保留降级证据，`required` 失败必须阻断启动或画像物化。
 
 ## 7. 验收标准
 
@@ -104,4 +108,5 @@ OpenAPI、UX、缺陷系统和运行日志可以作为增强 source 接入，但
 - 输入一个 US 后，系统能返回相关代码对象、历史相似 US、相关测试资产、覆盖缺口和质量风险。
 - source 内容变化或 embedding 模型版本变化后，相关 embedding 会标记 stale 并可重建。
 - rerank provider 不可用时，系统可降级并保留检索运行记录。
-- 无真实三源绑定时，系统只能创建 source slots 和追问，不得初始化正式基线。
+- 无真实代码绑定时，系统只能创建 source slots 和追问，不得初始化正式基线。
+- 历史 US 和测试资产是可选增强源；缺失时记录 coverage gap 并降低 confidence，不阻断代码基线，后续接入必须增量补齐关系。
