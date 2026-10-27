@@ -22,6 +22,11 @@ class CodeGraphConfig:
     max_relationships: int
     page_size: int
     cache_dir: Path | None
+    max_relationship_queries: int = 4096
+    provider: str = "codebase-memory"
+    sdk_package_path: Path | None = None
+    sdk_platform_path: Path | None = None
+    sdk_runtime_hash: str | None = None
 
     @classmethod
     def from_env(cls) -> "CodeGraphConfig":
@@ -58,7 +63,17 @@ class CodeGraphConfig:
             ),
             page_size=_positive_int("NASUS_CODE_GRAPH_PAGE_SIZE", 500),
             cache_dir=Path(cache_value).expanduser().resolve() if cache_value else None,
+            max_relationship_queries=_positive_int("NASUS_CODE_GRAPH_MAX_RELATIONSHIP_QUERIES", 4096),
+            provider=_choice("NASUS_CODE_GRAPH_PROVIDER", "codebase-memory", {"codebase-memory", "codegraph"}),
+            sdk_package_path=_optional_path("NASUS_CODEGRAPH_SDK_PACKAGE_PATH"),
+            sdk_platform_path=_optional_path("NASUS_CODEGRAPH_SDK_PLATFORM_PATH"),
+            sdk_runtime_hash=os.getenv("NASUS_CODEGRAPH_SDK_RUNTIME_HASH", "").strip() or None,
         )
+
+
+def _optional_path(name):
+    value = os.getenv(name, "").strip()
+    return Path(value).expanduser().resolve() if value else None
 
 
 def _choice(name: str, default: str, allowed: set[str]) -> str:

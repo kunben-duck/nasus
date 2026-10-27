@@ -1,8 +1,26 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
+
+from ..system_image.evidence_tool_models import EvidenceToolReceipt
+from ..system_image.image_query_models import ImageQueryReceipt
+from ..system_image.build_plan_queries import BuildPlanReadReceipt
+from ..system_image.semantic_evaluations import SemanticPreview
+from ..quality_loop.acceptance_specifications import AcceptanceAuthorityReceipt
+from ..quality_loop.business_rules import BusinessRuleAuthorityReceipt
+from ..quality_loop.test_design_scope_inputs import ScopeReceipt
+from ..quality_loop.test_design_mapping_inputs import MappingReceipt, PartitionedMappingReceipt
+from ..quality_loop.test_design_review_queries import ReviewDraftListReceipt
+from ..quality_loop.test_design_generation import GenerationInputReceipt
+from ..system_image.context_pack_inputs import ContextPackReceipt, ContextListReceipt, ContextAuthorityBackfillReceipt
+from ..system_image.publications import PublicationPreviewReceipt, PublicationHeadReceipt
+from ..system_image.code_index_lifecycle import CodeIndexListPage, CodeIndexStatusReceipt, CodeIndexCancelReceipt
+from ..system_image.structure_cancel_inputs import StructureCancelReceipt
+from ..system_image.investigations import InvestigationReceipt
+from ..system_image.build_completions import BuildCompletionReceipt
+from ..system_image.gap_ownership import GapOwnershipReceipt
 
 
 class ToolDefinition(BaseModel):
@@ -25,6 +43,51 @@ class ToolResult(BaseModel):
     summary: str
     object_refs: List[str] = Field(default_factory=list)
     evidence_refs: List[str] = Field(default_factory=list)
+    evidence_query: Optional[EvidenceToolReceipt] = None
+    image_query: Optional[ImageQueryReceipt] = None
+    build_plan_query: Optional[BuildPlanReadReceipt] = None
+    code_index: Optional[Union[CodeIndexListPage, CodeIndexStatusReceipt, CodeIndexCancelReceipt]] = None
+    structure_cancel: Optional[StructureCancelReceipt] = None
+    investigation: Optional[InvestigationReceipt] = None
+    build_completion: Optional[BuildCompletionReceipt] = None
+    build_gap_ownership: Optional[GapOwnershipReceipt] = None
+    semantic_preview: Optional[SemanticPreview] = None
+    index_preview: Optional[Dict[str, Any]] = None
+    context_retrieval_preview: Optional[Dict[str, Any]] = None
+    context_retrieval_result: Optional[Dict[str, Any]] = None
+    test_design_job: Optional[Dict[str, Any]] = None
+    test_design_jobs: Optional[Dict[str, Any]] = None
+    acceptance_authority: Optional[AcceptanceAuthorityReceipt] = None
+    business_rule_authority: Optional[BusinessRuleAuthorityReceipt] = None
+    test_design_scope: Optional[ScopeReceipt] = None
+    test_design_mapping: Optional[Union[MappingReceipt, PartitionedMappingReceipt]] = None
+    test_design_review_drafts: Optional[ReviewDraftListReceipt] = None
+    test_design_generation: Optional[GenerationInputReceipt] = None
+    test_design_execution_preview: Optional[Dict[str, Any]] = None
+    automation_execution_preview: Optional[Dict[str, Any]] = None
+    automation_script_history: Optional[Dict[str, Any]] = None
+    automation_script_review: Optional[Dict[str, Any]] = None
+    run_plan_preview: Optional[Dict[str, Any]] = None
+    run_plan_build_preview: Optional[Dict[str, Any]] = None
+    run_plan_build: Optional[Dict[str, Any]] = None
+    run_plan_observations: Optional[Dict[str, Any]] = None
+    run_plan_environment: Optional[Dict[str, Any]] = None
+    run_plan_locators: Optional[Dict[str, Any]] = None
+    run_plan_locator_record: Optional[Dict[str, Any]] = None
+    http_fixture_recipe: Optional[Dict[str, Any]] = None
+    http_fixture_grant: Optional[Dict[str, Any]] = None
+    http_fixture_job: Optional[Dict[str, Any]] = None
+    run_plan_case_job: Optional[Dict[str, Any]] = None
+    http_fixture_history: Optional[Dict[str, Any]] = None
+    http_fixture_observation: Optional[Dict[str, Any]] = None
+    run_plan_environment_record: Optional[Dict[str, Any]] = None
+    run_plan_health_record: Optional[Dict[str, Any]] = None
+    native_build_preview: Optional[Dict[str, Any]] = None
+    native_build_job: Optional[Dict[str, Any]] = None
+    context_pack: Optional[Union[ContextPackReceipt, ContextListReceipt]] = None
+    context_authority_backfill: Optional[ContextAuthorityBackfillReceipt] = None
+    image_publication: Optional[PublicationPreviewReceipt] = None
+    image_publication_head: Optional[PublicationHeadReceipt] = None
     requires_followup: bool = False
     followup_reason: Optional[str] = None
     followup_prompt: Optional[str] = None
@@ -60,6 +123,18 @@ class AuditEvent(BaseModel):
     entity_id: str
     status: Literal[
         "accepted",
+        "reviewed",
+        "approved",
+        "rejected",
+        "withdrawn",
+        "prepared",
+        "build_attested",
+        "recorded",
+        "issued",
+        "reserved",
+        "passed",
+        "error",
+        "timed_out",
         "draft",
         "pending",
         "running",

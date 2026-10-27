@@ -13,6 +13,7 @@ import {
 } from '../../domains/platform/tool-actions'
 import type { ProjectActionLockController } from './useProjectActionLock'
 import type { ProjectConversationController } from './useProjectConversationModel'
+import type { Locale } from '../../shared/i18n/I18nProvider'
 
 export function createProjectRouteActionHandlers({
   project,
@@ -20,17 +21,19 @@ export function createProjectRouteActionHandlers({
   projectConversation,
   queryClient,
   projectActionLock,
+  locale,
 }: {
   project?: ProjectCard
   pausedProjectGoal?: AgentGoal
   projectConversation: ProjectConversationController
   queryClient: QueryClient
   projectActionLock: ProjectActionLockController
+  locale: Locale
 }) {
   async function invokeProjectAction(actionId: StudioActionId, input: Record<string, unknown> = {}) {
     if (!project) return
     await projectActionLock.runLockedAction(actionId, async () => {
-      const result = await executeProjectActionCommand(project, actionId, input)
+      const result = await executeProjectActionCommand(project, actionId, input, locale)
       await invalidateProjectWorkspaceQueries(queryClient, project, result.conversationId)
     })
   }
@@ -46,7 +49,7 @@ export function createProjectRouteActionHandlers({
         pausedProjectGoal?.pause_reason === 'missing_source_binding' &&
         projectConversation.conversationId
       ) {
-        await projectConversation.sendMessage(buildSystemImageSourceBindingMessage(sources))
+        await projectConversation.sendMessage(buildSystemImageSourceBindingMessage(sources, locale))
         await invalidateProjectWorkspaceQueries(
           queryClient,
           project,
@@ -54,17 +57,46 @@ export function createProjectRouteActionHandlers({
         )
         return
       }
-      const result = await executeSystemImageSourceActionPlan(project, sources)
+      if (pausedProjectGoal?.target_refs?.some((ref) => ref.startsWith('source_manifest:')
+        || ref.startsWith('build_plan:') || ref.startsWith('image_revision:'))) {
+        throw new Error('This goal already has fixed sources. Use its saved plan to prepare a separately confirmed enrichment phase.')
+      }
+      const result = await executeSystemImageSourceActionPlan(project, sources, locale)
       await invalidateProjectWorkspaceQueries(queryClient, project, result.conversationId)
     })
   }
 
+  async function refreshGoalCheckpoint(goal: AgentGoal) {
+    const checkpoint = await projectConversation.refreshConversation()
+    if (
+      !checkpoint || checkpoint.id !== goal.conversation_id || checkpoint.project_id !== goal.project_id ||
+      !checkpoint.agent_goals.some((current) => current.id === goal.id &&
+        current.conversation_id === goal.conversation_id && current.project_id === goal.project_id)
+    ) {
+      throw new Error('The goal checkpoint could not be verified. Reload before continuing.')
+    }
+    // Only the verified conversation controls consent; auxiliary panels refresh independently.
+    if (project) void invalidateProjectWorkspaceQueries(queryClient, project).catch(() => undefined)
+  }
+
   async function confirmPendingGoal() {
-    if (!pausedProjectGoal || pausedProjectGoal.pause_reason !== 'waiting_confirmation') return
+    if (!pausedProjectGoal || !['waiting_confirmation', 'build_plan_phase_prepared', 'reference_candidate_review'].includes(pausedProjectGoal.pause_reason ?? '')) return
     await projectActionLock.runLockedAction(`agent-goal-resume:${pausedProjectGoal.id}`, async () => {
-      await resumeAgentGoal(pausedProjectGoal.id)
-      if (project) {
-        await invalidateProjectWorkspaceQueries(queryClient, project)
+      try {
+        await resumeAgentGoal(pausedProjectGoal.id, pausedProjectGoal)
+      } finally {
+        await refreshGoalCheckpoint(pausedProjectGoal)
+      }
+    })
+  }
+
+  async function continueStructuralInvestigation() {
+    if (!pausedProjectGoal || pausedProjectGoal.pause_reason !== 'structural_candidate_review') return
+    await projectActionLock.runLockedAction(`agent-goal-investigate:${pausedProjectGoal.id}`, async () => {
+      try {
+        await resumeAgentGoal(pausedProjectGoal.id, pausedProjectGoal)
+      } finally {
+        await refreshGoalCheckpoint(pausedProjectGoal)
       }
     })
   }
@@ -74,5 +106,6 @@ export function createProjectRouteActionHandlers({
     initializeSystemImage,
     buildSystemImageFromSources,
     confirmPendingGoal,
+    continueStructuralInvestigation,
   }
 }

@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Sequence
+from itertools import chain
+from typing import Callable, Sequence
 
 from ...application.system_image.source_ports import (
     CodeEntityCandidate,
     CodeIntelligencePort,
     CodeIntelligenceResult,
+    CodeIntelligenceUnavailable,
     CodeRelationshipCandidate,
     SourceTextUnit,
+    analyze_with_control,
 )
 from ..config.code_graph_config import CodeGraphMode
+from ...domain.system_image.code_identity import CodeSymbolKey
+from ...domain.system_image.code_provider import CodeProjectionGap, CodeProviderCapabilities, CodeProviderObservation
 from .codebase_memory_code_intelligence import CodebaseMemoryError
+from .code_identity_normalization import attach_symbol_keys
+from .code_graph_observation_validation import validate_java_imports
 
 
 class CompositeCodeIntelligenceAdapter:
@@ -29,24 +36,46 @@ class CompositeCodeIntelligenceAdapter:
         self.mode = mode
 
     def analyze(self, units: Sequence[SourceTextUnit]) -> CodeIntelligenceResult:
-        primary = self.primary.analyze(units)
+        return self._analyze(units)
+
+    def capabilities(self) -> CodeProviderCapabilities:
+        declaration = self._declaration(self.primary)
+        return CodeProviderCapabilities("nasus-composite", "1", ("capabilities", "analyze", "analyze_controlled"),
+            declaration.languages, declaration.language_coverage)
+
+    def analyze_controlled(self, units: Sequence[SourceTextUnit], *, check_current: Callable[[], None]) -> CodeIntelligenceResult:
+        return self._analyze(units, check_current=check_current)
+
+    def _analyze(self, units: Sequence[SourceTextUnit], *, check_current=None) -> CodeIntelligenceResult:
+        def analyze(adapter):
+            if check_current is not None:
+                return analyze_with_control(adapter, units, check_current)
+            return adapter.analyze(units)
+
+        primary = analyze(self.primary)
+        if any(item.status == "failed" for item in primary.file_analyses):
+            # Preserve diagnostics for the failed materialization even when a
+            # required graph provider would also fail on the invalid source.
+            return self._not_observed(replace(primary,
+                evidence_refs=self._union(primary.evidence_refs, ("code-graph:skipped:parse-failure",))),
+                "not_run", "source_parse_failure")
         if self.mode == "disabled":
-            return replace(
+            return self._not_observed(replace(
                 primary,
                 evidence_refs=self._union(primary.evidence_refs, ("code-graph:disabled",)),
-            )
+            ), "not_run", "graph_disabled_by_policy")
         if self.enhancer is None:
             if self.mode == "required":
                 raise CodebaseMemoryError("required code graph adapter is not configured")
             return self._unavailable(primary, "not-configured")
 
         try:
-            enhanced = self.enhancer.analyze(units)
-        except CodebaseMemoryError:
+            enhanced = analyze(self.enhancer)
+            return self._merge(primary, validate_java_imports(attach_symbol_keys(enhanced, primary), primary))
+        except CodeIntelligenceUnavailable:
             if self.mode == "required":
                 raise
             return self._unavailable(primary, "provider-unavailable")
-        return self._merge(primary, enhanced)
 
     def diagnostics(self) -> dict[str, str]:
         primary_details = self._adapter_diagnostics(self.primary)
@@ -80,23 +109,44 @@ class CompositeCodeIntelligenceAdapter:
         primary: CodeIntelligenceResult,
         enhanced: CodeIntelligenceResult,
     ) -> CodeIntelligenceResult:
+        failed_paths = {item.relative_path for item in primary.file_analyses if item.status == "failed"}
+        if failed_paths:
+            allowed = {item.provider_node_id for item in enhanced.entities if item.relative_path not in failed_paths}
+            enhanced = replace(enhanced, entities=tuple(item for item in enhanced.entities if item.provider_node_id in allowed),
+                               relationships=tuple(item for item in enhanced.relationships
+                                                   if item.from_provider_node_id in allowed and item.to_provider_node_id in allowed))
+        for result in (primary, enhanced):
+            if len({item.provider_node_id for item in result.entities}) != len(result.entities):
+                raise CodebaseMemoryError("code graph contains duplicate provider node IDs")
         entities = list(primary.entities)
-        provider_ids = {item.provider_node_id: item.provider_node_id for item in primary.entities}
-        strict_index = {cls._entity_key(item): index for index, item in enumerate(entities)}
-        loose_candidates: dict[tuple[str, str, str], list[int]] = {}
+        primary_ids = {item.provider_node_id: item.provider_node_id for item in primary.entities}
+        used_ids = set(primary_ids)
+        enhanced_ids: dict[str, str] = {}
+        canonical_index: dict[CodeSymbolKey, list[int]] = {}
+        strict_index: dict[tuple[str, str, str, int, int, str], list[int]] = {}
         for index, entity in enumerate(entities):
-            loose_candidates.setdefault(cls._loose_entity_key(entity), []).append(index)
+            strict_index.setdefault(cls._entity_key(entity), []).append(index)
+            if entity.symbol_key is not None:
+                canonical_index.setdefault(entity.symbol_key, []).append(index)
 
         for candidate in enhanced.entities:
-            index = strict_index.get(cls._entity_key(candidate))
-            if index is None:
-                matches = loose_candidates.get(cls._loose_entity_key(candidate), [])
-                index = matches[0] if len(matches) == 1 else None
+            original_provider_id = candidate.provider_node_id
+            matches = canonical_index.get(candidate.symbol_key, []) if candidate.symbol_key else []
+            if not matches and candidate.identity_status != "ambiguous":
+                # Non-symbol observations need identical, precise source spans.
+                # Approximate line 1 must never act as a unique identity key.
+                if candidate.location_precision == "exact":
+                    matches = [index for index in strict_index.get(cls._entity_key(candidate), [])
+                               if entities[index].identity_status != "ambiguous"
+                               and (candidate.symbol_key is None or entities[index].symbol_key == candidate.symbol_key)]
+            index = matches[0] if len(matches) == 1 else None
             if index is None:
                 index = len(entities)
+                # Provider IDs are namespaced by result, not assumed globally unique.
+                while candidate.provider_node_id in used_ids:
+                    candidate = replace(candidate, provider_node_id=f"enhancer:{index}:{candidate.provider_node_id}")
+                used_ids.add(candidate.provider_node_id)
                 entities.append(candidate)
-                strict_index[cls._entity_key(candidate)] = index
-                loose_candidates.setdefault(cls._loose_entity_key(candidate), []).append(index)
             else:
                 retained = entities[index]
                 entities[index] = replace(
@@ -106,10 +156,13 @@ class CompositeCodeIntelligenceAdapter:
                         candidate.evidence_refs,
                     ),
                 )
-            provider_ids[candidate.provider_node_id] = entities[index].provider_node_id
+            enhanced_ids[original_provider_id] = entities[index].provider_node_id
 
         relationships: dict[tuple[str, str, str], CodeRelationshipCandidate] = {}
-        for relation in (*primary.relationships, *enhanced.relationships):
+        for relation, provider_ids in chain(
+            ((item, primary_ids) for item in primary.relationships),
+            ((item, enhanced_ids) for item in enhanced.relationships),
+        ):
             source_id = provider_ids.get(relation.from_provider_node_id)
             target_id = provider_ids.get(relation.to_provider_node_id)
             if source_id is None or target_id is None or source_id == target_id:
@@ -144,36 +197,50 @@ class CompositeCodeIntelligenceAdapter:
                 ("code-graph:enriched",),
             ),
             unsupported_paths=primary.unsupported_paths,
+            file_analyses=primary.file_analyses,
+            structural_facts=primary.structural_facts,
+            provider_observations=(*primary.provider_observations, *enhanced.provider_observations),
+            native_query_observations=(*primary.native_query_observations, *enhanced.native_query_observations),
+            execution_pin=enhanced.execution_pin,
         )
 
-    @staticmethod
     def _unavailable(
+        self,
         primary: CodeIntelligenceResult,
         reason: str,
     ) -> CodeIntelligenceResult:
-        return replace(
+        return self._not_observed(replace(
             primary,
             evidence_refs=CompositeCodeIntelligenceAdapter._union(
                 primary.evidence_refs,
                 ("code-graph:unavailable", f"code-graph-reason:{reason}"),
             ),
-        )
+        ), "unavailable", reason)
 
     @staticmethod
-    def _entity_key(entity: CodeEntityCandidate) -> tuple[str, str, int, str]:
+    def _declaration(adapter) -> CodeProviderCapabilities:
+        capabilities = getattr(adapter, "capabilities", None)
+        if callable(capabilities):
+            declaration = capabilities()
+            if not isinstance(declaration, CodeProviderCapabilities):
+                raise CodebaseMemoryError("invalid code provider declaration")
+            return declaration
+        return CodeProviderCapabilities(str(getattr(adapter, "provider", "external-code-graph")), "undeclared", ())
+
+    def _not_observed(self, primary, availability, reason):
+        observation = CodeProviderObservation(self._declaration(self.enhancer), 0, 0, 0, 0,
+            "not_run", "not_run", (CodeProjectionGap(reason),), availability)
+        return replace(primary, provider_observations=(*primary.provider_observations, observation))
+
+    @staticmethod
+    def _entity_key(entity: CodeEntityCandidate) -> tuple[str, str, str, int, int, str]:
         return (
-            entity.relative_path.replace("\\", "/").casefold(),
+            entity.relative_path,
+            entity.language,
             entity.entity_kind,
             entity.start_line,
-            entity.name.casefold(),
-        )
-
-    @staticmethod
-    def _loose_entity_key(entity: CodeEntityCandidate) -> tuple[str, str, str]:
-        return (
-            entity.relative_path.replace("\\", "/").casefold(),
-            entity.entity_kind,
-            entity.name.casefold(),
+            entity.end_line,
+            entity.name,
         )
 
     @staticmethod

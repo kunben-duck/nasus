@@ -24,6 +24,7 @@ from .infrastructure.config.runtime_config import validate_runtime_configuration
 from .infrastructure.persistence.database import SessionLocal
 from .infrastructure.platform.http_metrics import HttpMetrics
 from .infrastructure.platform.operational_metrics import SQLAlchemyOperationalMetricsCollector
+from .infrastructure.platform.operator_identity import SQLAlchemyConfiguredIdentityReader, SQLAlchemyOperatorIdentityBootstrap
 from .infrastructure.platform.request_rate_limiter import SQLAlchemyFixedWindowRateLimiter
 
 
@@ -31,9 +32,12 @@ def create_app() -> FastAPI:
     validate_runtime_configuration()
 
     from .bootstrap import get_application_container
-    from .interface.http.routers import agent, conversations, health, identity, platform, projects
+    from .interface.http.routers import agent, conversations, health, identity, platform, projects, source_evidence, code_analysis, image_revisions, build_plans, source_documents, acceptance_specifications, context_packs
 
     container = get_application_container()
+    if container.auth_config.disabled or container.auth_config.bearer_token:
+        SQLAlchemyOperatorIdentityBootstrap().ensure(container.auth_config.user())
+    configured_identities = SQLAlchemyConfiguredIdentityReader()
     app = FastAPI(title="Nasus API", version="0.1.0")
     app.state.container = container
     # Mutable aliases are retained only as explicit test override seams.
@@ -87,6 +91,7 @@ def create_app() -> FastAPI:
                 request,
                 request.app.state.auth_config,
                 request.app.state.container.platform.authenticate_token,
+                configured_identities.authenticate,
             )
             if isinstance(auth_result, JSONResponse):
                 response = auth_result
@@ -127,6 +132,39 @@ def create_app() -> FastAPI:
     app.include_router(platform.router)
     app.include_router(identity.router)
     app.include_router(projects.router)
+    app.include_router(source_evidence.router)
+    app.include_router(code_analysis.router)
+    from .interface.http.routers import code_indexes
+    app.include_router(code_indexes.router)
+    from .interface.http.routers import source_deltas
+    app.include_router(source_deltas.router)
+    from .interface.http.routers import context_change_impact
+    app.include_router(context_change_impact.router)
+    app.include_router(source_documents.router)
+    app.include_router(image_revisions.router)
+    app.include_router(acceptance_specifications.router)
+    from .interface.http.routers import business_rules
+    app.include_router(business_rules.router)
+    from .interface.http.routers import test_design_scopes
+    app.include_router(test_design_scopes.router)
+    from .interface.http.routers import test_design_mappings
+    app.include_router(test_design_mappings.router)
+    from .interface.http.routers import automation_inputs
+    app.include_router(automation_inputs.router)
+    from .interface.http.routers import case_approvals
+    app.include_router(case_approvals.router)
+    from .interface.http.routers import automation_scripts
+    app.include_router(automation_scripts.router)
+    from .interface.http.routers import run_plans
+    app.include_router(run_plans.router)
+    from .interface.http.routers import test_design_review_queries
+    app.include_router(test_design_review_queries.router)
+    app.include_router(context_packs.router)
+    from .interface.http.routers import image_publications
+    app.include_router(image_publications.router)
+    from .interface.http.routers import frozen_indexes
+    app.include_router(frozen_indexes.router)
+    app.include_router(build_plans.router)
     app.include_router(conversations.router)
     app.include_router(agent.router)
     return app

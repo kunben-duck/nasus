@@ -1,10 +1,12 @@
 import type { QualityLaneCardView } from '../../projectWorkspaceSelectors'
+import { useI18n } from '../../../../shared/i18n/I18nProvider'
 
 export function QualityLaneGrid({ lanes }: { lanes: QualityLaneCardView[] }) {
+  const { t, tx } = useI18n()
   if (!lanes.length) {
     return (
       <div className="quality-empty-state">
-        No quality asset lanes yet. Ask Nasus to build the system image or import US documents first.
+        {t('No quality asset lanes yet. Ask Nasus to build the system image or import US documents first.')}
       </div>
     )
   }
@@ -15,10 +17,10 @@ export function QualityLaneGrid({ lanes }: { lanes: QualityLaneCardView[] }) {
         <div className={`quality-lane-card ${lane.status}`} key={lane.id}>
           <div>
             <span className="quality-lane-dot" />
-            <strong>{lane.label}</strong>
+            <strong>{tx(lane.label)}</strong>
           </div>
-          <p>{lane.summary}</p>
-          <span>{lane.statusLabel}</span>
+          <p>{tx(lane.summary)}</p>
+          <span>{tx(lane.statusLabel)}</span>
         </div>
       ))}
     </div>

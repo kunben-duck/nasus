@@ -22,12 +22,15 @@ export interface ProjectWorkspaceViewProps {
   prompt: string
   setPrompt: (value: string) => void
   runPrompt: () => void
+  stopPrompt: () => void
   invokeProjectAction: (actionId: StudioActionId, input?: Record<string, unknown>) => void
-  confirmPendingGoal: () => void
+  confirmPendingGoal: () => Promise<void>
+  continueStructuralInvestigation: () => Promise<void>
   initializeSystemImage: () => void
-  buildSystemImageFromSources: (sources: SourceBindingValues) => void
+  buildSystemImageFromSources: (sources: SourceBindingValues) => Promise<void>
   confirmToolInvocation: (invocationId: string) => void
   loading: boolean
+  streaming: boolean
   activeActionId: string | null
   sidebarCollapsed: boolean
   toggleSidebar: () => void

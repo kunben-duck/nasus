@@ -6,14 +6,19 @@ import { platformApiAuthToken } from '../platform/authTokenStorage'
 import type { EventPayload } from '../platform/types'
 import { reduceConversationEvent } from './conversationEventReducer'
 import { shouldInvalidateDomainQueries } from './eventQueryInvalidation'
+import { createConversationQueryRefresh } from './conversationQueryRefresh'
 import type { ConversationSession } from './types'
 
 export function useConversationEvents({
   conversationId,
   enabled,
+  existingOnly = false,
+  canReadWorkspace,
 }: {
   conversationId?: string
   enabled: boolean
+  existingOnly?: boolean
+  canReadWorkspace?: () => boolean
 }) {
   const queryClient = useQueryClient()
   const seenEventIds = useRef(new Set<string>())
@@ -24,27 +29,15 @@ export function useConversationEvents({
 
     seenEventIds.current.clear()
     entityVersions.current.clear()
-    const pendingInvalidations = new Map<string, string[]>()
-    let invalidationTimer: ReturnType<typeof setTimeout> | null = null
-    const scheduleInvalidation = (queryKey: string[]) => {
-      pendingInvalidations.set(JSON.stringify(queryKey), queryKey)
-      if (invalidationTimer) clearTimeout(invalidationTimer)
-      invalidationTimer = setTimeout(() => {
-        const queryKeys = [...pendingInvalidations.values()]
-        pendingInvalidations.clear()
-        invalidationTimer = null
-        void Promise.all(
-          queryKeys.map((key) => queryClient.invalidateQueries({ queryKey: key })),
-        )
-      }, 200)
-    }
+    const refreshes = createConversationQueryRefresh(queryClient,
+      (key) => key[0] === 'conversation' || (!existingOnly && canReadWorkspace?.() !== false))
     const token = platformApiAuthToken()
     const eventUrl = token
       ? `/v1/conversations/${conversationId}/events?access_token=${encodeURIComponent(token)}`
       : `/v1/conversations/${conversationId}/events`
     const source = new EventSource(eventUrl)
     source.onmessage = () => {
-      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+      refreshes.schedule(['conversation', conversationId])
     }
     const typedHandler = (event: MessageEvent<string>) => {
       const payload = JSON.parse(event.data) as EventPayload
@@ -67,15 +60,32 @@ export function useConversationEvents({
       if (shouldInvalidateDomainQueries(payload)) {
         payload.query_keys.forEach((key) => {
           if (key[0] !== 'conversation' && key[0] !== 'agent-goal') {
-            scheduleInvalidation(key)
+            refreshes.schedule(key)
           }
         })
+        if (payload.event_type === 'quality.test_design_cases.reviewed') {
+          const project = payload.patch.project_id
+          if (typeof project === 'string' && project === payload.correlation_id) {
+            for (const prefix of ['automation-script-revisions', 'automation-script-reviews', 'run-plans']) {
+              refreshes.schedule([prefix, project])
+            }
+          }
+        }
       }
       if (!reduced || payload.snapshot_hint) {
-        queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+        refreshes.schedule(['conversation', conversationId])
       }
     }
     source.addEventListener('conversation.message.created', typedHandler)
+    source.addEventListener('conversation.message.started', typedHandler)
+    source.addEventListener('conversation.message.delta', typedHandler)
+    source.addEventListener('conversation.message.completed', typedHandler)
+    source.addEventListener('conversation.message.interrupted', typedHandler)
+    source.addEventListener('conversation.message.failed', typedHandler)
+    source.addEventListener('conversation.turn.accepted', typedHandler)
+    source.addEventListener('conversation.turn.completed', typedHandler)
+    source.addEventListener('conversation.turn.interrupted', typedHandler)
+    source.addEventListener('conversation.turn.failed', typedHandler)
     source.addEventListener('agent.step.updated', typedHandler)
     source.addEventListener('agent.step.thinking.delta', typedHandler)
     source.addEventListener('agent.step.observation.delta', typedHandler)
@@ -88,12 +98,17 @@ export function useConversationEvents({
     source.addEventListener('runtime.decision.delta', typedHandler)
     source.addEventListener('agent.goal.updated', typedHandler)
     source.addEventListener('tool.invocation.updated', typedHandler)
+    source.addEventListener('system_image.context.invalidated', typedHandler)
+    source.addEventListener('quality.test_design_mapping.reviewed', typedHandler)
+    source.addEventListener('quality.test_design_cases.reviewed', typedHandler)
+    source.addEventListener('quality.automation.call_reserved', typedHandler)
+    source.addEventListener('quality.automation.reply_archived', typedHandler)
+    source.addEventListener('quality.automation.draft_saved', typedHandler)
+    source.addEventListener('quality.automation.script_reviewed', typedHandler)
 
     return () => {
       source.close()
-      if (invalidationTimer) clearTimeout(invalidationTimer)
-      invalidationTimer = null
-      pendingInvalidations.clear()
+      refreshes.close()
     }
-  }, [conversationId, enabled, queryClient])
+  }, [conversationId, enabled, queryClient, existingOnly, canReadWorkspace])
 }

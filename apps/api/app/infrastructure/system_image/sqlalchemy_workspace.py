@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Sequence
@@ -49,10 +50,10 @@ class _ProjectWorkspaceSnapshot:
 class SQLAlchemySystemImageWorkspace:
     """Repository-backed production workspace for system-image use cases.
 
-    A request-local snapshot preserves the application service's explicit
+    Each operation session owns a fresh snapshot dictionary until the explicit
     `persist_system_image` commit boundary. PostgreSQL remains the source of
-    truth; compatibility projections are refreshed only after a committed
-    snapshot and are never read by this adapter.
+    truth; inherited caller snapshots are not shared with canonical handlers.
+    Compatibility projections are refreshed after commit, never read here.
     """
 
     def __init__(
@@ -72,6 +73,15 @@ class SQLAlchemySystemImageWorkspace:
 
     def has_project(self, project_id: str) -> bool:
         return bool(project_id) and self._adapters.project_repository.get_project(project_id) is not None
+
+    @contextmanager
+    def operation_session(self):
+        # Context propagation copies values, not the mutable snapshot dictionary.
+        token = self._request_snapshots.set({})
+        try:
+            yield
+        finally:
+            self._request_snapshots.reset(token)
 
     def get_project(self, project_id: str) -> ProjectCard:
         return self._snapshot(project_id).project
@@ -253,6 +263,9 @@ class SQLAlchemySystemImageWorkspace:
 
     def put_json(self, key: str, payload: dict[str, Any]) -> str:
         return self._adapters.object_storage.put_json(key, payload).storage_ref
+
+    def artifact_write_session(self):
+        return self._adapters.object_storage.write_session()
 
     def get_json(self, storage_ref: str) -> dict[str, Any]:
         return self._adapters.object_storage.get_json(storage_ref)

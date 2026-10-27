@@ -3,8 +3,18 @@ import type { QueryClient } from '@tanstack/react-query'
 import { platformApi } from './api'
 import { normalizeProjectName } from './build-skills'
 import type { DashboardData } from './types'
+import type { ConversationSession } from '../agent/types'
 
 type BuildMessageResponse = {
+  clarification?: {
+    question?: string
+  } | null
+  agent_goal?: {
+    goal_template?: string
+  } | null
+  tool_invocation?: {
+    tool_id?: string
+  } | null
   tool_invocations?: Array<{
     tool_id?: string
     result?: {
@@ -18,6 +28,24 @@ export function projectIdFromBuildResponse(response: unknown): string | null {
   const projectInvocation = payload?.tool_invocations?.find((invocation) => invocation.tool_id === 'project.create')
   const projectRef = projectInvocation?.result?.object_refs?.find((ref) => ref.startsWith('project:'))
   return projectRef?.split(':', 2)[1] || null
+}
+
+export function feedbackFromBuildResponse(response: unknown): string | null {
+  const payload = response as BuildMessageResponse | null
+  return payload?.clarification?.question?.trim() || null
+}
+
+export function buildResponseStartsProjectCreation(response: unknown): boolean {
+  const payload = response as BuildMessageResponse | null
+  return payload?.agent_goal?.goal_template === 'project_setup'
+    || payload?.tool_invocation?.tool_id === 'project.create'
+    || Boolean(payload?.tool_invocations?.some((invocation) => invocation.tool_id === 'project.create'))
+}
+
+export function latestAssistantText(conversation?: ConversationSession): string | null {
+  const message = conversation?.messages.findLast((item) => item.role === 'assistant')
+  const text = message?.blocks.map((block) => block.text).filter(Boolean).join('\n').trim()
+  return text || null
 }
 
 export async function waitForCreatedProjectFromPrompt(queryClient: QueryClient, prompt: string) {

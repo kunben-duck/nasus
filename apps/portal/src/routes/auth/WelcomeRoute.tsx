@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 
 import { AuthParticleField } from './AuthParticles'
 import { useInteractiveParticles } from './useInteractiveParticles'
+import { useI18n } from '../../shared/i18n/I18nProvider'
 
 const welcomeSuggestions = [
   {
@@ -19,7 +20,7 @@ const welcomeSuggestions = [
     label: 'Assess release readiness',
     prompt: 'Summarize quality evidence and decide whether a version can be released.',
   },
-]
+] as const
 
 const capabilitySections = [
   {
@@ -55,10 +56,11 @@ const capabilitySections = [
       ['Release scoring', 'Evaluate coverage, unresolved risk, approvals, and readiness before launch.'],
     ],
   },
-]
+] as const
 
 export function WelcomeRoute() {
   const particleHandlers = useInteractiveParticles()
+  const { t } = useI18n()
 
   return (
     <main className="auth-shell welcome-shell ai-welcome-shell" {...particleHandlers}>
@@ -68,33 +70,33 @@ export function WelcomeRoute() {
           <img src="/nasus.png" alt="Nasus" />
           <span>Nasus Studio</span>
         </Link>
-        <nav className="ai-welcome-nav" aria-label="Nasus product modules">
-          <a href="#system-image">System image</a>
-          <a href="#agent-first">Agent-first</a>
-          <a href="#quality-loop">Quality loop</a>
+        <nav className="ai-welcome-nav" aria-label={t('Nasus product modules')}>
+          <a href="#system-image">{t('System image')}</a>
+          <a href="#agent-first">{t('Agent-first')}</a>
+          <a href="#quality-loop">{t('Quality loop')}</a>
         </nav>
         <Link className="auth-top-button ai-welcome-cta" to="/login">
           <span className="material-symbols-outlined" aria-hidden="true">login</span>
-          Get started
+          {t('Get started')}
         </Link>
       </header>
 
       <section className="ai-welcome-hero">
         <div className="ai-welcome-hero-copy">
-          <span className="auth-eyebrow">Nasus Assurance Studio</span>
-          <h1>Build quality project from now</h1>
+          <span className="auth-eyebrow">{t('Nasus Assurance Studio')}</span>
+          <h1>{t('Build quality project from now')}</h1>
         </div>
-        <Link className="ai-welcome-prompt" to="/login" aria-label="Start Nasus from a quality goal">
-          <span className="ai-welcome-placeholder">Describe the quality goal you want Nasus to help with</span>
-          <strong>Get started</strong>
+        <Link className="ai-welcome-prompt" to="/login" aria-label={t('Start Nasus from a quality goal')}>
+          <span className="ai-welcome-placeholder">{t('Describe the quality goal you want Nasus to help with')}</span>
+          <strong>{t('Get started')}</strong>
         </Link>
-        <div className="ai-welcome-suggestions" aria-label="Example quality goals">
+        <div className="ai-welcome-suggestions" aria-label={t('Example quality goals')}>
           {welcomeSuggestions.map((suggestion) => (
             <Link key={suggestion.label} to="/login">
               <span className="material-symbols-outlined" aria-hidden="true">{suggestion.icon}</span>
               <span>
-                <strong>{suggestion.label}</strong>
-                <em>{suggestion.prompt}</em>
+                <strong>{t(suggestion.label)}</strong>
+                <em>{t(suggestion.prompt)}</em>
               </span>
             </Link>
           ))}
@@ -104,16 +106,16 @@ export function WelcomeRoute() {
       <div className="ai-welcome-sections">
         {capabilitySections.map((section) => (
           <section className="ai-welcome-section" id={section.id} key={section.id}>
-            <span className="auth-eyebrow">{section.eyebrow}</span>
+            <span className="auth-eyebrow">{t(section.eyebrow)}</span>
             <div className="ai-welcome-section-heading">
-              <h2>{section.title}</h2>
-              <p>{section.copy}</p>
+              <h2>{t(section.title)}</h2>
+              <p>{t(section.copy)}</p>
             </div>
             <div className="ai-welcome-card-grid">
               {section.cards.map(([title, copy]) => (
                 <article className="ai-welcome-card" key={title}>
-                  <h3>{title}</h3>
-                  <p>{copy}</p>
+                  <h3>{t(title)}</h3>
+                  <p>{t(copy)}</p>
                 </article>
               ))}
             </div>
@@ -123,7 +125,7 @@ export function WelcomeRoute() {
 
       <footer className="ai-welcome-footer">
         <span>Nasus Studio</span>
-        <p>Agent-first quality assurance for the AI coding era.</p>
+        <p>{t('Agent-first quality assurance for the AI coding era.')}</p>
       </footer>
     </main>
   )

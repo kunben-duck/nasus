@@ -560,7 +560,7 @@ class ConversationOrchestrator:
         return None
 
     def _extract_explicit_project_name(self, content: str) -> Optional[str]:
-        quoted = re.search(r"['\"]([^'\"]+)['\"]", content)
+        quoted = re.search(r"['\"“”]([^'\"“”]+)['\"“”]", content)
         if quoted:
             return quoted.group(1).strip()
         chinese_named = re.search(r"(?:名字叫|叫做|名为)([^，。,\\n]+)", content)
@@ -629,6 +629,9 @@ class ConversationOrchestrator:
             if uri:
                 specs_by_type[source_type] = {"source_type": source_type, "source_uri": uri}
 
+        tracked = re.search(r"(?:^|[\s,，;；])tracked_ref\s*(?:=|:|：)\s*([^\s,，;；]+)", content)
+        if tracked and "code" in specs_by_type:
+            specs_by_type["code"]["tracked_ref"] = tracked.group(1)
         return [specs_by_type[source_type] for source_type in ["code", "us_doc", "test_asset"] if source_type in specs_by_type]
 
     @staticmethod

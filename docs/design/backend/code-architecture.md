@@ -726,6 +726,29 @@ Current services:
   metrics, generated US work items, embedding/index rows, rerank records, task
   contexts, quality profiles, project progress, and baselines must return to
   the pre-materialization snapshot.
+- `application/system_image/image_candidate_preparation.py`: immutable-input
+  extraction and candidate preparation, with no mutable workspace access. The
+  service offloads it from the request event loop, retaining caller context, and
+  checks the captured manifest again before applying a compatibility projection.
+  Source inputs come from the fixed PostgreSQL manifest and archived bytes.
+- `image_candidates.py` and `image_revision_queries.py`: freeze a static candidate
+  through artifact/repository ports and read exact revision pages under fresh
+  all-input source authorization. PostgreSQL migration 0038 persists immutable
+  object/entity/source/evidence membership and invocation links; candidate and
+  outbox commit together. Content-addressed artifacts live in S3/MinIO. Candidate
+  artifacts may survive a later embedding/projection failure and are not part of
+  the mutable projection rollback. They cannot advance an official head.
+  This is an additive static-candidate phase, not the final approved assertion,
+  parent/overlay, readiness, publication/CAS or ContextPack contract. The complete
+  target and remaining cutover work stay in `docs/design/system-image/`.
+- `image_query_tools.py` adapts frozen revision list/page/member-evidence reads
+  into strict, body-free receipts. Platform exact handlers invoke this port via
+  `ToolInvocationRuntime`; `tool_images.py` rechecks invocation/project scope,
+  all source inputs and artifact/result hashes for each transient expansion.
+  List receipts replay their original revision IDs, not a new head/list query.
+  The HTTP observation endpoint has no ORM dependency and sends `no-store`.
+  Planner observations consume reauthorized receipts, not implicit source text;
+  model egress authorization and investigation lifecycle remain separate work.
 - `domain/system_image/quality_context.py`: pure quality-context policy for
   missing quality context detection, deterministic context hashes, confidence,
   risk, coverage, automation feasibility, release scoring, and risk-driver
@@ -1535,6 +1558,69 @@ Nasus is agent-first and tool-native. Therefore:
 - Tests cover domain, application, infrastructure, and interface independently.
 
 ## 9. Verification
+
+### Source-Pinned Investigation Drafts
+
+- `domain/system_image/build_plan.py` defines draft intents, bounded investigation
+  DAGs and integrity rules. It cannot authorize execution or import persistence,
+  provider or workflow adapters.
+- `BuildPlanApplicationService` combines a fixed-manifest read port, a draft
+  repository port and fresh source authorization. The PostgreSQL adapter owns
+  immutable plan/invocation association and opaque Outbox writes in one transaction.
+- `system_image.build.plan` remains behind the canonical ToolInvocation runtime;
+  the HTTP router only exposes authorized list/detail reads. Source IO and writes
+  run off the async HTTP loop with actor context retained.
+- A saved draft is not an authorized AgentPlan. The separately confirmed
+  `system_image.build.structure` executes one pinned structural item through
+  `StructureBuildApplicationService`, never the mutable materializer. The existing
+  ToolRuntime owns confirmation; the persistence adapter checks the actual running
+  invocation and target rows when atomically committing its candidate/work receipt.
+- `StructureBuildCommit` carries an application binding and authorization callback,
+  not an ORM session. PostgreSQL owns row locks, append-only constraints and Outbox
+  atomicity. Domain and application modules do not import database adapters.
+- Historical source manifests may produce candidates under this explicit confirmed
+  command without replacing source heads. Missing optional inputs remain gaps;
+  missing required code remains blocking. A target baseline is not an official
+  image head. Full authorization envelopes, AgentGoal work leases and publication
+  governance remain required before autonomous start/resume can be complete.
+- `query.system_image.build_plans.read` records a typed, content-free receipt of
+  the exact plan digest, manifest and policy version. `ToolBuildPlanObservationApplicationService`
+  rechecks the invocation scope and source authorization before expanding it into
+  bounded work/budget/gap metadata for the existing Agent replanner. It does not
+  implicitly send user objectives, source bodies or artifact locations to a model.
+  Later candidate receipts do not change the historical plan-read result.
+- Agent runtime coordination fields are removed before strict query/build DTO
+  validation. `domain/agent/image_plan_policy.py` prevents pinned goals, restored
+  steps and replacement plans from falling back to mutable ingestion/materialization
+  or baseline initialization/promotion. Known project/plan/manifest/target pins
+  must agree. This policy is not a substitute for an execution authorization envelope.
+- A pinned build goal cannot complete merely by exhausting query steps. It pauses
+  for build-completion review; a confirmed structural item retains its candidate-review
+  follow-up. Pure plan-inspection goals can complete without claiming a built image.
+  Full completion reports, work leases and scoped autonomous continuation are pending.
+- Agent progress fingerprints include verified plan/image/evidence receipt digests,
+  not just generic tool summaries. Distinct evidence pages can advance the loop;
+  repeated results remain no-progress observations even under a new invocation ID.
+  This is adjacent-result detection, not the full historical evidence-signature ledger.
+
+### Fixed Build Execution Consent
+
+`domain/system_image/build_authorization.py` defines immutable, scope-bound consent.
+`application/system_image/build_authorizations.py` checks the fixed plan and fresh
+source access; the persistence adapter binds an existing AgentGoal, target baseline
+and version to a confirmed canonical invocation. Migration `0041` stores the envelope
+and append-only work reservations. It does not mutate the proposal or official head.
+
+ToolInvocationRuntime consumes the `ToolExecutionGrantRuntimePort` before a medium-risk
+confirmation gate. Only the exact reserved structural work can use that consent; RBAC
+is checked again after the execution claim. The handler and candidate commit also
+validate the durable goal, target and consent. Competing invocations cannot consume
+the same work item, and an expired grant cannot fall back to a new per-tool confirmation.
+
+The current capability admits deterministic structural extraction only. It grants zero
+model calls, disables model replanning for this explicit flow, and retains candidate
+review. Multi-capability authorization revisions, cumulative cost/active-time accounting,
+leases, provider cancellation and publication remain separate unfinished requirements.
 
 Required checks for backend architecture changes:
 

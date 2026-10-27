@@ -1,5 +1,7 @@
 # Nasus Unified Context Engine 设计
 
+设计补充（2026-09-09）：本文件包含既有架构与实现约束；下一阶段的自主构建、provider 解耦、稳定身份、多源修订和用途上下文，以[自主系统画像主方案](./autonomous-system-image-design.md)及[知识契约](./knowledge-contracts.md)为目标设计。当前 Tree-sitter+可选图增强的实现不等于完整目标已落地。
+
 ## 1. 文档定位
 
 本文定义 `Unified Context Engine`（UCE）的实现设计，覆盖 Source Connector、原料摄入、代码/文档理解、锚点抽取、实体归并、上下文组装与 ContextObject 存储。
@@ -222,7 +224,7 @@ Nasus 禁止直接读取 provider SQLite 文件。`CodebaseMemoryCodeIntelligenc
 
 这些产物不是最终系统画像，而是 `Entity Resolution` 的输入。
 
-当前实现不直接持久化供应商节点 ID。`provider_node_id` 只用于一次物化过程中的关系映射；Nasus 使用 `project + source + provider node seed` 生成自己的稳定 ContextObject ID。后续替换为 codebase-memory、CodeGraph 或 OpenGrok 时，不改变领域主键和上层 API。
+当前实现会使用 `project + source + provider node seed` 生成 ContextObject ID。虽然没有直接把供应商 ID 暴露为主键，这仍不能保证 provider 替换、路径或行号变化后的身份稳定。下一阶段必须引入 Nasus EntityIdentity/EntityRevision 和 provider 映射表，使用固定快照做身份校准；不能把 hash 包装视为防腐完成。详见[身份与证据契约](./knowledge-contracts.md#3-身份关系与证据)。
 
 ### 7.4 组合、降级与运行配置
 

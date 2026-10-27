@@ -1,9 +1,10 @@
 import type { EventPayload } from '../platform/types'
 import type { ConversationSession } from './types'
-import { asAgentGoal, asAgentStep, asAgentSwarm, asConversationMessage } from './eventPayloadReaders'
+import { asAgentSwarm, asConversationMessage } from './eventPayloadReaders'
 import { toolInvocationFromEvent } from './toolInvocationEvent'
+import { reduceConversationStreamingEvent } from './conversationStreamingEventReducer'
+import { reduceAgentStepEvent } from './conversationGoalEventReducer'
 import { upsertById } from '../../shared/event-reducer/eventUpsert'
-
 export function reduceConversationEvent(
   conversation: ConversationSession | undefined,
   event: EventPayload,
@@ -11,31 +12,28 @@ export function reduceConversationEvent(
   if (!conversation || event.snapshot_hint || event.mutation_kind === 'invalidate') {
     return conversation
   }
-
+  const streamingUpdate = reduceConversationStreamingEvent(conversation, event)
+  if (streamingUpdate) return streamingUpdate
   if (event.event_type === 'conversation.message.created') {
     const message = asConversationMessage(event.payload.message)
     if (!message || conversation.messages.some((item) => item.id === message.id)) {
       return conversation
     }
+    const idempotencyKey = message.metadata?.idempotency_key
     return {
       ...conversation,
-      messages: [...conversation.messages, message],
+      messages: [
+        ...conversation.messages.filter((item) => (
+          item.id !== message.id
+          && !(idempotencyKey && item.metadata?.idempotency_key === idempotencyKey)
+        )),
+        message,
+      ],
     }
   }
 
   if (event.event_type.startsWith('agent.step.')) {
-    const step = asAgentStep(event.patch.agent_step)
-    const goalId = event.agent_goal_id
-    if (!step || !goalId) return conversation
-    const currentGoal = (conversation.agent_goals ?? []).find((goal) => goal.id === goalId)
-    if (!currentGoal) return conversation
-    return {
-      ...conversation,
-      agent_goals: upsertById(conversation.agent_goals ?? [], {
-        ...currentGoal,
-        steps: upsertById(currentGoal.steps, step),
-      }),
-    }
+    return reduceAgentStepEvent(conversation, event)
   }
 
   if (event.entity_type === 'agent_swarm') {
@@ -48,12 +46,9 @@ export function reduceConversationEvent(
   }
 
   if (event.entity_type === 'agent_goal') {
-    const goal = asAgentGoal(event.payload.agent_goal)
-    if (!goal) return conversation
-    return {
-      ...conversation,
-      agent_goals: upsertById(conversation.agent_goals ?? [], goal),
-    }
+    // Replayed goals can precede the loaded snapshot. Returning it unchanged
+    // makes the event hook re-read the authorized checkpoint, not an old gate.
+    return conversation
   }
 
   if (event.entity_type === 'tool_invocation') {

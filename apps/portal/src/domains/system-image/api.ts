@@ -3,7 +3,10 @@ import type { KnowledgeObject, SourceUploadResult, SystemImageData } from './typ
 
 export const systemImageApi = {
   getKnowledge: (projectId: string) => request<KnowledgeObject[]>(`/v1/projects/${projectId}/knowledge`),
-  getSystemImage: (projectId: string) => request<SystemImageData>(`/v1/projects/${projectId}/system-image`),
+  getSystemImage: (projectId: string, signal?: AbortSignal) =>
+    request<SystemImageData>(`/v1/projects/${projectId}/system-image`, { signal }),
+  getWorkingImage: (projectId: string, signal?: AbortSignal) =>
+    request<SystemImageData>(`/v1/projects/${projectId}/system-image?view=working`, { signal }),
   getKnowledgeDetail: (projectId: string, objectId: string) =>
     request<KnowledgeObject>(`/v1/projects/${projectId}/knowledge/${objectId}`),
   uploadSourceFiles: (

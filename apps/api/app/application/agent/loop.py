@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 from .agent_models import AgentGoal, AgentGoalCreateRequest
 from .graph import AgentGraphRuntime
 from .ports import AgentLoopStatePort
-from ...domain.agent.runtime_models import AgentGoalProposal
+from ...domain.agent.runtime_models import AgentGoalProposal, ToolPlanStep
 from ...domain.agent.state_machine import AgentGoalRuntimeCheckpoint, AgentGoalStateMachine
+from ...domain.agent.resume_checkpoint import AgentResumeCheckpoint, InvalidAgentResumeCheckpoint
+from ...domain.agent.image_plan_policy import is_pinned_image_plan
+from ...domain.agent.goal_creation import AgentGoalStartIdentity, AgentGoalStartReplayed, AgentGoalStartRecoveryRequired
+from ...domain.agent.plan_policy import AgentPlanPolicyViolation
 
 
 class AgentLoopRuntime:
@@ -26,36 +30,49 @@ class AgentLoopRuntime:
     def graph_kind(self) -> str:
         return self.graph_runtime.graph_kind
 
-    async def start_goal(self, conversation_id: str, proposal: AgentGoalProposal) -> AgentGoal:
+    async def start_goal(self, conversation_id: str, proposal: AgentGoalProposal, *, workflow_id: str | None = None) -> AgentGoal:
         conversation = self._state.get_conversation(conversation_id)
         bound_proposal = self._bind_conversation_context(conversation, proposal)
-        goal = self._state.create_goal(
-            AgentGoalCreateRequest(
-                conversation_id=conversation_id,
-                title=bound_proposal.title,
-                summary=bound_proposal.summary,
-                autonomy_level=bound_proposal.suggested_autonomy_level,
-                max_steps=bound_proposal.max_steps,
-                max_model_calls=bound_proposal.max_model_calls,
-                max_thinking_tokens=bound_proposal.max_thinking_tokens,
-                max_runtime_seconds=bound_proposal.max_runtime_seconds,
-                max_no_progress_observations=(
-                    bound_proposal.max_no_progress_observations
-                ),
-                project_id=conversation.project_id,
-                us_id=self._goal_us_id(conversation, bound_proposal),
-                goal_template=bound_proposal.goal_template,
-                goal_description=bound_proposal.goal_description,
-                target_refs=bound_proposal.target_refs,
-                query_keys=bound_proposal.query_keys,
-                planner_kind=bound_proposal.planner_kind,
-                planning_summary=self._planning_summary(bound_proposal),
-                model_calls_used=bound_proposal.planning_usage.model_calls,
-                thinking_input_tokens_used=bound_proposal.planning_usage.input_tokens,
-                thinking_output_tokens_used=bound_proposal.planning_usage.output_tokens,
-                steps=self.graph_runtime.steps_for_proposal(bound_proposal),
-            )
+        payload = AgentGoalCreateRequest(
+            conversation_id=conversation_id,
+            title=bound_proposal.title,
+            summary=bound_proposal.summary,
+            autonomy_level=bound_proposal.suggested_autonomy_level,
+            max_steps=bound_proposal.max_steps,
+            max_model_calls=bound_proposal.max_model_calls,
+            max_thinking_tokens=bound_proposal.max_thinking_tokens,
+            max_runtime_seconds=bound_proposal.max_runtime_seconds,
+            max_no_progress_observations=bound_proposal.max_no_progress_observations,
+            project_id=conversation.project_id,
+            us_id=self._goal_us_id(conversation, bound_proposal),
+            goal_template=bound_proposal.goal_template,
+            goal_description=bound_proposal.goal_description,
+            target_refs=bound_proposal.target_refs,
+            query_keys=bound_proposal.query_keys,
+            planner_kind=bound_proposal.planner_kind,
+            planning_summary=self._planning_summary(bound_proposal),
+            model_calls_used=bound_proposal.planning_usage.model_calls,
+            thinking_input_tokens_used=bound_proposal.planning_usage.input_tokens,
+            thinking_output_tokens_used=bound_proposal.planning_usage.output_tokens,
+            steps=self.graph_runtime.steps_for_proposal(bound_proposal),
         )
+        if workflow_id is None:
+            goal = self._state.create_goal(payload)
+        else:
+            identity = AgentGoalStartIdentity.capture(workflow_id, {"proposal": asdict(bound_proposal),
+                "compiled_request": payload.model_dump(mode="json"), "graph_kind": self.graph_kind})
+            try:
+                goal = self._state.create_goal(payload, start_identity=identity)
+            except AgentGoalStartReplayed as replay:
+                goal = self._state.get_goal(replay.goal_id)
+                if (goal.conversation_id, goal.project_id, goal.workflow_id) != (
+                        conversation_id, conversation.project_id, workflow_id):
+                    raise AgentPlanPolicyViolation("agent_start_scope_changed", "The original start controller no longer matches.")
+                if goal.status in {"draft", "pending", "running"}:
+                    # A start receipt is not an execution lease or permission
+                    # to replay tools after a crash inside the graph.
+                    raise AgentGoalStartRecoveryRequired(goal.id)
+                return goal
         self._state.record_goal_audit(
             goal,
             action="agent.goal.proposed",
@@ -90,8 +107,17 @@ class AgentLoopRuntime:
         # identity with an in-memory adapter.
         return self._state.get_goal(goal.id)
 
-    async def resume_goal(self, goal_id: str) -> AgentGoal:
-        return await self.graph_runtime.resume(goal_id)
+    async def resume_goal(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
+        if expected_resume is None:
+            goal = self._state.get_goal(goal_id)
+            if is_pinned_image_plan([ToolPlanStep(step.selected_tool_id, step.tool_input_payload)
+                    for step in goal.steps if step.selected_tool_id], goal.target_refs):
+                raise InvalidAgentResumeCheckpoint("A fixed image goal requires the original resume precondition.")
+            return await self.graph_runtime.resume(goal_id)
+        return await self.graph_runtime.resume(goal_id, expected_resume=expected_resume)
+
+    def get_goal(self, goal_id: str) -> AgentGoal:
+        return self._state.get_goal(goal_id)
 
     def checkpoint(self, goal_id: str) -> AgentGoalRuntimeCheckpoint:
         return self.state_machine.checkpoint(self._state.get_goal(goal_id))

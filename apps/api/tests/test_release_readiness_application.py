@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine, select
+import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from apps.api.app.application.quality_loop.quality_models import ReleaseReadiness
 from apps.api.app.application.quality_loop.release_readiness import (
@@ -13,7 +13,7 @@ from apps.api.app.application.quality_loop.release_readiness import (
 from apps.api.app.application.quality_loop.release_readiness_port import (
     ReleaseReadinessSnapshot,
 )
-from apps.api.app.infrastructure.persistence.database import Base
+from apps.api.app.infrastructure.persistence.database import engine
 from apps.api.app.infrastructure.persistence.db_models import (
     ApprovalRecord,
     ExecutionEvidenceRecord,
@@ -66,19 +66,16 @@ class FakeReleaseReadinessRepository:
         }
 
 
+@pytest.fixture
 def isolated_session_factory():
-    engine = create_engine(
-        "sqlite+pysqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    return sessionmaker(
-        bind=engine,
-        autoflush=False,
-        autocommit=False,
-        expire_on_commit=False,
-    )
+    assert engine.dialect.name == "postgresql", "run persistence tests with scripts/test-api-postgres.py"
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            yield sessionmaker(bind=connection, autoflush=False, autocommit=False,
+                expire_on_commit=False, join_transaction_mode="create_savepoint")
+        finally:
+            transaction.rollback()
 
 
 def test_release_readiness_application_uses_repository_snapshot_and_save_port() -> None:
@@ -117,8 +114,49 @@ def test_release_readiness_application_uses_repository_snapshot_and_save_port() 
     assert repository.saved_with["blockers"] == 0
 
 
-def test_sqlalchemy_release_readiness_repository_loads_cross_context_snapshot() -> None:
-    session_factory = isolated_session_factory()
+def test_inventory_context_cannot_supply_release_quality_evidence() -> None:
+    repository = FakeReleaseReadinessRepository(ReleaseReadinessSnapshot(
+        version_id="ver_1", run_statuses=("passed",), evidence_types=("report", "trace"),
+        asset_part_statuses=(("scenario_set", "approved"), ("case_set", "approved"),
+            ("automation_blueprint", "completed")), task_context_readiness="ready",
+        task_context_confidence=None, quality_profile_coverage=None, quality_profile_confidence=None))
+    service = QualityReleaseReadinessApplicationService(repository,
+        lambda _: SimpleNamespace(id="ver_1"))
+    result = service.upsert_release_readiness("proj_1", "us_1")
+    assert result.status == "Needs additional release evidence"
+    assert result.score <= 59 and result.blockers == 1
+    assert result.blocker_items == [
+        "System image quality assessment is unknown; retrieval inventory is not release evidence."]
+    assert result.score_breakdown["system_context"] == 0
+    assert result.evidence_summary["quality_assessment_unknown"] == 1
+    assert repository.saved_with["readiness"] == result
+
+
+def test_sqlalchemy_preserves_unknown_profile_and_context_values(isolated_session_factory) -> None:
+    session_factory = isolated_session_factory
+    with session_factory() as session:
+        session.add(TaskContextRecord(id="unknown_ctx", project_id="unknown_project",
+            baseline_id="base", us_id="unknown_us", retrieval_run_id="retrieval", summary="Inventory",
+            readiness="ready", confidence=None, freshness_at="2026-10-10", context_hash="original"))
+        session.add(QualityProfileRecord(id="unknown_profile", project_id="unknown_project",
+            baseline_id="base", us_id="unknown_us", task_context_id="unknown_ctx", risk_score=None,
+            coverage_score=None, release_score=None, automation_feasibility=None,
+            confidence=None, freshness_at="2026-10-10"))
+        session.commit()
+    with session_factory() as session:
+        profile = session.get(QualityProfileRecord, "unknown_profile")
+        assert all(getattr(profile, name) is None for name in
+            ("risk_score", "coverage_score", "release_score", "automation_feasibility", "confidence"))
+        assert session.get(TaskContextRecord, "unknown_ctx").confidence is None
+    snapshot = SQLAlchemyReleaseReadinessRepository(session_factory).load_snapshot(
+        project_id="unknown_project", us_id="unknown_us", version_id="unknown_version")
+    assert snapshot.task_context_readiness == "ready"
+    assert snapshot.task_context_confidence is None
+    assert snapshot.quality_profile_coverage is None and snapshot.quality_profile_confidence is None
+
+
+def test_sqlalchemy_release_readiness_repository_loads_cross_context_snapshot(isolated_session_factory) -> None:
+    session_factory = isolated_session_factory
     with session_factory() as session:
         session.add(
             ProjectRecord(
@@ -261,8 +299,8 @@ def test_sqlalchemy_release_readiness_repository_loads_cross_context_snapshot() 
     assert snapshot.pending_merge == 2
 
 
-def test_sqlalchemy_release_readiness_repository_saves_assessment_atomically() -> None:
-    session_factory = isolated_session_factory()
+def test_sqlalchemy_release_readiness_repository_saves_assessment_atomically(isolated_session_factory) -> None:
+    session_factory = isolated_session_factory
     with session_factory() as session:
         session.add(
             ProjectRecord(

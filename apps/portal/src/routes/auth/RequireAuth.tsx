@@ -1,8 +1,10 @@
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 
 import { clearAuthSession, hasAuthToken, useAuthUser } from '../../domains/platform/useAuthSession'
+import { useI18n } from '../../shared/i18n/I18nProvider'
 
 export function RequireAuth() {
+  const { t } = useI18n()
   const location = useLocation()
   const token = hasAuthToken()
   const userQuery = useAuthUser()
@@ -22,7 +24,7 @@ export function RequireAuth() {
         <div className="auth-loading-mark">
           <img src="/nasus.png" alt="Nasus" />
         </div>
-        <span>Preparing Nasus workspace...</span>
+        <span>{t('Preparing Nasus workspace...')}</span>
       </div>
     )
   }

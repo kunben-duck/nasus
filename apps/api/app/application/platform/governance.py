@@ -6,6 +6,7 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from ...domain.quality_loop.release_decision import decide_release_decision
+from ...domain.system_image.publication import PUBLICATION_POLICY, ROLLBACK_POLICY
 from ...domain.quality_loop.structured_merge import (
     MISSING_VALUE,
     StructuredMergeDecision,
@@ -104,6 +105,10 @@ class GovernanceApplicationService:
         if approval is None:
             raise GovernanceApplicationError(
                 f"Approval {approval_id or '<missing>'} is not attached to project {project_id}."
+            )
+        if approval.policy_reason in {PUBLICATION_POLICY, ROLLBACK_POLICY}:
+            raise GovernanceApplicationError(
+                "Pinned image publication approvals require a new system_image.revisions.review_publication decision."
             )
 
         decision = str(invocation.input_payload.get("decision") or "approved").strip().lower()
@@ -243,14 +248,14 @@ class GovernanceApplicationService:
         )
         approval = self._require_approved_approval(project_id, invocation)
         us_id, version_id = self._release_scope(project_id, invocation)
+        current = self._release_evidence_decision(project_id, us_id or None, version_id)
         decision = self._workspace.find_release_decision(project_id, us_id or None, version_id)
         if decision is None:
-            readiness = self._workspace.get_release_readiness(version_id)
-            if readiness is None:
-                raise GovernanceApplicationError(
-                    "Release readiness must be assessed before submitting a release decision."
-                )
-            decision = self._decision_from_readiness(project_id, us_id or None, readiness)
+            decision = current
+        elif current.status not in {"ready", "conditional"}:
+            raise GovernanceApplicationError(
+                f"The current release evidence is {current.status}; an existing decision cannot override it."
+            )
 
         decision.approval_ref = f"approval:{approval.id}"
         decision.created_at = self._now()
@@ -290,6 +295,11 @@ class GovernanceApplicationService:
         if decision.approval_ref != f"approval:{approval.id}":
             raise GovernanceApplicationError(
                 "Baseline promotion must use the same approved approval attached to the ReleaseDecision."
+            )
+        current = self._release_evidence_decision(project_id, us_id or None, version_id)
+        if current.status not in {"ready", "conditional"}:
+            raise GovernanceApplicationError(
+                f"The current release evidence is {current.status}; baseline promotion is blocked."
             )
 
         baselines = self._workspace.list_baselines(project_id)
@@ -413,6 +423,16 @@ class GovernanceApplicationService:
             evidence_refs=draft.evidence_refs,
             created_at=self._now(),
         )
+
+    def _release_evidence_decision(
+        self, project_id: str, us_id: str | None, version_id: str,
+    ) -> ReleaseDecision:
+        readiness = self._workspace.get_release_readiness(version_id)
+        if readiness is None:
+            raise GovernanceApplicationError(
+                "The current release evidence must be assessed before a governance release action."
+            )
+        return self._decision_from_readiness(project_id, us_id, readiness)
 
     def _create_merge_decision(self, payload: dict[str, Any]) -> StructuredMergeDecision:
         aliases = (

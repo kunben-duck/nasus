@@ -82,6 +82,7 @@ class QualityStepCompletionApplicationService:
         next_tools: list[str] = []
         metric_refs: list[str] = []
         pack_refs: list[str] = []
+        release_blocked = False
 
         if deterministic_plan is not None:
             assert generation is not None
@@ -162,6 +163,7 @@ class QualityStepCompletionApplicationService:
                 release=release,
                 release_evidence_refs=tuple(release_evidence_refs),
             )
+            release_blocked = release_plan.us_update.status == "blocked"
             for lane_update in release_plan.lane_updates:
                 self.asset_progress.update_lane(
                     project_id,
@@ -217,7 +219,7 @@ class QualityStepCompletionApplicationService:
             evidence_refs=evidence_refs,
             next_tools=next_tools,
             query_keys=query_keys,
-            assistant_message=f"{summary}. {quality_step_assistant_followup(step)}",
+            assistant_message=f"{summary}. {quality_step_assistant_followup(step, blocked=release_blocked)}",
             assistant_metadata={
                 "planner_kind": "quality_loop_progress",
                 "quality_step": step,

@@ -26,6 +26,11 @@ class QualityLoopRunRepositoryPort(Protocol):
     def upsert_run_detail(self, project_id: str, run: RunDetail) -> None:
         ...
 
+    def commit_run_execution(
+        self, project_id: str, run: RunDetail, evidence: list[ExecutionEvidence],
+    ) -> None:
+        ...
+
     def replace_execution_evidence_for_run(
         self,
         project_id: str,
@@ -226,6 +231,12 @@ class SQLAlchemyQualityRunWorkspace:
 
     def save_run_detail(self, project_id: str, run: RunDetail) -> None:
         self._repository.upsert_run_detail(project_id, run.model_copy(deep=True))
+
+    def commit_run_execution(
+        self, project_id: str, run: RunDetail, evidence: list[ExecutionEvidence],
+    ) -> None:
+        self._repository.commit_run_execution(project_id, run.model_copy(deep=True),
+            [item.model_copy(deep=True) for item in evidence])
 
     def replace_run_evidence(
         self,

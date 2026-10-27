@@ -19,6 +19,8 @@ from .db_models import (
     TaskContextRecord,
 )
 from .unit_of_work import session_scope
+from .image_publication_models import ImagePublicationReviewRecord
+from .source_snapshot_repository import SourceSnapshotRepository
 from ...application.system_image.system_image_models import (
     BaselineRecord,
     ContextObjectOverlay,
@@ -324,6 +326,8 @@ class SystemImageRepository:
                         confidence=item.confidence,
                         relations=item.relations,
                         evidence=item.evidence,
+                        code_reference=item.code_reference.model_dump() if item.code_reference else None,
+                        document_reference=item.document_reference.model_dump() if item.document_reference else None,
                         freshness=item.freshness,
                         sort_order=sort_order,
                     )
@@ -424,6 +428,7 @@ class SystemImageRepository:
         knowledge_objects: list[KnowledgeObject] | None = None,
     ) -> None:
         with session_scope() as session:
+            SourceSnapshotRepository._lock(session, project_id)
             if knowledge_objects is not None:
                 session.execute(
                     delete(KnowledgeObjectRecord).where(
@@ -432,7 +437,14 @@ class SystemImageRepository:
                 )
             session.execute(delete(RawAssetRow).where(RawAssetRow.project_id == project_id))
             session.execute(delete(RawAssetChunkRecord).where(RawAssetChunkRecord.project_id == project_id))
-            session.execute(delete(BaselineRow).where(BaselineRow.project_id == project_id))
+            # Baseline identity is referenced by immutable publication history.
+            # Refresh projections in place rather than deleting and recreating it.
+            session.execute(delete(BaselineRow).where(
+                BaselineRow.project_id == project_id,
+                BaselineRow.id.not_in([item.id for item in baselines]),
+                BaselineRow.id.not_in(select(ImagePublicationReviewRecord.baseline_id).where(
+                    ImagePublicationReviewRecord.project_id == project_id)),
+            ))
             session.execute(delete(ContextRelationshipRecord).where(ContextRelationshipRecord.project_id == project_id))
             session.execute(delete(ContextObjectOverlayRecord).where(ContextObjectOverlayRecord.project_id == project_id))
             session.execute(delete(QualityMetricSnapshotRecord).where(QualityMetricSnapshotRecord.project_id == project_id))
@@ -453,6 +465,8 @@ class SystemImageRepository:
                         confidence=item.confidence,
                         relations=item.relations,
                         evidence=item.evidence,
+                        code_reference=item.code_reference.model_dump() if item.code_reference else None,
+                        document_reference=item.document_reference.model_dump() if item.document_reference else None,
                         freshness=item.freshness,
                         sort_order=sort_order,
                     )
@@ -466,6 +480,7 @@ class SystemImageRepository:
                         version_id=source.version_id,
                         source_type=source.source_type,
                         source_uri=source.source_uri,
+                        tracked_ref=source.tracked_ref,
                         source_label=source.source_label,
                         ingestion_status=source.ingestion_status,
                         content_hash=source.content_hash,
@@ -506,22 +521,15 @@ class SystemImageRepository:
                 )
 
             for sort_order, baseline in enumerate(baselines):
-                session.add(
-                    BaselineRow(
-                        id=baseline.id,
-                        project_id=baseline.project_id,
-                        kind=baseline.kind,
-                        status=baseline.status,
-                        source_version_id=baseline.source_version_id,
-                        parent_baseline_id=baseline.parent_baseline_id,
-                        fork_strategy=baseline.fork_strategy,
-                        object_count=baseline.object_count,
-                        relationship_count=baseline.relationship_count,
-                        metric_snapshot_count=baseline.metric_snapshot_count,
-                        updated_at=baseline.updated_at,
-                        sort_order=sort_order,
-                    )
-                )
+                row = session.get(BaselineRow, baseline.id)
+                if baseline.project_id != project_id or row is not None and row.project_id != project_id:
+                    raise ValueError("baseline project_id does not match the repository scope")
+                if row is None:
+                    row = BaselineRow(id=baseline.id, project_id=project_id)
+                    session.add(row)
+                for key, value in baseline.model_dump(exclude={"id", "project_id"}).items():
+                    setattr(row, key, value)
+                row.sort_order = sort_order
 
             for sort_order, relationship in enumerate(relationships):
                 session.add(
@@ -668,6 +676,8 @@ class SystemImageRepository:
             confidence=row.confidence,
             relations=row.relations or [],
             evidence=row.evidence or [],
+            code_reference=row.code_reference,
+            document_reference=row.document_reference,
             freshness=row.freshness,
         )
 
@@ -679,6 +689,7 @@ class SystemImageRepository:
             version_id=row.version_id,
             source_type=row.source_type,  # type: ignore[arg-type]
             source_uri=row.source_uri,
+            tracked_ref=row.tracked_ref,
             source_label=row.source_label,
             ingestion_status=row.ingestion_status,  # type: ignore[arg-type]
             content_hash=row.content_hash,

@@ -12,6 +12,7 @@ import type {
   ModelConfigTestRequest,
   ModelConfigUpdateRequest,
   ModelRoute,
+  ModelRouteConfigurations,
   ProjectCard,
   ProjectMemberCandidate,
   ProjectMemberView,
@@ -49,6 +50,8 @@ export const platformApi = {
       body: JSON.stringify(payload),
     }),
   getSettings: () => request<StudioSettings>('/v1/settings'),
+  getModelConfigurations: (route: ModelRoute, signal?: AbortSignal) =>
+    request<ModelRouteConfigurations>(`/v1/settings/model-configs?route=${route}`, { signal, cache: 'no-store' }),
   listMySessions: () => request<AccessSessionView[]>('/v1/auth/sessions'),
   revokeMySession: (sessionId: string) =>
     request<AccessSessionView>(`/v1/auth/sessions/${sessionId}`, { method: 'DELETE' }),
@@ -118,6 +121,7 @@ export const platformApi = {
       body: JSON.stringify({ name }),
     }),
   invokeTool: (payload: {
+    idempotency_key?: string
     conversation_id?: string
     tool_id: string
     input?: Record<string, unknown>
@@ -135,7 +139,8 @@ export const platformApi = {
         ...payload,
       }),
     }),
-  getToolInvocation: (invocationId: string) => request<ToolInvocation>(`/v1/tool-invocations/${invocationId}`),
+  getToolInvocation: (invocationId: string, options?: { signal?: AbortSignal }) =>
+    request<ToolInvocation>(`/v1/tool-invocations/${invocationId}`, { signal: options?.signal, cache: 'no-store' }),
   listToolInvocations: (filters?: {
     conversation_id?: string
     agent_goal_id?: string

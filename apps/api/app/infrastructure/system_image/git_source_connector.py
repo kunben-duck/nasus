@@ -17,6 +17,8 @@ from ...application.system_image.source_ports import (
     SourceCredentialResolver,
 )
 from ...application.system_image.system_image_models import RawAssetRecord
+from .git_snapshot_cache import GitSnapshotCache
+from ...domain.system_image.source_tracking import require_tracked_ref
 
 
 class GitSourceConnectorError(OSError):
@@ -80,6 +82,7 @@ class GitSourceConnector:
         self.timeout_seconds = timeout_seconds or self._env_int("NASUS_GIT_CLONE_TIMEOUT_SECONDS", 120)
         self.credential_resolver = credential_resolver or EnvironmentSourceCredentialResolver()
         self.git_binary = git_binary or shutil.which("git") or ""
+        self.snapshots = GitSnapshotCache(self.cache_dir / "snapshots")
 
     def supports(self, source: RawAssetRecord) -> bool:
         if source.source_type != "code":
@@ -91,33 +94,59 @@ class GitSourceConnector:
         )
 
     def materialize(self, source: RawAssetRecord, *, refresh: bool) -> MaterializedSource:
+        tracked_ref = require_tracked_ref(source.source_type, source.tracked_ref)
         safe_uri, parsed = self._validated_uri(source.source_uri)
         if not self.git_binary:
             raise GitSourceConnectorError("Git executable is required to materialize remote code sources")
 
-        cache_key = hashlib.sha256(safe_uri.encode("utf-8")).hexdigest()
+        cache_key = hashlib.sha256(
+            (f"{source.project_id}\0{source.id}\0{safe_uri}"
+                + (f"\0{tracked_ref}" if tracked_ref is not None else "")).encode("utf-8")
+        ).hexdigest()
         checkout = self.cache_dir / "git" / cache_key
         checkout.parent.mkdir(parents=True, exist_ok=True)
         lock_path = checkout.parent / f"{cache_key}.lock"
 
         with self._checkout_lock(lock_path), self._git_environment(source, parsed) as git_env:
+            pinned_revision = self._pinned_revision(source) if not refresh else None
             if (checkout / ".git").is_dir():
                 if refresh:
-                    self._refresh_checkout(checkout, safe_uri, git_env)
+                    self._refresh_checkout(checkout, safe_uri, git_env, tracked_ref=tracked_ref)
             elif checkout.exists():
                 raise GitSourceConnectorError(f"managed Git cache path is not a repository: {checkout}")
             else:
-                self._clone_checkout(checkout, safe_uri, git_env)
+                self._clone_checkout(checkout, safe_uri, git_env,
+                    selected_ref=(pinned_revision or tracked_ref) if tracked_ref is not None else None)
 
-            revision = self._run_git(
-                ["-C", str(checkout), "rev-parse", "HEAD"],
-                env=git_env,
-            ).strip()
+            if pinned_revision:
+                try:
+                    self._run_git(
+                        ["-C", str(checkout), "cat-file", "-e", f"{pinned_revision}^{{commit}}"],
+                        env=git_env,
+                    )
+                except GitSourceConnectorError:
+                    self._run_git(["-C", str(checkout), "remote", "set-url", "origin", safe_uri], env=git_env)
+                    self._run_git(
+                        ["-C", str(checkout), "fetch", "--depth", "1", "--no-tags", "origin", pinned_revision],
+                        env=git_env,
+                    )
+                revision = pinned_revision
+            else:
+                revision = self._run_git(
+                    ["-C", str(checkout), "rev-parse", "HEAD"],
+                    env=git_env,
+                ).strip()
             if not re.fullmatch(r"[0-9a-fA-F]{40,64}", revision):
                 raise GitSourceConnectorError("Git checkout did not resolve to a valid commit revision")
+            snapshot = self.snapshots.materialize(
+                namespace=cache_key,
+                revision=revision,
+                repository=checkout,
+                run_git=lambda args: self._run_git(args, env=git_env),
+            )
 
         return MaterializedSource(
-            local_path=checkout,
+            local_path=snapshot,
             connector_kind=self.connector_kind,
             source_ref=safe_uri,
             revision=revision,
@@ -125,8 +154,25 @@ class GitSourceConnector:
                 "connector:git",
                 f"git:revision:{revision}",
                 f"git:remote:{safe_uri}",
+                *((f"git:tracked-ref:{tracked_ref}",) if tracked_ref is not None else ()),
             ),
         )
+
+    @staticmethod
+    def _pinned_revision(source: RawAssetRecord) -> str | None:
+        revisions = {
+            ref.removeprefix("git:revision:")
+            for ref in source.evidence_refs
+            if ref.startswith("git:revision:")
+        }
+        if not revisions:
+            return None
+        if len(revisions) != 1:
+            raise GitSourceConnectorError("Git source has conflicting pinned revisions")
+        revision = next(iter(revisions))
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", revision):
+            raise GitSourceConnectorError("Git source has an invalid pinned revision")
+        return revision.lower()
 
     def _validated_uri(self, source_uri: str) -> tuple[str, SplitResult]:
         parsed = urlsplit(source_uri)
@@ -147,27 +193,33 @@ class GitSourceConnector:
         safe_uri = urlunsplit((scheme, parsed.netloc, parsed.path, "", ""))
         return safe_uri, parsed
 
-    def _clone_checkout(self, checkout: Path, safe_uri: str, env: Mapping[str, str]) -> None:
+    def _clone_checkout(self, checkout: Path, safe_uri: str, env: Mapping[str, str], *, selected_ref: str | None = None) -> None:
         temporary_parent = checkout.parent
         temporary_path = Path(tempfile.mkdtemp(prefix=f".{checkout.name}.", dir=temporary_parent))
         shutil.rmtree(temporary_path)
         try:
-            self._run_git(
-                ["clone", "--depth", "1", "--no-tags", "--", safe_uri, str(temporary_path)],
-                env=env,
-            )
+            if selected_ref is None:
+                self._run_git(["clone", "--depth", "1", "--no-tags", "--", safe_uri, str(temporary_path)], env=env)
+            else:
+                self._run_git(["init", str(temporary_path)], env=env)
+                self._run_git(["-C", str(temporary_path), "remote", "add", "origin", safe_uri], env=env)
+                self._refresh_checkout(temporary_path, safe_uri, env, tracked_ref=selected_ref)
             os.replace(temporary_path, checkout)
         except Exception:
             shutil.rmtree(temporary_path, ignore_errors=True)
             raise
 
-    def _refresh_checkout(self, checkout: Path, safe_uri: str, env: Mapping[str, str]) -> None:
+    def _refresh_checkout(self, checkout: Path, safe_uri: str, env: Mapping[str, str], *, tracked_ref: str | None = None) -> None:
         self._run_git(["-C", str(checkout), "remote", "set-url", "origin", safe_uri], env=env)
         self._run_git(
-            ["-C", str(checkout), "fetch", "--depth", "1", "--no-tags", "origin"],
+            ["-C", str(checkout), "fetch", "--depth", "1", "--no-tags", "origin",
+                *([tracked_ref] if tracked_ref is not None else [])],
             env=env,
         )
-        self._run_git(["-C", str(checkout), "checkout", "--detach", "--force", "FETCH_HEAD"], env=env)
+        commit = self._run_git(["-C", str(checkout), "rev-parse", "--verify", "FETCH_HEAD^{commit}"], env=env).strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
+            raise GitSourceConnectorError("Git tracked reference did not resolve to a commit")
+        self._run_git(["-C", str(checkout), "checkout", "--detach", "--force", commit], env=env)
         self._run_git(["-C", str(checkout), "clean", "-ffd"], env=env)
 
     def _run_git(self, args: Sequence[str], *, env: Mapping[str, str]) -> str:
@@ -202,9 +254,17 @@ class GitSourceConnector:
         env.update(
             {
                 "GIT_TERMINAL_PROMPT": "0",
-                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_COUNT": "4",
                 "GIT_CONFIG_KEY_0": "credential.helper",
                 "GIT_CONFIG_VALUE_0": "",
+                "GIT_CONFIG_KEY_1": "core.hooksPath",
+                "GIT_CONFIG_VALUE_1": os.devnull,
+                "GIT_CONFIG_KEY_2": "http.followRedirects",
+                "GIT_CONFIG_VALUE_2": "false",
+                "GIT_CONFIG_KEY_3": "submodule.recurse",
+                "GIT_CONFIG_VALUE_3": "false",
             }
         )
         if not source.credential_ref:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Callable
+
 from ...domain.system_image.quality_context import (
     automation_feasibility,
     context_confidence,
@@ -51,15 +53,21 @@ class SystemImageQualityContextApplicationService:
         baseline_id: str,
         version_id: str | None,
         captured_at: str,
+        sources: list[RawAssetRecord] | None = None,
+        check_phase: Callable[[], None] | None = None,
     ) -> None:
-        sources = self._workspace.list_raw_assets(project_id)
-        if sources and not self._workspace.list_raw_asset_chunks(project_id):
-            self._raw_asset_chunks.materialize(project_id, captured_at=captured_at)
+        if check_phase:
+            check_phase()
+        frozen_sources = sources
+        sources = sources if sources is not None else self._workspace.list_raw_assets(project_id)
+        if frozen_sources is not None or (sources and not self._workspace.list_raw_asset_chunks(project_id)):
+            self._raw_asset_chunks.materialize(project_id, captured_at=captured_at,
+                sources=frozen_sources, check_phase=check_phase)
         chunks = self._workspace.list_raw_asset_chunks(project_id)
         objects = self._workspace.list_knowledge_objects(project_id)
         relationships = self._workspace.list_context_relationships(project_id)
         metrics = self._workspace.list_quality_metric_snapshots(project_id)
-        if not sources or not objects or not relationships or not metrics:
+        if not sources or not objects or not metrics or (frozen_sources is None and not relationships):
             self._retrieval_index.replace_embeddings(project_id, [])
             self._workspace.replace_embedding_records(project_id, [])
             self._workspace.replace_retrieval_runs(project_id, [])
@@ -82,6 +90,8 @@ class SystemImageQualityContextApplicationService:
         ]
 
         source_refs = [source.id for source in sources if source.ingestion_status == "indexed"]
+        if check_phase:
+            check_phase()
         embedding_records = await self._embedding_records.materialize(
             project_id,
             baseline_id=baseline_id,
@@ -90,6 +100,8 @@ class SystemImageQualityContextApplicationService:
             objects=objects,
             captured_at=captured_at,
         )
+        if check_phase:
+            check_phase()
         self._workspace.replace_embedding_records(project_id, embedding_records)
         self._retrieval_index.replace_embeddings(project_id, embedding_records)
         embedding_status = "ready" if embedding_records and all(item.status == "ready" for item in embedding_records) else "fallback"
@@ -104,12 +116,16 @@ class SystemImageQualityContextApplicationService:
                 version_id=version_id,
             ),
         )
+        if check_phase:
+            check_phase()
 
         retrieval_runs: list[RetrievalRun] = []
         rerank_records: list[RerankRecord] = []
         task_contexts: list[TaskContext] = []
         quality_profiles: list[QualityProfile] = []
         for target_index, target in enumerate(active_targets):
+            if check_phase:
+                check_phase()
             target_us_id = None if target.id == "project_context" else target.id
             retrieval_id = f"retrieval_{project_id}_{target.id}"
             rerank_id = f"rerank_{project_id}_{target.id}"
@@ -146,6 +162,8 @@ class SystemImageQualityContextApplicationService:
                     task_id=target_us_id,
                 ),
             )
+            if check_phase:
+                check_phase()
             ranked_refs = [result_refs[index] for index in rerank_result.ranked_indices if index < len(result_refs)]
             selected_refs = ranked_refs or result_refs
             context_projection = self._context_projection(

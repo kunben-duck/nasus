@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...domain.system_image.source_refresh import SourceRefreshSelection
+
 from .knowledge_queries import SystemImageKnowledgeQueryApplicationService
 from .lifecycle import SystemImageLifecycleApplicationService
 from .ports import SystemImageOperationsPort, SystemImageWorkspacePort
+from .read_model_port import SystemImageReadPort
 from .snapshots import SystemImageSnapshotQueryApplicationService
 from .source_bindings import SystemImageSourceBindingApplicationService
 
@@ -22,11 +25,12 @@ class SystemImageApplicationService:
         self,
         workspace: SystemImageWorkspacePort,
         operations: SystemImageOperationsPort,
+        reader: SystemImageReadPort,
     ) -> None:
         self._workspace = workspace
-        self.knowledge_queries = SystemImageKnowledgeQueryApplicationService(workspace)
+        self.snapshots = SystemImageSnapshotQueryApplicationService(reader)
+        self.knowledge_queries = SystemImageKnowledgeQueryApplicationService(self.snapshots)
         self.lifecycle = SystemImageLifecycleApplicationService(operations)
-        self.snapshots = SystemImageSnapshotQueryApplicationService(operations)
         self.source_bindings = SystemImageSourceBindingApplicationService(
             workspace,
             operations,
@@ -62,17 +66,20 @@ class SystemImageApplicationService:
             registered_from_invocation_id=registered_from_invocation_id,
         )
 
-    def ingest_sources(self, project_id: str) -> Any:
+    def ingest_sources(self, project_id: str, *, selection: SourceRefreshSelection | None = None,
+                       invocation_id: str | None = None) -> Any:
         self._require_project_access(project_id)
-        return self.source_bindings.ingest_sources(project_id)
+        if invocation_id is not None:
+            return self.source_bindings.ingest_sources(project_id, selection=selection, invocation_id=invocation_id)
+        return self.source_bindings.ingest_sources(project_id, selection=selection)
 
-    async def materialize_context(self, project_id: str) -> Any:
+    async def materialize_context(self, project_id: str, *, invocation_id=None) -> Any:
         self._require_project_access(project_id)
-        return await self.lifecycle.materialize_context(project_id)
+        return await self.lifecycle.materialize_context(project_id, invocation_id=invocation_id)
 
-    async def initialize_baseline(self, project_id: str) -> Any:
+    async def initialize_baseline(self, project_id: str, *, invocation_id=None) -> Any:
         self._require_project_access(project_id)
-        return await self.lifecycle.initialize_baseline(project_id)
+        return await self.lifecycle.initialize_baseline(project_id, invocation_id=invocation_id)
 
     def list_knowledge_objects(self, project_id: str) -> Any:
         self._require_project_access(project_id)
@@ -82,9 +89,9 @@ class SystemImageApplicationService:
         self._require_project_access(project_id)
         return self.knowledge_queries.get_knowledge_object(project_id, object_id)
 
-    def get_system_image(self, project_id: str) -> Any:
+    def get_system_image(self, project_id: str, *, working: bool = False) -> Any:
         self._require_project_access(project_id)
-        return self.snapshots.get_system_image(project_id)
+        return self.snapshots.get_system_image(project_id, working=working)
 
     def _require_project_access(self, project_id: str) -> None:
         self._workspace.require_project_access(project_id)

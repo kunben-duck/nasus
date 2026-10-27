@@ -658,6 +658,22 @@ def assert_true(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def wait_for_turn(
+    conversation_id: str,
+    accepted: dict[str, Any],
+    timeout_seconds: float = 180,
+) -> dict[str, Any]:
+    turn_id = accepted.get("turn_id")
+    assert_true(isinstance(turn_id, str) and bool(turn_id), f"message was not accepted as a turn: {accepted}")
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        turn = request("GET", f"/v1/conversations/{conversation_id}/turns/{turn_id}")
+        if turn.get("status") in {"completed", "interrupted", "failed"}:
+            return turn
+        time.sleep(0.2)
+    raise AssertionError(f"conversation turn {turn_id} did not finish within {timeout_seconds:.0f}s")
+
+
 def s3_key(storage_ref: str) -> str:
     prefix = f"s3://{BUCKET}/"
     assert_true(storage_ref.startswith(prefix), f"expected S3 storage ref under {prefix}, got {storage_ref}")
@@ -761,7 +777,7 @@ conversation = request(
 conversation_id = conversation["id"]
 
 fixture = ROOT / "tests" / "fixtures" / "system-image"
-agent_response = request(
+accepted_turn = request(
     "POST",
     f"/v1/conversations/{conversation_id}/messages",
     {
@@ -773,6 +789,10 @@ agent_response = request(
         )
     },
 )
+assert_true(accepted_turn.get("status") == "accepted", f"conversation turn was not accepted: {accepted_turn}")
+completed_turn = wait_for_turn(conversation_id, accepted_turn)
+assert_true(completed_turn.get("status") == "completed", f"conversation turn did not complete: {completed_turn}")
+agent_response = completed_turn.get("result") or {}
 goal = agent_response.get("agent_goal")
 assert_true(isinstance(goal, dict), f"conversation did not create an AgentGoal: {agent_response}")
 goal_id = goal["id"]

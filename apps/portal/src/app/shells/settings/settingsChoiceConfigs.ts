@@ -1,19 +1,26 @@
 import type { StudioSettings } from '../../../domains/platform/types'
 import type { SettingsChoice } from './settingsTypes'
+import type { Translate } from '../../../shared/i18n/I18nProvider'
 
-export const themeChoices: SettingsChoice<StudioSettings['theme']>[] = [
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' },
-  { value: 'system', label: 'System' },
-]
+export function themeChoices(t: Translate): SettingsChoice<StudioSettings['theme']>[] {
+  return [
+    { value: 'light', label: t('Light') },
+    { value: 'dark', label: t('Dark') },
+    { value: 'system', label: t('System') },
+  ]
+}
 
-export const languageChoices: SettingsChoice<StudioSettings['language']>[] = [
-  { value: 'en', label: 'English' },
-  { value: 'zh', label: '中文' },
-]
+export function languageChoices(t: Translate): SettingsChoice<StudioSettings['language']>[] {
+  return [
+    { value: 'zh', label: t('中文') },
+    { value: 'en', label: t('English') },
+  ]
+}
 
-export const notificationChoices: SettingsChoice<StudioSettings['notification_mode']>[] = [
-  { value: 'important', label: 'Important only' },
-  { value: 'all', label: 'All notifications' },
-  { value: 'muted', label: 'Muted' },
-]
+export function notificationChoices(t: Translate): SettingsChoice<StudioSettings['notification_mode']>[] {
+  return [
+    { value: 'important', label: t('Important only') },
+    { value: 'all', label: t('All notifications') },
+    { value: 'muted', label: t('Muted') },
+  ]
+}

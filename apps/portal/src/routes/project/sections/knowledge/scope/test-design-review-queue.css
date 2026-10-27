@@ -1,0 +1,6 @@
+.test-design-review-queue { margin: 16px 0; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); font-size: 12px; line-height: 1.6; scroll-margin-top: 80px; }
+.test-design-review-queue > p { color: var(--muted); }
+.test-design-review-queue .small-btn { white-space: normal; overflow-wrap: anywhere; }
+.review-draft-options { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin: 12px 0; }
+.review-draft-options .small-btn { min-width: 0; max-width: 100%; height: auto; white-space: normal; overflow-wrap: anywhere; text-align: start; line-height: 1.5; }
+.review-draft-options button[aria-pressed="true"] { border-color: var(--blue); background: var(--surface-3); }

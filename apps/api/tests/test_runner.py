@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 from threading import RLock
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from apps.api.app.application.quality_loop.runner_port import AutomationRunnerCo
 from apps.api.app.infrastructure.quality_loop import LegacyQualityRunWorkspace
 from apps.api.app.infrastructure.runner.adapters import HttpAutomationRunner
 from apps.api.app.infrastructure.runner.run_orchestrator import RunOrchestrator
+from apps.api.tests.test_runner_execution_receipts import make_receipt
 from apps.api.app.infrastructure.storage.object_storage import ObjectStorage, ObjectStorageConfig
 
 
@@ -44,6 +46,10 @@ class RecordingRunWorkspace:
 
     def save_run_detail(self, project_id: str, run: RunDetail) -> None:
         self.runs = [run.model_copy(deep=True), *[item for item in self.runs if item.id != run.id]]
+
+    def commit_run_execution(self, project_id, run, evidence):
+        self.save_run_detail(project_id, run)
+        self.replace_run_evidence(project_id, run.id, evidence)
 
     def replace_run_evidence(
         self,
@@ -223,10 +229,15 @@ def test_http_runner_maps_authenticated_runner_response(monkeypatch):
                         "content_base64": screenshot,
                     }
                 ],
+                "execution_receipt": make_receipt(captured["command"]),
             }
 
-    def fake_post(url, *, headers, json, timeout):
-        captured.update(url=url, headers=headers, json=json, timeout=timeout)
+    def fake_post(url, *, headers, content, timeout):
+        payload = json.loads(content)
+        captured.update(url=url, headers=headers, json=payload, timeout=timeout,
+            command=AutomationRunnerCommand(job_id=payload["job_id"], project_id=payload["project_id"],
+                us_id=payload["us_id"], base_url=payload["base_url"], steps=tuple(payload["steps"]),
+                timeout_ms=payload["timeout_ms"], metadata=payload["metadata"]))
         return StubResponse()
 
     monkeypatch.setattr(httpx, "post", fake_post)
@@ -257,6 +268,8 @@ def test_http_runner_maps_authenticated_runner_response(monkeypatch):
 
     assert result.status == "passed"
     assert result.runner_mode == "http_playwright"
+    assert result.execution_receipt["assertion_count"] == 0
+    assert result.execution_receipt["business_coverage_verified"] is False
     assert result.artifacts[0].content_base64 == screenshot
     assert captured["url"] == "http://runner.internal:8090/v1/jobs"
     assert captured["headers"]["Authorization"] == "Bearer runner-service-token"

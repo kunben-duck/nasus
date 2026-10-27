@@ -17,6 +17,10 @@ class ToolInvocationFactRepository(Protocol):
 
     def get_tool_invocation(self, invocation_id: str) -> ToolInvocation | None: ...
 
+    def find_idempotent_tool_invocation(
+        self, *, idempotency_scope: str, tool_id: str, idempotency_key: str,
+    ) -> ToolInvocation | None: ...
+
     def load_tool_invocations(self) -> list[ToolInvocation]: ...
 
     def load_audit_events(self) -> list[AuditEvent]: ...
@@ -61,6 +65,17 @@ class ProjectedToolInvocationApplicationState:
         with self._adapters.projection_lock():
             return list(self._state.invocations.values())
 
+    def find_idempotent_invocation(
+        self, *, idempotency_scope: str, tool_id: str, idempotency_key: str,
+    ) -> ToolInvocation | None:
+        with self._adapters.projection_lock():
+            matches = [item for item in self._state.invocations.values()
+                if item.idempotency_scope == idempotency_scope and item.tool_id == tool_id
+                and item.idempotency_key == idempotency_key]
+            if len(matches) > 1:
+                raise ValueError("non-unique original command")
+            return matches[0] if matches else None
+
     def list_audit_events(self) -> list[AuditEvent]:
         with self._adapters.projection_lock():
             return list(self._state.audit_events.values())
@@ -100,6 +115,13 @@ class SQLAlchemyToolInvocationApplicationState:
 
     def list_invocations(self) -> list[ToolInvocation]:
         return self._repository.load_tool_invocations()
+
+    def find_idempotent_invocation(
+        self, *, idempotency_scope: str, tool_id: str, idempotency_key: str,
+    ) -> ToolInvocation | None:
+        return self._repository.find_idempotent_tool_invocation(
+            idempotency_scope=idempotency_scope, tool_id=tool_id, idempotency_key=idempotency_key,
+        )
 
     def list_audit_events(self) -> list[AuditEvent]:
         return self._repository.load_audit_events()

@@ -13,6 +13,7 @@ import { ModelConfigurationFields } from './ModelConfigurationFields'
 import { ModelConfigurationList } from './ModelConfigurationList'
 import { ModelConnectionResult } from './ModelConnectionResult'
 import { buildCreateModelPayload, useModelConfigurationDraft } from '../../../domains/platform/settings/useModelConfigurationDraft'
+import { useI18n } from '../../../shared/i18n/I18nProvider'
 
 export function ModelConfigurationBody({
   settings,
@@ -35,6 +36,7 @@ export function ModelConfigurationBody({
   onActivateModel: (configId: string) => Promise<StudioSettings>
   onUseSystemDefaultModel: (route: ModelRoute) => Promise<StudioSettings>
 }) {
+  const { t } = useI18n()
   const [mode, setMode] = useState<'list' | 'add' | 'edit'>('list')
   const [editingConfig, setEditingConfig] = useState<SavedModelConfig | null>(null)
   const [tested, setTested] = useState<{ key: string; token: string } | null>(null)
@@ -113,7 +115,7 @@ export function ModelConfigurationBody({
         }}
         type="button"
       >
-        Back to models
+        {t('Back to models')}
       </button>
       <ModelConfigurationFields
         activeRoute={activeRoute}

@@ -48,6 +48,8 @@ def build_agent_workflow_runtime(
                 if workflow_state is not None
                 else None
             ),
+            goal_state_reader=workflow_state.get_goal if workflow_state is not None else None,
+            resume_replay_reader=workflow_state.is_resume_consumed if workflow_state is not None else None,
         )
     return TemporalAgentWorkflowRuntime(temporal_gateway)
 

@@ -17,6 +17,7 @@
 ## 2. 产品模块设计
 
 - [系统画像构建](./system-image/README.md)
+- [系统画像自主构建与版本演进开发提案](./system-image/autonomous-system-image-design.md)
 - [Agent 主体](./agent/README.md)
 - [质量闭环主体](./quality-loop/README.md)
 

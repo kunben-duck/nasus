@@ -1,5 +1,7 @@
 # 系统画像长期方案：支撑质量闭环
 
+2026-09-09 补充：[自主构建主方案](./autonomous-system-image-design.md)定义画像怎样持续产生；[用途上下文契约](./knowledge-contracts.md#5-用途上下文包)进一步规定 US/用例/脚本/运行的强制字段、oracle、版本与证据门禁；[开发验收方案](./delivery-and-evaluation.md)给出可测标准。本文的能力说明不代表对应实现已经通过这些门禁。
+
 ## 1. 文档定位
 
 本文定义系统画像如何长期服务 Nasus 的质量闭环。

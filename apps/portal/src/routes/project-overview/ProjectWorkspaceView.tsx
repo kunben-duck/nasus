@@ -31,17 +31,20 @@ export function ProjectWorkspaceView({
   prompt,
   setPrompt,
   runPrompt,
+  stopPrompt,
   invokeProjectAction,
   confirmPendingGoal,
+  continueStructuralInvestigation,
   initializeSystemImage,
   buildSystemImageFromSources,
   confirmToolInvocation,
   loading,
+  streaming,
   activeActionId,
   sidebarCollapsed,
   toggleSidebar,
 }: ProjectWorkspaceViewProps) {
-  const actionControlsDisabled = Boolean(activeActionId)
+  const actionControlsDisabled = loading || Boolean(activeActionId)
   const composerDisabled = loading || actionControlsDisabled
   const pendingBaselineInvocation = selectPendingBaselineInvocation(toolInvocations, pendingGoal)
   const cardActions = createProjectWorkspaceCardActions({ setMode, initializeSystemImage, invokeProjectAction })
@@ -65,7 +68,7 @@ export function ProjectWorkspaceView({
           systemImage={systemImage}
           values={sourceBindings.values}
           error={sourceBindings.visibleError}
-          loading={loading}
+          loading={loading || sourceBindings.preparing}
           onChange={sourceBindings.updateSourceBinding}
           onUpload={sourceBindings.uploadSourceFiles}
           uploadingSourceKey={sourceBindings.uploadingSourceKey}
@@ -82,6 +85,7 @@ export function ProjectWorkspaceView({
         loading={loading}
         disabled={composerDisabled}
         confirmPendingGoal={confirmPendingGoal}
+        continueStructuralInvestigation={continueStructuralInvestigation}
         confirmToolInvocation={confirmToolInvocation}
       />
       <AgentLog messages={messages} />
@@ -89,6 +93,8 @@ export function ProjectWorkspaceView({
         prompt={prompt}
         setPrompt={setPrompt}
         runPrompt={runPrompt}
+        stopPrompt={stopPrompt}
+        streaming={streaming}
         initializeSystemImage={initializeSystemImage}
         invokeProjectAction={invokeProjectAction}
         disabled={composerDisabled}

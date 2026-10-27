@@ -1,0 +1,32 @@
+.fixture-history .scope-record code,
+.fixture-history .review-draft-options button {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.fixture-history .scope-record > code {
+  display: block;
+  margin-top: 6px;
+}
+
+.fixture-history .small-btn {
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+  line-height: 1.5;
+}
+
+.fixture-history .small-btn:hover:not(:disabled),
+.fixture-history .small-btn[aria-pressed="true"] {
+  border-color: var(--blue);
+  background: var(--surface-3);
+}
+
+.fixture-history .small-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}

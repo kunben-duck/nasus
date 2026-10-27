@@ -10,6 +10,8 @@ import type {
   StudioSettings,
 } from './types'
 import type { BackendStatus } from '../../shared/status/backendStatus'
+import { useI18n } from '../../shared/i18n/I18nProvider'
+import type { MessageKey } from '../../shared/i18n/messages'
 import { useTheme } from '../../shared/tokens/useTheme'
 
 export type StatusDependency = {
@@ -38,6 +40,7 @@ const settingsQueryKey = ['settings'] as const
 
 export function useStudioSettings(statusDependencies: StatusDependency[] = []): StudioSettingsControls {
   const queryClient = useQueryClient()
+  const { locale, setLocale, t } = useI18n()
   const settingsQuery = useQuery({ queryKey: settingsQueryKey, queryFn: platformApi.getSettings })
   useTheme(settingsQuery.data?.theme)
 
@@ -86,14 +89,18 @@ export function useStudioSettings(statusDependencies: StatusDependency[] = []): 
   })
 
   return {
-    settings: settingsQuery.data,
+    // The legacy settings language is global, not this browser's preference.
+    settings: settingsQuery.data ? { ...settingsQuery.data, language: locale } : undefined,
     backendStatus,
     settingsDisabled,
-    statusMessage: statusMessageFor(backendStatus),
+    statusMessage: t(statusMessageKeyFor(backendStatus)),
     testingConnection: testSettingsConnection.isPending || createModelConfig.isPending || updateModelConfig.isPending || activateModelConfig.isPending || useSystemDefaultModelConfig.isPending,
     connectionTestResult: testSettingsConnection.data,
     saveTheme: (theme) => updateSettings.mutate({ theme }),
-    saveLanguage: (language) => updateSettings.mutate({ language }),
+    saveLanguage: (language) => {
+      setLocale(language)
+      updateSettings.mutate({ language })
+    },
     saveNotification: (notification_mode) => updateSettings.mutate({ notification_mode }),
     saveModel: (payload) => createModelConfig.mutateAsync(payload),
     updateModel: (configId, payload) => updateModelConfig.mutateAsync({ configId, payload }),
@@ -103,7 +110,7 @@ export function useStudioSettings(statusDependencies: StatusDependency[] = []): 
   }
 }
 
-function statusMessageFor(status: BackendStatus): string {
+function statusMessageKeyFor(status: BackendStatus): MessageKey {
   if (status === 'loading') {
     return 'Settings are loading from the backend.'
   }

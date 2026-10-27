@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+import pytest
 
 from apps.api.app.application.agent.agent_models import (
     AgentGoal,
@@ -14,10 +15,12 @@ from apps.api.app.application.agent.loop import AgentLoopRuntime
 from apps.api.app.application.platform.tool_models import (
     ToolInvocation,
     ToolInvocationRequest,
+    ToolResult,
 )
 from apps.api.app.domain.agent.memory import AgentMemoryContext
 from apps.api.app.domain.agent.runtime_models import AgentGoalProposal, ToolPlanStep
 from apps.api.app.domain.agent.state_machine import AgentGoalStateMachine
+from apps.api.app.domain.agent.resume_checkpoint import AgentResumeCheckpoint, AgentResumeCheckpointChanged
 
 
 class StaticPlanCompiler:
@@ -29,6 +32,34 @@ class StaticPlanCompiler:
 
     def compile_followup_tool_plan(self, goal: AgentGoal) -> list[ToolPlanStep]:
         return []
+
+    def compile_structure_continuation(self, goal: AgentGoal) -> list[ToolPlanStep]:
+        return []
+
+
+@pytest.mark.parametrize("template", ["system_image_build", "system_image_investigation"])
+@pytest.mark.parametrize("status", ["paused", "blocked"])
+@pytest.mark.parametrize("pinned", [False, True])
+def test_completion_review_resume_preserves_the_entire_settled_goal(template, status, pinned):
+    conversation = ConversationSession(id="review-conversation", session_id="review-session", title="Review",
+        space_type="project", space_id="review-project", project_id="review-project")
+    state = InMemoryAgentGraphState(conversation)
+    goal = AgentGoal(id="review-goal", conversation_id=conversation.id, project_id=conversation.project_id,
+        title="Review fixed artifacts", summary="No new work", goal_template=template, status=status,
+        pause_reason="build_completion_review", target_refs=["build_plan:fixed"], active_runtime_ms=125,
+        steps=[AgentStep(id="decide", title="Review completion", status="pending", phase="deciding")])
+    state.goals[goal.id] = goal
+    state.is_resume_consumed = lambda checkpoint: False
+    original = goal.model_dump(mode="json")
+    runtime = LocalAgentGraphRuntime(state, AgentGoalStateMachine(), StaticPlanCompiler())
+    expected = AgentResumeCheckpoint.capture(original) if pinned else None
+    for _ in range(3):
+        result = asyncio.run(runtime.resume(goal.id, expected_resume=expected))
+        assert result.model_dump(mode="json") == original
+    assert not state.persisted_goal_ids and not state.events and not state.messages and not state.invocations
+    changed = {**original, "active_runtime_ms": 126}
+    with pytest.raises(AgentResumeCheckpointChanged):
+        asyncio.run(runtime.resume(goal.id, expected_resume=AgentResumeCheckpoint.capture(changed)))
 
 
 class InMemoryAgentGraphState:
@@ -397,3 +428,43 @@ def test_local_agent_graph_pauses_at_tool_confirmation_gate() -> None:
         "waiting_confirmation"
     )
     assert state.memory_checkpoints == []
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled", "followup"])
+def test_running_tool_is_not_observed_completed_or_reissued_before_its_terminal_receipt(outcome):
+    conversation = ConversationSession(id="conversation_1", session_id="session_1", title="Build",
+        space_type="project", space_id="project_checkout", project_id="project_checkout")
+    state = InMemoryAgentGraphState(conversation)
+    state.next_invocation_status = "running"
+    runtime = LocalAgentGraphRuntime(state, AgentGoalStateMachine(), StaticPlanCompiler())
+    proposal = AgentGoalProposal(goal_template="system_image_build", title="Build", summary="Build",
+        goal_description="Read fixed state", planned_tools=[ToolPlanStep(tool_id="query.system_image.status",
+            input_payload={"project_id": "project_checkout"}, reason="Read fixed state")])
+    goal = AgentGoal(id="goal_running", conversation_id=conversation.id, project_id=conversation.project_id,
+        title="Build", status="pending", summary="Build", steps=runtime.steps_for_proposal(proposal))
+    state.goals[goal.id] = goal
+
+    async def verify():
+        work = asyncio.create_task(runtime.start(goal.id, proposal))
+        for _ in range(100):
+            if state.invocations:
+                break
+            await asyncio.sleep(0.01)
+        assert len(state.invocations) == 1 and not work.done()
+        assert goal.status == "running" and state.memory_checkpoints == []
+        assert not any(step.status == "completed" for step in goal.steps if step.phase == "observing")
+        invocation = next(iter(state.invocations.values()))
+        invocation.status = "completed" if outcome == "followup" else outcome
+        invocation.result = ToolResult(invocation_id=invocation.id, status=invocation.status, summary="Saved result",
+            requires_followup=outcome == "followup", followup_reason="structural_candidate_review" if outcome == "followup" else None)
+        await asyncio.wait_for(work, 3)
+        assert len(state.invocations) == 1
+
+    asyncio.run(verify())
+    assert goal.status == ("paused" if outcome == "followup" else outcome)
+    checkpoint = runtime.state_machine.checkpoint(goal)
+    assert checkpoint.phase == ("paused" if outcome == "followup" else outcome)
+    if outcome in {"completed", "failed", "cancelled"}:
+        assert checkpoint.resume_step_index is None
+    if outcome == "followup":
+        assert goal.pause_reason == "structural_candidate_review"

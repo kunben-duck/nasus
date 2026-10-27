@@ -1,6 +1,8 @@
 import type { AgentMemoryContextView } from '../../../domains/agent/types'
+import { useI18n } from '../../../shared/i18n/I18nProvider'
 
 export function MemoryContextPanel({ context }: { context?: AgentMemoryContextView }) {
+  const { t, tx } = useI18n()
   if (!context) return null
 
   const scopes = [
@@ -15,30 +17,30 @@ export function MemoryContextPanel({ context }: { context?: AgentMemoryContextVi
       <header>
         <span className="agent-runtime-icon memory" aria-hidden="true">◎</span>
         <div>
-          <span className="eyebrow">Memory context</span>
-          <strong>Evidence used by this goal</strong>
+          <span className="eyebrow">{t('Memory context')}</span>
+          <strong>{t('Evidence used by this goal')}</strong>
         </div>
         <span className="memory-context-hash" title={context.context_hash}>{shortHash(context.context_hash)}</span>
       </header>
-      <p>{context.context_summary}</p>
+      <p>{tx(context.context_summary)}</p>
       <div className="memory-scope-grid">
         {scopes.map(([label, value]) => (
           <div key={label}>
-            <span>{label}</span>
+            <span>{tx(label)}</span>
             <strong>{Object.keys(value ?? {}).length}</strong>
           </div>
         ))}
       </div>
       <div className="agent-runtime-meta">
-        <span>{context.recent_turn_count} recent turns</span>
-        <span>{context.checkpoint_count} checkpoints</span>
-        <span>{context.retrieved_context.refs.length} retrieved refs</span>
-        <span>{context.tool_catalog.tool_count} tools</span>
+        <span>{t('{count} recent turns', { count: context.recent_turn_count })}</span>
+        <span>{t('{count} checkpoints', { count: context.checkpoint_count })}</span>
+        <span>{t('{count} retrieved refs', { count: context.retrieved_context.refs.length })}</span>
+        <span>{t('{count} tools', { count: context.tool_catalog.tool_count })}</span>
       </div>
       {context.retrieved_context.summary ? (
         <div className="agent-runtime-evidence">
-          <span>Long-term retrieval</span>
-          <p>{context.retrieved_context.summary}</p>
+          <span>{t('Long-term retrieval')}</span>
+          <p>{tx(context.retrieved_context.summary)}</p>
         </div>
       ) : null}
     </article>

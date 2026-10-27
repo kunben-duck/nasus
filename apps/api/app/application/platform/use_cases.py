@@ -195,5 +195,10 @@ class PlatformApplicationService:
     def get_tool_invocation(self, invocation_id: str) -> Any:
         return self._tool_invocations.get_tool_invocation(invocation_id)
 
+    def resolve_owned_tool_invocation(self, *, project_id: str, tool_id: str, request_key: str) -> Any:
+        return self._tool_invocations.resolve_owned_tool_invocation(
+            actor_id=self.current_user().id, project_id=project_id, tool_id=tool_id, request_key=request_key,
+        )
+
     async def confirm_tool_invocation(self, invocation_id: str) -> Any:
         return await self._tool_invocations.confirm_tool_invocation(invocation_id)

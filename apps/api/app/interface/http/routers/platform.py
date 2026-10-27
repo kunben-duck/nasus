@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 
 from ....application.platform.account_models import AuthLoginRequest, AuthRegisterRequest, UserAvatarUpdateRequest
 from ....application.platform.errors import PlatformApplicationError
@@ -173,10 +173,12 @@ def get_tools(platform: PlatformApp) -> Any:
 @router.get("/v1/audit-events")
 def list_audit_events(
     platform: PlatformApp,
+    response: Response,
     conversation_id: Optional[str] = None,
     tool_invocation_id: Optional[str] = None,
     agent_goal_id: Optional[str] = None,
 ) -> Any:
+    response.headers["Cache-Control"] = "private, no-store"
     return platform.list_audit_events(
         conversation_id=conversation_id,
         tool_invocation_id=tool_invocation_id,
@@ -205,18 +207,21 @@ def list_llm_calls(
 
 
 @router.post("/v1/tool-invocations")
-async def create_tool_invocation(payload: ToolInvocationRequest, platform: PlatformApp) -> Any:
+async def create_tool_invocation(payload: ToolInvocationRequest, platform: PlatformApp, response: Response) -> Any:
+    response.headers["Cache-Control"] = "private, no-store"
     return await platform.create_tool_invocation(payload)
 
 
 @router.get("/v1/tool-invocations")
 def list_tool_invocations(
     platform: PlatformApp,
+    response: Response,
     conversation_id: Optional[str] = None,
     agent_goal_id: Optional[str] = None,
     tool_id: Optional[str] = None,
     status: Optional[str] = None,
 ) -> Any:
+    response.headers["Cache-Control"] = "private, no-store"
     return platform.list_tool_invocations(
         conversation_id=conversation_id,
         agent_goal_id=agent_goal_id,
@@ -225,8 +230,21 @@ def list_tool_invocations(
     )
 
 
+@router.get("/v1/tool-invocations/resolve")
+def resolve_owned_tool_invocation(
+    platform: PlatformApp,
+    response: Response,
+    project_id: str = Query(min_length=1, max_length=128),
+    tool_id: str = Query(min_length=1, max_length=128),
+    request_key: str = Query(min_length=1, max_length=128),
+) -> Any:
+    response.headers["Cache-Control"] = "private, no-store"
+    return platform.resolve_owned_tool_invocation(project_id=project_id, tool_id=tool_id, request_key=request_key)
+
+
 @router.get("/v1/tool-invocations/{invocation_id}")
-def get_tool_invocation(invocation_id: str, platform: PlatformApp) -> Any:
+def get_tool_invocation(invocation_id: str, platform: PlatformApp, response: Response) -> Any:
+    response.headers["Cache-Control"] = "private, no-store"
     try:
         return platform.get_tool_invocation(invocation_id)
     except KeyError as exc:
@@ -234,7 +252,8 @@ def get_tool_invocation(invocation_id: str, platform: PlatformApp) -> Any:
 
 
 @router.post("/v1/tool-invocations/{invocation_id}/confirm")
-async def confirm_tool_invocation(invocation_id: str, platform: PlatformApp) -> Any:
+async def confirm_tool_invocation(invocation_id: str, platform: PlatformApp, response: Response) -> Any:
+    response.headers["Cache-Control"] = "private, no-store"
     try:
         return await platform.confirm_tool_invocation(invocation_id)
     except KeyError as exc:

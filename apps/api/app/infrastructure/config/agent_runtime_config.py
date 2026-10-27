@@ -42,6 +42,7 @@ class TemporalGatewayConfig:
     address: str = "localhost:7233"
     namespace: str = "default"
     task_queue: str = "nasus-agent-goals"
+    conversation_turn_task_queue: str = ""
     workflow_type: str = "NasusAgentGoalWorkflow"
     current_goal_query: str = "current_goal"
     resume_signal: str = "resume_goal"
@@ -49,6 +50,10 @@ class TemporalGatewayConfig:
     query_timeout_seconds: float = 30.0
     query_poll_interval_seconds: float = 0.1
     max_concurrent_activities: int = 1
+
+    @property
+    def resolved_conversation_turn_task_queue(self) -> str:
+        return self.conversation_turn_task_queue or f"{self.task_queue}-conversation-turns"
 
 
 @dataclass(frozen=True)
@@ -67,10 +72,15 @@ class LangGraphGatewayConfig:
 
 
 def temporal_gateway_config_from_env() -> TemporalGatewayConfig:
+    task_queue = _env_str("NASUS_TEMPORAL_TASK_QUEUE", "nasus-agent-goals")
     return TemporalGatewayConfig(
         address=_env_str("NASUS_TEMPORAL_ADDRESS", "localhost:7233"),
         namespace=_env_str("NASUS_TEMPORAL_NAMESPACE", "default"),
-        task_queue=_env_str("NASUS_TEMPORAL_TASK_QUEUE", "nasus-agent-goals"),
+        task_queue=task_queue,
+        conversation_turn_task_queue=_env_str(
+            "NASUS_TEMPORAL_CONVERSATION_TURN_TASK_QUEUE",
+            f"{task_queue}-conversation-turns",
+        ),
         workflow_type=_env_str("NASUS_TEMPORAL_AGENT_GOAL_WORKFLOW", "NasusAgentGoalWorkflow"),
         current_goal_query=_env_str("NASUS_TEMPORAL_CURRENT_GOAL_QUERY", "current_goal"),
         resume_signal=_env_str("NASUS_TEMPORAL_RESUME_SIGNAL", "resume_goal"),

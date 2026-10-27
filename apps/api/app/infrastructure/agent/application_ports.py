@@ -42,6 +42,10 @@ from ...application.platform.tool_models import (
     ToolInvocationRequest,
 )
 from ...domain.agent.memory import AgentMemoryContext
+from ...domain.agent.resume_checkpoint import AgentResumeCheckpoint, InvalidAgentResumeCheckpoint
+from ...domain.agent.goal_creation import ActiveAgentGoalExists, ACTIVE_AGENT_GOAL_STATUSES
+from ...domain.agent.plan_policy import AgentPlanPolicyViolation
+from ...application.agent.resume_ports import AgentResumeCommitPort
 from .application_port_dependencies import (
     AgentApplicationPersistenceAdapters,
     AgentApplicationProjectionState,
@@ -194,6 +198,14 @@ class LegacyConversationMessageStateAdapter(ConversationMessageStatePort):
         message: ConversationMessage,
     ) -> None:
         self._persistence.append_message(conversation.id, message)
+        self._persistence.upsert_conversation(conversation)
+
+    def update_message(
+        self,
+        conversation: ConversationSession,
+        message: ConversationMessage,
+    ) -> None:
+        self._persistence.update_message(conversation.id, message)
         self._persistence.upsert_conversation(conversation)
 
     async def maybe_create_summary_checkpoint(
@@ -394,10 +406,28 @@ class LegacyAgentGoalLifecycleStateAdapter(AgentGoalLifecycleStatePort):
     ) -> None:
         self._state = state
         self._adapters = adapters
+        self._start_receipts = {}
 
-    def create_goal(self, goal: AgentGoal) -> None:
+    def create_goal(self, goal: AgentGoal, *, start_identity=None) -> None:
+        if start_identity is not None:
+            from ...domain.agent.goal_creation import AgentGoalStartReplayed
+
+            if goal.workflow_id != start_identity.workflow_id:
+                raise AgentPlanPolicyViolation("agent_start_scope_changed", "The durable start cannot replace its controller.")
+            receipt = self._start_receipts.get(start_identity.workflow_id)
+            if receipt is not None:
+                start_identity.require_receipt(receipt, goal.conversation_id, goal.project_id)
+                raise AgentGoalStartReplayed(receipt["goal_id"])
+        active = [item for item in self._state.goals.values()
+            if item.conversation_id == goal.conversation_id and item.status in ACTIVE_AGENT_GOAL_STATUSES]
+        if len(active) > 1:
+            raise AgentPlanPolicyViolation("active_agent_goal_ambiguous", "Multiple historical goals control this conversation; resolve them explicitly.")
+        if active:
+            raise ActiveAgentGoalExists(active[0].id)
         self._state.goals[goal.id] = goal
         self._adapters.project_goal(goal)
+        if start_identity is not None:
+            self._start_receipts[start_identity.workflow_id] = start_identity.receipt(goal.id, goal.conversation_id, goal.project_id)
 
     def persist_goal(self, goal: AgentGoal) -> None:
         self._adapters.project_goal(goal)
@@ -482,8 +512,10 @@ class LegacyAgentLoopStateAdapter(AgentLoopStatePort):
     def get_conversation(self, conversation_id: str) -> ConversationSession:
         return self._runtime.get_conversation(conversation_id)
 
-    def create_goal(self, payload: AgentGoalCreateRequest) -> AgentGoal:
-        return self._runtime.create_goal(payload)
+    def create_goal(self, payload: AgentGoalCreateRequest, *, start_identity=None) -> AgentGoal:
+        if start_identity is None:
+            return self._runtime.create_goal(payload)
+        return self._runtime.create_goal(payload, start_identity=start_identity)
 
     def get_goal(self, goal_id: str) -> AgentGoal:
         return self._runtime.get_goal(goal_id)
@@ -548,11 +580,14 @@ class LegacyAgentGraphStateAdapter(AgentGraphStatePort):
         tools: AgentGraphToolRuntimeAdapters,
         memory: AgentGraphMemoryAdapters,
         goal_effects: AgentGoalLifecycleAdapters,
+        *,
+        resume_commits: AgentResumeCommitPort | None = None,
     ) -> None:
         self._lookups = lookups
         self._tools = tools
         self._memory = memory
         self._goal_effects = goal_effects
+        self._resume_commits = resume_commits
 
     def get_goal(self, goal_id: str) -> AgentGoal:
         return self._lookups.get_goal(goal_id)
@@ -580,6 +615,14 @@ class LegacyAgentGraphStateAdapter(AgentGraphStatePort):
 
     def persist_goal(self, goal: AgentGoal) -> None:
         self._goal_effects.project_goal(goal)
+
+    def persist_goal_at_checkpoint(self, goal: AgentGoal, checkpoint: AgentResumeCheckpoint) -> None:
+        if self._resume_commits is None:
+            raise InvalidAgentResumeCheckpoint("Conditional resume persistence is not configured.")
+        self._resume_commits.commit_at_checkpoint(goal, checkpoint)
+
+    def is_resume_consumed(self, checkpoint: AgentResumeCheckpoint) -> bool:
+        return self._resume_commits.is_consumed(checkpoint) if self._resume_commits is not None else False
 
     def record_goal_audit(
         self,
@@ -690,6 +733,12 @@ class LegacyAgentWorkflowStateAdapter(AgentWorkflowStatePort):
     def accept_remote_goal(self, goal: AgentGoal) -> None:
         self._adapters.accept_remote_goal(goal)
 
+    def get_goal(self, goal_id: str) -> AgentGoal:
+        return self._adapters.get_goal(goal_id)
+
+    def is_resume_consumed(self, checkpoint: AgentResumeCheckpoint) -> bool:
+        return False
+
 
 class LegacyConversationMessageRuntimeAdapter(ConversationMessageRuntimePort):
     def __init__(self, adapters: AgentConversationRuntimeAdapters) -> None:
@@ -761,8 +810,13 @@ class LegacyConversationMessageRuntimeAdapter(ConversationMessageRuntimePort):
     def is_paused_goal(self, goal_id: str) -> bool:
         return self._adapters.is_paused_goal(goal_id)
 
-    async def resume_goal(self, goal_id: str) -> AgentGoal:
-        return await self._adapters.resume_goal(goal_id)
+    def get_goal(self, goal_id: str) -> AgentGoal:
+        return self._adapters.get_goal(goal_id)
+
+    async def resume_goal(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
+        if expected_resume is None:
+            return await self._adapters.resume_goal(goal_id)
+        return await self._adapters.resume_goal(goal_id, expected_resume=expected_resume)
 
     def get_tool_invocation(self, invocation_id: str) -> ToolInvocation:
         return self._adapters.get_tool_invocation(invocation_id)
@@ -842,6 +896,46 @@ class LegacyAgentConversationEventPublisher(AgentConversationEventPublisherPort)
             mutation_kind="patch",
             patch={"latest_summary_checkpoint_id": checkpoint_id},
             query_keys=[["conversation", conversation_id]],
+        )
+
+    async def publish_message_event(
+        self,
+        conversation_id: str,
+        message: ConversationMessage,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        await self._adapters.push_event(
+            conversation_id,
+            event_type=event_type,
+            entity_type="conversation_message",
+            entity_id=message.id,
+            mutation_kind="patch",
+            patch={
+                "status": message.status,
+                "stream_id": message.stream_id,
+                "sequence_max": message.sequence_max,
+            },
+            query_keys=[["conversation", conversation_id]],
+            payload={"message_id": message.id, **payload},
+        )
+
+    async def publish_turn_event(
+        self,
+        conversation_id: str,
+        turn_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        await self._adapters.push_event(
+            conversation_id,
+            event_type=event_type,
+            entity_type="conversation_turn",
+            entity_id=turn_id,
+            mutation_kind="patch",
+            patch={"status": payload.get("status")},
+            query_keys=[["conversation", conversation_id]],
+            payload={"turn_id": turn_id, **payload},
         )
 
 
@@ -953,6 +1047,7 @@ class LegacyAgentApplicationPorts:
         )
         conversation_persistence = AgentConversationPersistenceAdapters(
             append_message=persistence.append_message,
+            update_message=persistence.update_message,
             upsert_conversation=persistence.upsert_conversation,
             upsert_summary_checkpoint=persistence.upsert_summary_checkpoint,
         )
@@ -1049,6 +1144,7 @@ class LegacyAgentApplicationPorts:
                 is_confirmation_message=runtime.is_confirmation_message,
                 list_tool_invocations=runtime.list_tool_invocations,
                 is_paused_goal=runtime.is_paused_goal,
+                get_goal=runtime.get_goal,
                 resume_goal=runtime.resume_goal,
                 get_tool_invocation=runtime.get_tool_invocation,
                 confirm_tool_invocation=runtime.confirm_tool_invocation,

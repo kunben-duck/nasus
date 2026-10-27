@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, ContextManager, Protocol
 
 from ...domain.platform.rbac import AuthorizationDecision
 from ...domain.platform.tool_governance import ToolGateDecision
@@ -43,6 +43,10 @@ class ToolInvocationRuntimeStatePort(Protocol):
         ...
 
 
+class ToolOperationScopePort(Protocol):
+    def operation_session(self) -> ContextManager[None]: ...
+
+
 class ToolCatalogRuntimePort(Protocol):
     def tool_definition(self, tool_id: str) -> ToolDefinition | None:
         ...
@@ -69,8 +73,18 @@ class ToolGovernanceRuntimePort(Protocol):
         ...
 
 
+class ToolExecutionGrantRuntimePort(Protocol):
+    def reserve_execution(self, invocation: ToolInvocation) -> bool:
+        ...
+
+
 class ToolAuditRuntimePort(Protocol):
     def record_audit_event(self, event: AuditEvent) -> None:
+        ...
+
+
+class ToolWorkBudgetRuntimePort(Protocol):
+    def reserve_tool_work(self, invocation: ToolInvocation) -> bool:
         ...
 
 
@@ -104,4 +118,5 @@ __all__ = [
     "ToolGovernanceRuntimePort",
     "ToolInvocationEventRuntimePort",
     "ToolInvocationRuntimeStatePort",
+    "ToolOperationScopePort",
 ]

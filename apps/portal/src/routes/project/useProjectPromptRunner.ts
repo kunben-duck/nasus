@@ -20,23 +20,31 @@ export function useProjectPromptRunner({
 
   async function runPrompt() {
     const text = prompt.trim()
-    if (!text || !project) return
+    if (!text || !project || !projectConversation.conversationId || projectConversation.isLoading
+      || projectConversation.isSending || isPromptRunning) return
 
     setPrompt('')
     setIsPromptRunning(true)
 
     try {
-      await projectConversation.sendMessage(text)
+      const accepted = await projectConversation.sendMessage(text)
+      await projectConversation.waitForTurn(accepted.turn_id)
       await invalidateProjectWorkspaceQueries(queryClient, project)
     } finally {
       setIsPromptRunning(false)
     }
   }
 
+  async function stopPrompt() {
+    await projectConversation.cancelActiveTurn()
+    setIsPromptRunning(false)
+  }
+
   return {
     prompt,
     setPrompt,
     runPrompt,
+    stopPrompt,
     isPromptRunning,
   }
 }

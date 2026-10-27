@@ -17,6 +17,11 @@ class AgentReplanRequest:
     observation_summary: str
     completed_steps: list[ToolPlanStep] = field(default_factory=list)
     remaining_steps: list[ToolPlanStep] = field(default_factory=list)
+    latest_invocation_id: str | None = None
+
+
+class AgentEvidenceObservationPort(Protocol):
+    def describe(self, invocation_id: str, project_id: str) -> dict | None: ...
 
 
 @dataclass(frozen=True)

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Response, UploadFile
 
 from ....application.platform.project_models import ProjectCreateRequest, VersionCreateRequest, VersionSummary
 from ....application.system_image.source_uploads import SourceUploadFile, SourceUploadResult
@@ -140,7 +140,8 @@ def get_workspace(project_id: str, us_id: str, project_workspace: ProjectWorkspa
 
 
 @router.get("/v1/projects/{project_id}/knowledge")
-def get_project_knowledge(project_id: str, system_image: SystemImageApp) -> Any:
+def get_project_knowledge(project_id: str, system_image: SystemImageApp, response: Response) -> Any:
+    response.headers["Cache-Control"] = "private, no-store"
     try:
         return system_image.list_knowledge_objects(project_id)
     except KeyError as exc:
@@ -148,15 +149,18 @@ def get_project_knowledge(project_id: str, system_image: SystemImageApp) -> Any:
 
 
 @router.get("/v1/projects/{project_id}/system-image")
-def get_project_system_image(project_id: str, system_image: SystemImageApp) -> Any:
+def get_project_system_image(project_id: str, system_image: SystemImageApp, response: Response,
+                             view: Literal["current", "working"] = "current") -> Any:
+    response.headers["Cache-Control"] = "private, no-store"
     try:
-        return system_image.get_system_image(project_id)
+        return system_image.get_system_image(project_id, working=view == "working")
     except KeyError as exc:
         raise error_response("not_found", f"system image for project {project_id} was not found", 404) from exc
 
 
 @router.get("/v1/projects/{project_id}/knowledge/{object_id}")
-def get_knowledge_detail(project_id: str, object_id: str, system_image: SystemImageApp) -> Any:
+def get_knowledge_detail(project_id: str, object_id: str, system_image: SystemImageApp, response: Response) -> Any:
+    response.headers["Cache-Control"] = "private, no-store"
     try:
         return system_image.get_knowledge_object(project_id, object_id)
     except (KeyError, StopIteration) as exc:

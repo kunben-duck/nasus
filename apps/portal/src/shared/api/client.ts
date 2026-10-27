@@ -1,3 +1,6 @@
+import { ApiRequestError } from './errors'
+export { ApiRequestError } from './errors'
+
 type ApiAuthTokenProvider = () => string
 
 let authTokenProvider: ApiAuthTokenProvider = () => ''
@@ -30,13 +33,15 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
 
   if (!response.ok) {
     let message = `Request failed for ${path}`
+    let code: string | undefined
     const contentType = response.headers.get('content-type') ?? ''
 
     if (contentType.includes('application/json')) {
       const payload = await response.json().catch(() => null) as
-        | { detail?: { error?: { message?: string } }; error?: { message?: string }; message?: string }
+        | { detail?: { error?: { message?: string; code?: string } }; error?: { message?: string; code?: string }; message?: string }
         | null
       message = payload?.detail?.error?.message ?? payload?.error?.message ?? payload?.message ?? message
+      code = payload?.detail?.error?.code ?? payload?.error?.code
     } else {
       const text = await response.text().catch(() => '')
       if (text.trim()) {
@@ -44,7 +49,7 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
       }
     }
 
-    throw new Error(message)
+    throw new ApiRequestError(message, response.status, code)
   }
 
   return response.json() as Promise<T>

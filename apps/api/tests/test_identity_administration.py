@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select, update
+from sqlalchemy import select, update
 
 from apps.api.app.infrastructure.persistence.database import SessionLocal
 from apps.api.app.infrastructure.persistence.db_models import (
@@ -15,14 +15,7 @@ from apps.api.app.main import app
 client = TestClient(app)
 
 
-def _reset_identity_tables() -> None:
-    with SessionLocal() as session:
-        session.execute(delete(AccessSessionRecord))
-        session.execute(delete(ProjectRoleBindingRecord))
-        session.execute(delete(UserIdentityRecord))
-        session.commit()
-
-
+# Distinct test accounts preserve users referenced by append-only image history.
 def _register(email: str, name: str) -> tuple[dict, dict[str, str]]:
     response = client.post(
         "/v1/auth/register",
@@ -34,7 +27,6 @@ def _register(email: str, name: str) -> tuple[dict, dict[str, str]]:
 
 
 def test_platform_user_administration_is_persistent_and_revokes_suspended_sessions() -> None:
-    _reset_identity_tables()
     registered, headers = _register("managed-user@example.com", "Managed User")
     user_id = registered["user"]["id"]
 
@@ -74,7 +66,6 @@ def test_platform_user_administration_is_persistent_and_revokes_suspended_sessio
 
 
 def test_user_can_inspect_and_revoke_only_own_access_session() -> None:
-    _reset_identity_tables()
     first, first_headers = _register("first-session@example.com", "First Session")
     second, second_headers = _register("second-session@example.com", "Second Session")
 
@@ -101,7 +92,6 @@ def test_user_can_inspect_and_revoke_only_own_access_session() -> None:
 
 
 def test_project_administrator_manages_members_and_access_changes_immediately() -> None:
-    _reset_identity_tables()
     owner, owner_headers = _register("member-owner@example.com", "Member Owner")
     member, member_headers = _register("project-member@example.com", "Project Member")
 
@@ -161,7 +151,6 @@ def test_project_administrator_manages_members_and_access_changes_immediately() 
 
 
 def test_platform_admin_cannot_demote_or_suspend_its_own_active_account() -> None:
-    _reset_identity_tables()
     registered, _headers = _register("self-admin@example.com", "Self Admin")
     user_id = registered["user"]["id"]
     with SessionLocal() as session:

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ...application.agent.agent_models import ConversationSession
+from ...domain.system_image.source_access import SourceAccessDenied, SourceAccessScope
 from ...application.system_image.retrieval import (
     SystemImageMemoryHit,
     SystemImageMemorySearchResult,
@@ -38,8 +39,11 @@ class DefaultSystemImageRetriever(SystemImageRetriever):
         *,
         limit: int = 8,
         trace: bool = False,
+        expected_scope: SourceAccessScope | None = None,
     ) -> SystemImageMemorySearchResult:
         del trace
+        if expected_scope is not None:
+            raise SourceAccessDenied("legacy retriever cannot validate a source access scope")
         project_id = conversation.project_id
         if not project_id:
             return SystemImageMemorySearchResult()

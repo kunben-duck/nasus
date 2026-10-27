@@ -26,12 +26,15 @@ export function ProjectOverviewRoute() {
           prompt={context.prompt}
           setPrompt={context.setPrompt}
           runPrompt={context.runPrompt}
+          stopPrompt={context.stopPrompt}
           invokeProjectAction={context.invokeProjectAction}
           confirmPendingGoal={context.confirmPendingGoal}
+          continueStructuralInvestigation={context.continueStructuralInvestigation}
           initializeSystemImage={context.initializeSystemImage}
           buildSystemImageFromSources={context.buildSystemImageFromSources}
           confirmToolInvocation={context.confirmToolInvocation}
           loading={context.loading}
+          streaming={context.streaming}
           activeActionId={context.activeActionId}
           sidebarCollapsed={shellState.sidebarCollapsed}
           toggleSidebar={shellState.toggleSidebar}

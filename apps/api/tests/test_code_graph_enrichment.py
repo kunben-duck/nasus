@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -18,6 +20,17 @@ from apps.api.app.infrastructure.system_image.composite_code_intelligence import
 from apps.api.app.infrastructure.system_image.tree_sitter_code_intelligence import (
     TreeSitterCodeIntelligenceAdapter,
 )
+from apps.api.app.infrastructure.system_image.code_graph_process import CodeGraphProcessRunner
+
+
+class _FixtureProcessRunner(CodeGraphProcessRunner):
+    def run(self, args, *, env, **kwargs):
+        fixture_env = {key: value for key, value in os.environ.items() if key.startswith("FAKE_CBM_")}
+        return super().run(args, env={**env, **fixture_env}, **kwargs)
+
+
+def _adapter(config):
+    return CodebaseMemoryCodeIntelligenceAdapter(config, process_runner=_FixtureProcessRunner())
 
 
 def _config(binary: Path, *, mode: str = "optional") -> CodeGraphConfig:
@@ -49,13 +62,42 @@ def _fake_codebase_memory(tmp_path: Path) -> tuple[Path, Path]:
     binary = tmp_path / "codebase-memory-mcp"
     call_log = tmp_path / "calls.jsonl"
     binary.write_text(
-        """#!/usr/bin/env python3
+        f"#!{sys.executable}\n" + """
 import json
 import os
 import sys
 
 if sys.argv[1:] == ["--version"]:
     print("codebase-memory-mcp 9.9.9")
+    raise SystemExit(0)
+
+if sys.argv[1:] == ["--ui=false"]:
+    contracts = {
+        "index_repository": {"repo_path": "string", "mode": "string", "persistence": "boolean"},
+        "search_graph": {"project": "string", "name_pattern": "string", "offset": "integer", "limit": "integer"},
+        "query_graph": {"project": "string", "query": "string"},
+    }
+    for line in sys.stdin:
+        request = json.loads(line)
+        method = request["method"]
+        with open(os.environ["FAKE_CBM_CALL_LOG"], "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"tool": "mcp." + method, "payload": {}}) + "\\n")
+        if method == "notifications/initialized":
+            continue
+        if method == "initialize":
+            result = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
+                      "serverInfo": {"name": "codebase-memory-mcp", "version": "9.9.9"}}
+        elif method == "tools/list":
+            tools = []
+            for name, fields in contracts.items():
+                props = {key: {"type": value} for key, value in fields.items()}
+                if name == "index_repository":
+                    props["mode"]["enum"] = ["fast", "moderate", "full"]
+                tools.append({"name": name, "inputSchema": {"type": "object", "properties": props}})
+            result = {"tools": tools}
+        else:
+            raise SystemExit("unexpected contract probe operation")
+        print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
     raise SystemExit(0)
 
 tool = sys.argv[2]
@@ -134,6 +176,15 @@ elif tool == "search_graph":
             "has_more": False,
         }
 elif tool == "query_graph":
+    if "n.start_line" in payload["query"]:
+        result = {
+            "columns": ["n.qualified_name", "n.file_path", "n.start_line", "n.end_line"],
+            "rows": [],
+        }
+        if os.environ.get("FAKE_CBM_LOCATIONS"):
+            result["rows"] = [[os.environ.get("FAKE_CBM_PROJECT", "") + ".payments.PaymentService", "payments.py", "1", "3"]]
+        print(json.dumps(result))
+        raise SystemExit(0)
     provider_prefix = (
         os.environ.get("FAKE_CBM_PROJECT", "") + "."
         if os.environ.get("FAKE_CBM_SCHEMA") == "flat" and os.environ.get("FAKE_CBM_PROJECT")
@@ -146,10 +197,13 @@ elif tool == "query_graph":
             "type(r)",
             "b.qualified_name",
             "b.file_path",
+            "r.confidence",
+            "r.strategy",
+            "r.candidates",
         ],
         "rows": [
-            [provider_prefix + "payments.PaymentService", "payments.py", "DEFINES_METHOD", provider_prefix + "payments.authorize", "payments.py"],
-            [provider_prefix + "payments.authorize", "payments.py", "HANDLES", provider_prefix + "payments.POST /payments", "payments.py"],
+            [provider_prefix + "payments.PaymentService", "payments.py", "DEFINES_METHOD", provider_prefix + "payments.authorize", "payments.py", "", "", ""],
+            [provider_prefix + "payments.authorize", "payments.py", "HANDLES", provider_prefix + "payments.POST /payments", "payments.py", "", "", ""],
         ],
         "total": 2,
     }
@@ -161,6 +215,113 @@ print(json.dumps(result))
     )
     binary.chmod(0o755)
     return binary, call_log
+
+
+def test_synthetic_provider_routes_are_quarantined_not_attributed_to_arbitrary_files(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "payments.py").write_text("def pay():\n    return True\n")
+    adapter = _adapter(_config(Path(sys.executable)))
+    adapter._probe_version = lambda: "synthetic-route-contract-fixture"
+
+    def call(tool, payload, **kwargs):
+        if tool == "index_repository":
+            return {"project": "fixture", "status": "indexed"}
+        if tool == "search_graph":
+            return {"results": [{"name": "/", "qualified_name": "__route__GET__/", "label": "Route",
+                                 "file_path": "payments.py", "lines": 1}], "has_more": False}
+        raise AssertionError("unverified synthetic routes must not acquire edges or exact-location claims")
+
+    adapter._call = call
+    result = adapter.analyze([_source_unit(root)])
+    assert not result.entities and not result.relationships
+    assert "code-graph-routes:unverified-synthetic" in result.evidence_refs
+    assert "code-graph-routes:excluded:1" in result.evidence_refs
+
+
+def test_collapsed_edge_kinds_keep_all_evidence_independent_of_provider_row_order(tmp_path, monkeypatch):
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "payments.py").write_text("class PaymentService:\n    def authorize(self):\n        return True\n")
+    binary, log = _fake_codebase_memory(tmp_path)
+    monkeypatch.setenv("FAKE_CBM_CALL_LOG", str(log))
+    adapter = _adapter(_config(binary))
+    original = adapter._call
+    reverse = False
+
+    def call(tool, payload, **kwargs):
+        value = original(tool, payload, **kwargs)
+        if tool == "query_graph" and "type(r)" in payload["query"]:
+            row = list(value["rows"][0])
+            row[2] = "DEFINES"
+            value["rows"].append(row)
+            value["total"] = len(value["rows"])
+            if reverse:
+                value["rows"].reverse()
+        return value
+
+    monkeypatch.setattr(adapter, "_call", call)
+    first = adapter.analyze([_source_unit(root)])
+    reverse = True
+    second = adapter.analyze([_source_unit(root)])
+    assert first == second
+    membership = next(item for item in first.relationships if item.relationship_kind == "belongs_to")
+    assert set(membership.evidence_refs) == {"code-graph-edge:codebase-memory:DEFINES",
+                                           "code-graph-edge:codebase-memory:DEFINES_METHOD"}
+
+
+@pytest.mark.parametrize("strategy,candidates", [("suffix_match", "2"), ("suffix_match", "1"),
+    ("field_type_hint", "3"), ("unique_name", "1"), ("unknown", ""), ("", ""),
+    ("lsp_type_dispatch", "2"), ("lsp_type_dispatch", "0"), ("lsp_type_dispatch", ""),
+    ("lsp_unreviewed_strategy", "1")])
+def test_unverified_call_resolution_is_a_gap_not_a_certain_edge(tmp_path, monkeypatch, strategy, candidates):
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "payments.py").write_text("class PaymentService:\n    def authorize(self):\n        return True\n")
+    binary, log = _fake_codebase_memory(tmp_path)
+    monkeypatch.setenv("FAKE_CBM_CALL_LOG", str(log))
+    adapter = _adapter(_config(binary))
+    original = adapter._call
+
+    def call(tool, payload, **kwargs):
+        value = original(tool, payload, **kwargs)
+        if tool == "query_graph" and "type(r)" in payload["query"]:
+            value["rows"].append(["payments.PaymentService", "payments.py", "CALLS", "payments.authorize", "payments.py",
+                                  "0.55", strategy, candidates])
+            value["total"] = len(value["rows"])
+        return value
+
+    monkeypatch.setattr(adapter, "_call", call)
+    result = adapter.analyze([_source_unit(root)])
+    assert not any(item.relationship_kind == "calls" for item in result.relationships)
+    assert "code-graph-calls:unverified-resolution" in result.evidence_refs
+
+
+@pytest.mark.parametrize("strategy", ["same_module", "lsp_type_dispatch"])
+def test_call_resolution_keeps_provider_score_and_strategy_without_calibration_claim(tmp_path, monkeypatch, strategy):
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "payments.py").write_text("class PaymentService:\n    def authorize(self):\n        return True\n")
+    binary, log = _fake_codebase_memory(tmp_path)
+    monkeypatch.setenv("FAKE_CBM_CALL_LOG", str(log))
+    adapter = _adapter(_config(binary))
+    original = adapter._call
+
+    def call(tool, payload, **kwargs):
+        value = original(tool, payload, **kwargs)
+        if tool == "query_graph" and "type(r)" in payload["query"]:
+            value["rows"].append(["payments.PaymentService", "payments.py", "CALLS", "payments.authorize", "payments.py",
+                                  "0.91", strategy, "1"])
+            value["total"] = len(value["rows"])
+        return value
+
+    monkeypatch.setattr(adapter, "_call", call)
+    result = adapter.analyze([_source_unit(root)])
+    edge = next(item for item in result.relationships if item.relationship_kind == "calls")
+    assert edge.confidence == .91
+    assert "code-graph-call-resolution:strategy:" + strategy in edge.evidence_refs
+    assert "code-graph-call-resolution:candidates:1" in edge.evidence_refs
+    assert "code-graph-call-resolution:uncalibrated-provider-score" in edge.evidence_refs
 
 
 def test_codebase_memory_cli_is_mapped_through_provider_neutral_contract(
@@ -180,7 +341,7 @@ def test_codebase_memory_cli_is_mapped_through_provider_neutral_contract(
     binary, call_log = _fake_codebase_memory(tmp_path)
     monkeypatch.setenv("FAKE_CBM_CALL_LOG", str(call_log))
 
-    result = CodebaseMemoryCodeIntelligenceAdapter(_config(binary)).analyze(
+    result = _adapter(_config(binary)).analyze(
         [_source_unit(root)]
     )
 
@@ -203,13 +364,21 @@ def test_codebase_memory_cli_is_mapped_through_provider_neutral_contract(
         "search_graph",
         "query_graph",
     ]
-    assert calls[0]["payload"]["repo_path"] == str(root)
+    staged = Path(calls[0]["payload"]["repo_path"])
+    assert staged != root and staged.name.startswith("nasus-cbm-")
+    assert not staged.exists()
     assert calls[0]["payload"]["persistence"] is False
 
 
+@pytest.mark.parametrize("provider_project", [
+    "Users-service-workspace-repository",
+    "Users-uben-project-project-Nasus-.nasus-validation-system-image-sources-snapshots-"
+    + "a" * 64 + "-" + "b" * 40,
+])
 def test_codebase_memory_accepts_provider_owned_project_identity_without_leaking_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    provider_project: str,
 ) -> None:
     root = tmp_path / "repository"
     root.mkdir()
@@ -221,10 +390,9 @@ def test_codebase_memory_accepts_provider_owned_project_identity_without_leaking
     )
     binary, call_log = _fake_codebase_memory(tmp_path)
     monkeypatch.setenv("FAKE_CBM_CALL_LOG", str(call_log))
-    provider_project = "Users-service-workspace-repository"
     monkeypatch.setenv("FAKE_CBM_PROJECT", provider_project)
 
-    result = CodebaseMemoryCodeIntelligenceAdapter(_config(binary)).analyze(
+    result = _adapter(_config(binary)).analyze(
         [_source_unit(root)]
     )
 
@@ -253,7 +421,7 @@ def test_codebase_memory_maps_flat_search_schema_and_scans_past_filtered_pages(
     provider_project = "Users-service-workspace-repository"
     monkeypatch.setenv("FAKE_CBM_PROJECT", provider_project)
 
-    result = CodebaseMemoryCodeIntelligenceAdapter(_config(binary)).analyze(
+    result = _adapter(_config(binary)).analyze(
         [_source_unit(root)]
     )
 
@@ -277,25 +445,29 @@ def test_codebase_memory_maps_flat_search_schema_and_scans_past_filtered_pages(
     search_calls = [item for item in calls if item["tool"] == "search_graph"]
     assert [item["payload"]["offset"] for item in search_calls] == [0, 50]
     relationship_query = next(
-        item["payload"]["query"] for item in calls if item["tool"] == "query_graph"
+        item["payload"]["query"] for item in calls if item["tool"] == "query_graph" and "type(r)" in item["payload"]["query"]
     )
     assert 'a.file_path IN ["payments.py"]' in relationship_query
     assert 'b.file_path IN ["payments.py"]' in relationship_query
 
 
+@pytest.mark.parametrize("provider_project", [
+    "../../escaped-project", "project\nother", "project;other", "x" * 4097,
+])
 def test_codebase_memory_rejects_unsafe_provider_project_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    provider_project: str,
 ) -> None:
     root = tmp_path / "repository"
     root.mkdir()
     (root / "payments.py").write_text("def authorize():\n    return True\n", encoding="utf-8")
     binary, call_log = _fake_codebase_memory(tmp_path)
     monkeypatch.setenv("FAKE_CBM_CALL_LOG", str(call_log))
-    monkeypatch.setenv("FAKE_CBM_PROJECT", "../../escaped-project")
+    monkeypatch.setenv("FAKE_CBM_PROJECT", provider_project)
 
     with pytest.raises(CodebaseMemoryError, match="unsafe project identity"):
-        CodebaseMemoryCodeIntelligenceAdapter(_config(binary)).analyze(
+        _adapter(_config(binary)).analyze(
             [_source_unit(root)]
         )
 
@@ -318,7 +490,7 @@ def test_composite_merges_graph_evidence_without_replacing_tree_sitter_identity(
     monkeypatch.setenv("FAKE_CBM_CALL_LOG", str(call_log))
     adapter = CompositeCodeIntelligenceAdapter(
         TreeSitterCodeIntelligenceAdapter(),
-        CodebaseMemoryCodeIntelligenceAdapter(_config(binary)),
+        _adapter(_config(binary)),
         mode="optional",
     )
 

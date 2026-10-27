@@ -14,11 +14,14 @@ export function BuildRoute() {
           prompt={model.prompt}
           setPrompt={model.setPrompt}
           runPrompt={model.runPrompt}
+          stopPrompt={model.stopPrompt}
           loading={model.loading}
+          streaming={model.streaming}
           selectedSkillIds={model.selectedSkillIds}
           selectedSkills={model.selectedSkills}
           onToggleSkill={model.toggleBuildSkill}
           onGuessYou={model.guessBuildPrompt}
+          feedback={model.feedback}
           sidebarCollapsed={sidebarCollapsed}
           toggleSidebar={toggleSidebar}
         />

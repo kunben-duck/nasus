@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from apps.api.app.domain.system_image.build_state import resolve_build_state
 from apps.api.app.domain.system_image.chunking import (
     chunk_id,
@@ -227,6 +229,26 @@ def test_quality_context_release_metric_and_context_hash_are_deterministic() -> 
     assert first_hash == second_hash
     assert len(first_hash) == 64
     assert risk_drivers([], []) == ["Context relationship graph is still sparse."]
+
+
+@pytest.mark.parametrize("marker", [
+    {"measurement_basis": "admitted_projection_inventory_not_quality_assessment"},
+    {"coverage_status": "unknown"},
+])
+def test_inventory_is_not_a_quality_score_or_calibrated_confidence(marker) -> None:
+    sources = [source(kind, kind, content_hash="captured") for kind in ("code", "us_doc", "test_asset")]
+    relationships = [SimpleNamespace(id=str(index)) for index in range(20)]
+    # A mixed legacy metric must not upgrade an explicitly unassessed image.
+    metrics = [metric("code_quality", **marker),
+        metric("test_quality", scenario_coverage=1, automation_coverage=1, test_count=100),
+        metric("release_readiness", release_score=100)]
+    assert context_confidence(sources, relationships, metrics) is None
+    assert risk_score(metrics) is None
+    assert coverage_score(metrics) is None
+    assert automation_feasibility(metrics) is None
+    assert release_score(metrics, blocked_items=0, pending_approvals=0) is None
+    assert risk_drivers(metrics, relationships) == [
+        "Quality assessment is unknown; source inventory does not establish coverage, risk or release readiness."]
 
 
 def test_build_state_policy_only_blocks_required_source_failures() -> None:

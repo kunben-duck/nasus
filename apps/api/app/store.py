@@ -23,6 +23,7 @@ from .application.agent.replies import AgentReplyApplicationService
 from .application.agent.lifecycle import AgentService
 from .application.agent.plans import AgentGoalPlanCompiler
 from .application.agent.use_cases import AgentApplicationService
+from .application.agent.turns import ConversationTurnApplicationService
 from .application.platform.account_models import UserProfile
 from .application.platform.actor_context import current_user
 from .application.platform.model_settings import (
@@ -48,6 +49,70 @@ from .application.platform.project_workspace import ProjectWorkspaceApplicationS
 from .application.platform.read_model_refresh import ProjectReadModelRefreshApplicationService
 from .application.platform.top_level_content import TopLevelContentApplicationService
 from .application.platform.query_tools import QueryToolApplicationService
+from .application.platform.tool_evidence import ToolEvidenceObservationApplicationService
+from .application.platform.tool_acceptance import ToolAcceptanceObservationApplicationService
+from .application.platform.tool_images import ToolImageObservationApplicationService
+from .application.platform.tool_plans import ToolBuildPlanObservationApplicationService
+from .application.system_image.build_plan_queries import BuildPlanQueryApplicationService
+from .application.system_image.image_query_tools import ImageQueryToolApplicationService
+from .application.system_image.build_plans import BuildPlanApplicationService
+from .application.system_image.reference_links import ReferenceLinkApplicationService
+from .application.system_image.semantic_evaluations import SemanticEvaluationApplicationService
+from .application.system_image.semantic_review import SemanticReviewApplicationService
+from .application.quality_loop.acceptance_specifications import AcceptanceSpecificationApplicationService
+from .application.quality_loop.business_rules import BusinessRuleApplicationService
+from .application.quality_loop.test_design_scopes import TestDesignScopeApplicationService
+from .application.quality_loop.test_design_generation import TestDesignGenerationApplicationService
+from .application.platform.tool_test_design_scope import ToolTestDesignScopeObservationApplicationService
+from .infrastructure.persistence.test_design_scope_repository import TestDesignScopeRepository
+from .infrastructure.storage.test_design_scope_artifacts import TestDesignScopeArtifacts
+from .application.system_image.acceptance_sources import FrozenBusinessRuleSourceApplicationService
+from .infrastructure.persistence.business_rule_repository import BusinessRuleRepository
+from .infrastructure.storage.business_rule_artifacts import BusinessRuleArtifacts
+from .application.system_image.context_packs import ContextPackApplicationService
+from .application.system_image.publications import ImagePublicationApplicationService
+from .infrastructure.persistence.image_publication_repository import ImagePublicationRepository
+from .application.platform.tool_publications import ToolPublicationObservationApplicationService
+from .application.platform.tool_indexes import ToolIndexObservationApplicationService
+from .application.system_image.context_pack_sources import TestDesignContextSources
+from .infrastructure.persistence.context_pack_repository import ContextPackRepository
+from .infrastructure.system_image.context_pack_artifacts import ContextPackArtifacts
+from .application.platform.tool_context_packs import ToolContextPackObservationApplicationService
+from .application.system_image.acceptance_sources import FrozenAcceptanceSourceApplicationService
+from .infrastructure.persistence.acceptance_specification_repository import AcceptanceSpecificationRepository
+from .infrastructure.storage.acceptance_artifacts import AcceptanceSpecificationArtifacts
+from .application.system_image.semantic_membership import SemanticMembershipApplicationService
+from .infrastructure.persistence.semantic_review_repository import SemanticReviewRepository
+from .application.platform.model_execution_profiles import ModelExecutionProfileApplicationService
+from .infrastructure.llm.semantic_link_model import HTTPSemanticLinkModel
+from .infrastructure.persistence.semantic_evaluation_repository import SemanticEvaluationRepository
+from .infrastructure.system_image.semantic_evaluation_artifacts import SemanticEvaluationArtifacts
+from .infrastructure.persistence.reference_link_repository import ReferenceLinkRepository
+from .application.system_image.link_decisions import LinkDecisionApplicationService
+from .application.system_image.image_membership import ImageMembershipApplicationService
+from .infrastructure.persistence.link_decision_repository import LinkDecisionRepository
+from .application.system_image.structure_builds import StructureBuildApplicationService
+from .infrastructure.persistence.structure_build_repository import StructureBuildRepository
+from .infrastructure.persistence.build_plan_repository import BuildPlanRepository
+from .application.system_image.build_authorizations import BuildAuthorizationApplicationService
+from .infrastructure.persistence.build_authorization_repository import BuildAuthorizationRepository
+from .application.system_image.evidence_queries import EvidenceQueryApplicationService
+from .application.system_image.evidence_tools import EvidenceToolApplicationService
+from .application.system_image.source_access import SourceAccessApplicationService
+from .application.system_image.code_analysis_queries import CodeAnalysisQueryApplicationService
+from .application.system_image.source_deltas import SourceDeltaQueryApplicationService
+from .infrastructure.persistence.source_delta_repository import SourceDeltaRepository
+from .infrastructure.system_image.source_delta_archive import ArchivedSourceDeltaReader
+from .application.system_image.image_candidates import ImageCandidateApplicationService
+from .application.system_image.image_revision_queries import ImageRevisionQueryApplicationService
+from .infrastructure.persistence.image_revision_repository import ImageRevisionRepository
+from .infrastructure.system_image.image_artifacts import ArchivedImageArtifacts
+from .application.system_image.memory_context import SystemImageMemoryContextApplicationService
+from .infrastructure.system_image.source_context_reader import SQLAlchemySystemImageContextReader
+from .infrastructure.system_image.source_snapshot_reader import SQLAlchemySystemImageSnapshotReader
+from .infrastructure.persistence.source_access_repository import SourceAccessRepository
+from .infrastructure.persistence.source_evidence_repository import SourceEvidenceRepository
+from .infrastructure.system_image.evidence_source_reader import ArchivedEvidenceSourceReader
 from .application.platform.tool_authorization import (
     ToolInvocationAuthorizationApplicationService,
 )
@@ -73,8 +138,17 @@ from .infrastructure.agent import (
     AgentApplicationRuntimeAdapters,
     SQLAlchemyAgentApplicationPorts,
 )
+from .infrastructure.agent.conversation_stream_committer import (
+    SQLAlchemyConversationStreamCommitter,
+)
 from .infrastructure.workflow.agent_workflow_factory import build_agent_workflow_runtime
 from .infrastructure.workflow.agent_graph_factory import build_agent_graph_runtime
+from .infrastructure.workflow.conversation_turn_runtime import (
+    build_conversation_turn_workflow_runtime,
+)
+from .infrastructure.workflow.langgraph_conversation_turn_gateway import (
+    LangGraphConversationTurnGateway,
+)
 from .infrastructure.llm import LLMGateway, LLMQualityGenerationAdapter
 from .infrastructure.platform import (
     CallablePlatformEventEntityReader,
@@ -101,7 +175,6 @@ from .infrastructure.platform import (
 from .infrastructure.platform.top_level_content import SQLAlchemyTopLevelContentReadModel
 from .infrastructure.storage import ObjectStorage
 from .infrastructure.system_image import (
-    CodebaseMemoryCodeIntelligenceAdapter,
     CompatibilitySystemImageIngestionProjection,
     CompositeCodeIntelligenceAdapter,
     DurableSystemImageWorkspaceAdapters,
@@ -183,6 +256,7 @@ from .application.quality_loop import (
     QualityStepCompletionApplicationService,
 )
 from .infrastructure.persistence.conversation_repository import ConversationRepository
+from .infrastructure.persistence.conversation_turn_repository import ConversationTurnRepository
 from .infrastructure.persistence.event_outbox_repository import EventOutboxRepository
 from .infrastructure.persistence.project_repository import ProjectRepository
 from .infrastructure.persistence.project_access_repository import ProjectAccessRepository
@@ -197,6 +271,17 @@ from .infrastructure.persistence.llm_call_repository import SQLAlchemyLLMCallRep
 from .infrastructure.persistence.prompt_repository import SQLAlchemyPromptRegistry
 from .infrastructure.persistence.settings_repository import SettingsRepository
 from .infrastructure.persistence.system_image_repository import SystemImageRepository
+from .infrastructure.persistence.source_snapshot_repository import SourceSnapshotRepository
+from .infrastructure.persistence.code_entity_repository import CodeEntityRepository
+from .infrastructure.persistence.document_projection_repository import DocumentProjectionRepository
+from .infrastructure.system_image.archived_document_projection import ArchivedDocumentProjection
+from .infrastructure.system_image.document_artifacts import DocumentArtifacts
+from .infrastructure.system_image.explicit_document_extractor import ExplicitDocumentExtractor
+from .application.system_image.document_projections import DocumentProjectionApplicationService
+from .application.system_image.document_queries import DocumentQueryApplicationService
+from .infrastructure.persistence.code_analysis_repository import CodeAnalysisRepository
+from .infrastructure.system_image.archived_code_analysis import ArchivedCodeAnalysisRecorder
+from .infrastructure.system_image.code_observation_artifacts import ArchivedCodeObservations
 from .infrastructure.config.runtime_config import current_runtime_profile
 from .infrastructure.config.runtime_config import demo_seed_enabled
 from .infrastructure.persistence.settings_store import SettingsPersistence
@@ -266,7 +351,9 @@ class RuntimeAssembly:
         self.model_config_test_grant_repository = (
             SQLAlchemyModelConfigTestGrantRepository()
         )
-        self.conversation_repository = ConversationRepository()
+        from .infrastructure.persistence.tool_claim_journal import ToolClaimJournal
+        self.conversation_repository = ConversationRepository(tool_claim_journal=ToolClaimJournal())
+        self.conversation_turn_repository = ConversationTurnRepository()
         self.event_outbox_repository = EventOutboxRepository()
         self.system_image_repository = SystemImageRepository()
         self.quality_loop_repository = QualityLoopRepository()
@@ -375,7 +462,7 @@ class RuntimeAssembly:
                 is_paused_goal=lambda goal_id: (
                     self.agent_service.is_paused_goal(goal_id)
                 ),
-                resume_goal=lambda goal_id: self.agent_service.resume_goal(goal_id),
+                resume_goal=lambda goal_id, **kwargs: self.agent_service.resume_goal(goal_id, **kwargs),
                 get_tool_invocation=lambda invocation_id: (
                     self.tool_invocations_app.get_tool_invocation(invocation_id)
                 ),
@@ -395,8 +482,8 @@ class RuntimeAssembly:
                 list_audit_events=lambda **kwargs: (
                     self.tool_invocations_app.list_audit_events(**kwargs)
                 ),
-                create_goal_record=lambda payload: (
-                    self.agent_service.create_goal_record(payload)
+                create_goal_record=lambda payload, **kwargs: (
+                    self.agent_service.create_goal_record(payload, **kwargs)
                 ),
                 create_summary_checkpoint=lambda **kwargs: (
                     self.agent_memory.create_summary_checkpoint(**kwargs)
@@ -536,50 +623,396 @@ class RuntimeAssembly:
             ObjectStorageSourceUploadStorage(self.object_storage),
         )
         self.source_ingestion = SourceIngestionService(
+            object_storage=self.object_storage,
             connectors=(
                 GitSourceConnector(),
                 ObjectStorageSourceConnector(self.object_storage),
             )
         )
         self.code_graph_config = CodeGraphConfig.from_env()
-        structural_code_intelligence = TreeSitterCodeIntelligenceAdapter()
-        graph_code_intelligence = (
-            None
-            if self.code_graph_config.mode == "disabled"
-            else CodebaseMemoryCodeIntelligenceAdapter(self.code_graph_config)
+        self.source_access = SourceAccessApplicationService(SourceAccessRepository(), self.project_access)
+        self.code_analysis = CodeAnalysisQueryApplicationService(CodeAnalysisRepository(), self.source_access,
+            ArchivedCodeObservations(self.object_storage))
+        self.source_deltas = SourceDeltaQueryApplicationService(SourceDeltaRepository(), ArchivedSourceDeltaReader(
+            self.object_storage, max_files=self.source_ingestion.max_files,
+            max_bytes=self.source_ingestion.max_bytes, max_file_bytes=self.source_ingestion.max_single_file_bytes,
+        ), self.source_access)
+        document_repository = DocumentProjectionRepository()
+        document_artifacts = DocumentArtifacts(self.object_storage)
+        self.source_documents = DocumentQueryApplicationService(document_repository, document_artifacts, self.source_access)
+        image_artifacts = ArchivedImageArtifacts(self.object_storage)
+        image_repository = ImageRevisionRepository()
+        self.image_candidates = ImageCandidateApplicationService(image_artifacts, image_repository)
+        self.evidence = EvidenceQueryApplicationService(
+            SourceEvidenceRepository(),
+            ArchivedEvidenceSourceReader(
+                self.object_storage, max_files=self.source_ingestion.max_files,
+                max_bytes=self.source_ingestion.max_bytes,
+                max_file_bytes=self.source_ingestion.max_single_file_bytes,
+            ),
+            self.project_access,
+            source_authorization=self.source_access,
         )
+        self.evidence_tools = EvidenceToolApplicationService(self.evidence)
+        from .infrastructure.persistence.code_alias_repository import CodeObjectAliasRepository
+        self.image_revisions = ImageRevisionQueryApplicationService(image_repository, image_artifacts, self.source_access, self.evidence,
+                                                                   self.source_documents, code_aliases=CodeObjectAliasRepository())
+        self.reference_links = ReferenceLinkApplicationService(self.image_revisions, ReferenceLinkRepository(), self.source_access)
+        self.semantic_evaluations = SemanticEvaluationApplicationService(self.image_revisions,
+            ModelExecutionProfileApplicationService(self.settings_repository, self.settings_persistence), HTTPSemanticLinkModel(),
+            SemanticEvaluationRepository(), SemanticEvaluationArtifacts(self.object_storage), self.llm_call_repository)
+        self.link_decisions = LinkDecisionApplicationService(self.reference_links, LinkDecisionRepository())
+        self.semantic_reviews = SemanticReviewApplicationService(self.semantic_evaluations, self.source_access, SemanticReviewRepository())
+        self.acceptance_specifications = AcceptanceSpecificationApplicationService(
+            FrozenAcceptanceSourceApplicationService(self.image_revisions), self.source_access,
+            AcceptanceSpecificationRepository(), AcceptanceSpecificationArtifacts(self.object_storage))
+        self.business_rules = BusinessRuleApplicationService(
+            FrozenBusinessRuleSourceApplicationService(self.image_revisions), self.source_access,
+            BusinessRuleRepository(), BusinessRuleArtifacts(self.object_storage))
+        from .application.system_image.semantic_applicability import SemanticApplicabilityApplicationService
+        from .application.system_image.semantic_screening import SemanticScreeningApplicationService
+        self.semantic_evaluations.decision_guard = SemanticScreeningApplicationService(
+            SemanticApplicabilityApplicationService(self.image_revisions, self.semantic_reviews), self.semantic_reviews.repository)
+        self.semantic_membership = SemanticMembershipApplicationService(self.image_revisions, self.semantic_reviews)
+        self.image_membership = ImageMembershipApplicationService(self.image_revisions, self.link_decisions)
+        self.image_query_tools = ImageQueryToolApplicationService(self.image_revisions, self.reference_links, self.link_decisions,
+            self.semantic_reviews, source_deltas=self.source_deltas)
+        self.image_publications = ImagePublicationApplicationService(self.image_revisions, SourceSnapshotRepository(),
+            self.source_access, ImagePublicationRepository())
+        from .application.system_image.published_reads import PublishedImageReadApplicationService
+        self.published_images = PublishedImageReadApplicationService(self.image_revisions, SourceSnapshotRepository(),
+            self.source_access, ImagePublicationRepository())
+        from .application.system_image.frozen_indexes import FrozenIndexApplicationService
+        from .infrastructure.persistence.frozen_index_repository import FrozenIndexRepository
+        from .infrastructure.system_image.frozen_index_artifacts import FrozenIndexArtifacts
+        from .infrastructure.llm.index_embedding import HTTPIndexEmbedding
+        self.frozen_indexes = FrozenIndexApplicationService(self.image_revisions, self.image_publications, self.published_images,
+            ModelExecutionProfileApplicationService(self.settings_repository, self.settings_persistence), HTTPIndexEmbedding(),
+            FrozenIndexRepository(), FrozenIndexArtifacts(self.object_storage), self.llm_call_repository)
+        from .application.system_image.context_retrieval import ContextRetrievalApplicationService
+        from .application.system_image.context_retrieval_jobs import ContextRetrievalJobApplicationService
+        from .infrastructure.persistence.context_retrieval_repository import ContextRetrievalRepository
+        from .infrastructure.workflow.context_retrieval_runtime import TemporalContextRetrievalRuntime
+        self.context_retrievals = ContextRetrievalApplicationService(self.frozen_indexes, ContextRetrievalRepository())
+        self.context_retrieval_jobs = ContextRetrievalJobApplicationService(self.context_retrievals, TemporalContextRetrievalRuntime())
+        from .application.system_image.indexed_context_recall import IndexedContextRecall
+        self.context_packs = ContextPackApplicationService(TestDesignContextSources(self.image_revisions, self.acceptance_specifications,
+            self.image_query_tools, rules=self.business_rules, publications=self.image_publications,
+            indexed_recall=IndexedContextRecall(self.frozen_indexes, self.image_query_tools.screened_candidates)),
+            self.source_access, ContextPackRepository(), ContextPackArtifacts(self.object_storage))
+        from .infrastructure.persistence.structure_command_repository import StructureCommandRepository
+        self.build_plans = BuildPlanApplicationService(SourceSnapshotRepository(), BuildPlanRepository(), self.source_access,
+            StructureCommandRepository(), publications=self.image_publications)
+        from .application.agent.build_intent_entries import AgentBuildIntentEntryApplicationService
+        self.saved_build_intents = AgentBuildIntentEntryApplicationService(self.build_plans)
+        self.planner.build_intents = self.saved_build_intents
+        self.planner.fallback.build_intents = self.saved_build_intents
+        self.agent_goal_plan_compiler.build_intents = self.saved_build_intents
+        from .application.system_image.build_plan_revisions import BuildPlanRevisionApplicationService
+        from .infrastructure.persistence.build_plan_revision_repository import BuildPlanRevisionRepository
+        self.build_plans.revisions = BuildPlanRevisionApplicationService(self.build_plans, BuildPlanRevisionRepository())
+        from .application.agent.image_plan_phases import ImagePlanPhaseApplicationService
+        from .infrastructure.persistence.image_plan_phase_repository import ImagePlanPhaseRepository
+        self.build_plans.phases = ImagePlanPhaseApplicationService(self.build_plans, ImagePlanPhaseRepository())
+        self.agent_goal_plan_compiler.image_phases = self.build_plans.phases
+        self.test_design_scopes = TestDesignScopeApplicationService(self.context_packs, self.source_access,
+            TestDesignScopeRepository(), TestDesignScopeArtifacts(self.object_storage))
+        self.test_design_generation = TestDesignGenerationApplicationService(self.test_design_scopes)
+        from .application.quality_loop.test_design_results import TestDesignResultApplicationService
+        from .infrastructure.persistence.test_design_result_repository import TestDesignResultRepository
+        from .infrastructure.storage.test_design_result_artifacts import TestDesignResultArtifacts
+        from .infrastructure.storage.generation_batch_reply_artifacts import GenerationBatchReplyArtifacts
+        self.test_design_results = TestDesignResultApplicationService(self.test_design_generation, self.source_access,
+            ModelExecutionProfileApplicationService(self.settings_repository, self.settings_persistence),
+            TestDesignResultRepository(), TestDesignResultArtifacts(self.object_storage),
+            batch_replies=GenerationBatchReplyArtifacts(self.object_storage))
+        from .application.quality_loop.test_design_mappings import TestDesignMappingApplicationService
+        from .infrastructure.persistence.test_design_mapping_repository import TestDesignMappingRepository
+        from .infrastructure.storage.test_design_mapping_artifacts import TestDesignMappingArtifacts
+        from .application.quality_loop.mapping_part_staging import MappingPartStagingApplicationService
+        from .infrastructure.persistence.mapping_part_repository import MappingPartRepository
+        from .infrastructure.storage.mapping_part_artifacts import MappingPartArtifacts
+        self.test_design_mapping_parts = MappingPartStagingApplicationService(self.test_design_results, self.source_access,
+            TestDesignMappingRepository(), MappingPartRepository(), MappingPartArtifacts(self.object_storage))
+        self.test_design_mappings = TestDesignMappingApplicationService(self.test_design_results, self.source_access,
+            TestDesignMappingRepository(), TestDesignMappingArtifacts(self.object_storage), parts=self.test_design_mapping_parts)
+        from .application.quality_loop.automation_inputs import AutomationInputApplicationService
+        self.automation_inputs = AutomationInputApplicationService(self.test_design_mappings, self.test_design_results,
+            self.test_design_generation, self.source_access)
+        from .application.quality_loop.case_approvals import CaseApprovalApplicationService
+        from .infrastructure.persistence.case_approval_repository import CaseApprovalRepository
+        from .infrastructure.storage.case_approval_artifacts import CaseApprovalArtifacts
+        self.case_approvals = CaseApprovalApplicationService(self.automation_inputs, self.source_access,
+            CaseApprovalRepository(), CaseApprovalArtifacts(self.object_storage))
+        from .application.quality_loop.context_dependencies import QualityContextDependencyApplicationService
+        from .application.system_image.context_change_impact import ContextChangeImpactApplicationService
+        from .infrastructure.persistence.context_dependency_inventory import QualityContextDependencyInventory
+        self.context_change_impacts = ContextChangeImpactApplicationService(self.context_packs, self.image_revisions,
+            self.source_deltas, QualityContextDependencyApplicationService(QualityContextDependencyInventory(),
+                self.test_design_scopes, self.test_design_results, self.test_design_mappings, self.source_access), self.source_access)
+        self.image_query_tools.context_impacts = self.context_change_impacts
+        from .application.system_image.source_context_roots import SourceContextRootApplicationService
+        from .infrastructure.persistence.source_context_root_inventory import SourceContextRootInventoryRepository
+        self.source_context_roots = SourceContextRootApplicationService(SourceContextRootInventoryRepository(),
+            self.context_packs, self.image_revisions, self.source_deltas, self.source_access)
+        self.image_query_tools.source_context_roots = self.source_context_roots
+        from .application.system_image.context_invalidations import ContextInvalidationApplicationService
+        from .infrastructure.persistence.context_invalidation_repository import ContextInvalidationRepository
+        self.context_invalidations = ContextInvalidationApplicationService(self.context_change_impacts,
+            self.source_access, ContextInvalidationRepository())
+        from .application.quality_loop.generation_executor import GenerationExecutorApplicationService
+        from .application.system_image.generation_sources import ImageGenerationSourceInventory
+        from .infrastructure.llm.generation_token_budget import ConfiguredGenerationModelPolicies
+        from .infrastructure.llm.test_design_model import HTTPTestDesignModel
+        from .infrastructure.persistence.generation_execution_repository import GenerationExecutionRepository
+        from .infrastructure.storage.generation_reply_artifacts import GenerationReplyArtifacts
+        self.test_design_executor = GenerationExecutorApplicationService(self.test_design_generation, self.test_design_results,
+            self.test_design_results.profiles, ConfiguredGenerationModelPolicies(), self.source_access,
+            ImageGenerationSourceInventory(self.image_revisions), HTTPTestDesignModel(),
+            GenerationExecutionRepository(), GenerationReplyArtifacts(self.object_storage))
+        from .application.quality_loop.automation_script_generation import AutomationScriptGenerationApplicationService
+        from .infrastructure.persistence.automation_script_repository import AutomationScriptRepository
+        from .infrastructure.storage.automation_script_artifacts import AutomationNativeReplyArtifacts, AutomationScriptResultArtifacts
+        self.automation_scripts = AutomationScriptGenerationApplicationService(self.automation_inputs,
+            self.test_design_results.profiles, self.test_design_executor.policies, self.source_access,
+            ImageGenerationSourceInventory(self.image_revisions), HTTPTestDesignModel(), AutomationScriptRepository(),
+            AutomationNativeReplyArtifacts(self.object_storage), AutomationScriptResultArtifacts(self.object_storage),
+            admissions=self.case_approvals)
+        from .application.quality_loop.automation_script_reviews import AutomationScriptReviewApplicationService
+        from .infrastructure.persistence.automation_script_review_repository import AutomationScriptReviewRepository
+        from .infrastructure.storage.automation_script_review_artifacts import AutomationScriptReviewArtifacts
+        self.automation_script_reviews = AutomationScriptReviewApplicationService(self.automation_scripts, self.source_access,
+            AutomationScriptReviewRepository(), AutomationScriptReviewArtifacts(self.object_storage))
+        from .application.quality_loop.run_plans import RunPlanApplicationService
+        from .infrastructure.persistence.run_plan_repository import RunPlanRepository
+        from .infrastructure.storage.run_plan_artifacts import RunPlanArtifacts
+        self.run_plans = RunPlanApplicationService(self.automation_scripts, self.automation_script_reviews,
+            ImageGenerationSourceInventory(self.image_revisions), self.source_access,
+            RunPlanRepository(), RunPlanArtifacts(self.object_storage))
+        from .application.quality_loop.native_builds import NativeBuildApplicationService
+        from .application.quality_loop.native_build_jobs import NativeBuildJobApplicationService
+        from .application.system_image.native_build_sources import ImageNativeBuildSources
+        from .infrastructure.persistence.native_build_repository import NativeBuildRepository
+        from .infrastructure.runner.configured_native_build import ConfiguredNativeBuild
+        from .infrastructure.storage.native_build_artifacts import NativeBuildArtifacts
+        from .infrastructure.system_image.source_snapshot_archive import SourceSnapshotArchive
+        from .infrastructure.workflow.native_build_runtime import TemporalNativeBuildRuntime
+        from .application.quality_loop.run_plan_locators import RunPlanLocatorApplicationService
+        from .infrastructure.system_image.frozen_http_locators import FrozenHttpLocatorInventory
+        self.run_plan_locators = RunPlanLocatorApplicationService(self.run_plans, self.source_access,
+            FrozenHttpLocatorInventory(ImageNativeBuildSources(self.image_revisions,
+                SourceSnapshotRepository(), SourceSnapshotArchive(self.object_storage))))
+        from .application.quality_loop.http_locator_records import HttpLocatorRecordApplicationService
+        from .infrastructure.persistence.http_locator_repository import HttpLocatorRepository
+        from .infrastructure.storage.http_locator_artifacts import HttpLocatorArtifacts
+        self.http_locator_records = HttpLocatorRecordApplicationService(self.run_plan_locators,
+            HttpLocatorArtifacts(self.object_storage), HttpLocatorRepository())
+        from .application.quality_loop.http_fixture_recipes import HttpFixtureRecipeApplicationService
+        from .infrastructure.persistence.http_fixture_recipe_repository import HttpFixtureRecipeRepository
+        from .infrastructure.storage.http_fixture_recipe_artifacts import HttpFixtureRecipeArtifacts
+        self.http_fixture_recipes = HttpFixtureRecipeApplicationService(self.run_plans,
+            HttpFixtureRecipeArtifacts(self.object_storage), HttpFixtureRecipeRepository())
+        from .application.quality_loop.http_fixture_grants import HttpFixtureGrantApplicationService
+        from .infrastructure.persistence.http_fixture_grant_repository import HttpFixtureGrantRepository
+        native_build_repository = NativeBuildRepository()
+        self.native_builds = NativeBuildApplicationService(
+            ImageNativeBuildSources(self.image_revisions, SourceSnapshotRepository(), SourceSnapshotArchive(self.object_storage)),
+            self.source_access, ConfiguredNativeBuild(), native_build_repository, NativeBuildArtifacts(self.object_storage))
+        self.native_build_jobs = NativeBuildJobApplicationService(self.native_builds, native_build_repository, TemporalNativeBuildRuntime())
+        from .application.quality_loop.run_plan_builds import RunPlanBuildApplicationService
+        from .infrastructure.persistence.run_plan_build_repository import RunPlanBuildRepository
+        from .infrastructure.storage.run_plan_build_artifacts import RunPlanBuildArtifacts
+        self.run_plan_builds = RunPlanBuildApplicationService(self.run_plans, self.native_builds, self.source_access,
+            RunPlanBuildRepository(), RunPlanBuildArtifacts(self.object_storage))
+        from .application.quality_loop.run_plan_environments import RunPlanEnvironmentApplicationService
+        from .infrastructure.runner.configured_target_environments import ConfiguredOwnedTargetEnvironments
+        self.run_plan_environments = RunPlanEnvironmentApplicationService(self.run_plans, self.run_plan_builds,
+            self.source_access, ConfiguredOwnedTargetEnvironments())
+        from .application.quality_loop.run_plan_environment_health import RunPlanEnvironmentHealthApplicationService
+        self.run_plan_environment_health = RunPlanEnvironmentHealthApplicationService(
+            self.run_plan_environments, self.run_plan_environments.environments)
+        from .application.quality_loop.environment_observation_records import EnvironmentObservationRecordApplicationService
+        from .infrastructure.persistence.environment_observation_repository import EnvironmentObservationRepository
+        from .infrastructure.storage.environment_observation_artifacts import EnvironmentObservationArtifacts
+        self.environment_observation_records = EnvironmentObservationRecordApplicationService(self.run_plan_environments,
+            EnvironmentObservationArtifacts(self.object_storage), EnvironmentObservationRepository())
+        self.http_fixture_grants = HttpFixtureGrantApplicationService(self.http_fixture_recipes, HttpFixtureGrantRepository(),
+            environment_records=self.environment_observation_records)
+        from .application.quality_loop.http_fixture_execution import HttpFixtureExecutionApplicationService
+        from .application.quality_loop.http_fixture_jobs import HttpFixtureJobApplicationService
+        from .infrastructure.runner.http_fixture_runtime import OwnedHttpFixtureRuntimeFactory
+        from .infrastructure.persistence.http_fixture_job_repository import HttpFixtureJobRepository
+        from .infrastructure.workflow.http_fixture_runtime import TemporalHttpFixtureRuntime
+        fixture_jobs = HttpFixtureJobRepository()
+        self.http_fixture_execution = HttpFixtureExecutionApplicationService(self.http_fixture_grants,
+            OwnedHttpFixtureRuntimeFactory(self.http_fixture_grants, self.run_plans,
+                self.environment_observation_records, self.run_plan_environment_health, self.object_storage, commands=fixture_jobs))
+        self.http_fixture_jobs = HttpFixtureJobApplicationService(self.http_fixture_execution, fixture_jobs, TemporalHttpFixtureRuntime())
+        from .infrastructure.runner.run_plan_case_runtime import compose_run_plan_cases
+        self.run_plan_cases = compose_run_plan_cases(self.run_plan_environments, self.environment_observation_records,
+            self.http_locator_records, self.http_fixture_jobs, self.run_plan_environment_health, self.object_storage)
+        from .application.quality_loop.run_plan_case_jobs import RunPlanCaseJobApplicationService
+        from .infrastructure.persistence.run_plan_case_job_repository import RunPlanCaseJobRepository
+        from .infrastructure.workflow.run_plan_case_runtime import TemporalRunPlanCaseRuntime
+        self.run_plan_case_jobs = RunPlanCaseJobApplicationService(self.run_plan_cases, RunPlanCaseJobRepository(), TemporalRunPlanCaseRuntime())
+        from .application.quality_loop.environment_health_records import EnvironmentHealthRecordApplicationService
+        from .infrastructure.persistence.environment_health_repository import EnvironmentHealthRepository
+        from .infrastructure.storage.environment_health_artifacts import EnvironmentHealthArtifacts
+        self.environment_health_records = EnvironmentHealthRecordApplicationService(self.run_plan_environment_health,
+            EnvironmentHealthArtifacts(self.object_storage), EnvironmentHealthRepository())
+        from .application.quality_loop.run_plan_observation_records import RunPlanObservationRecordApplicationService
+        from .application.quality_loop.run_plan_observations import RunPlanObservationApplicationService
+        from .infrastructure.persistence.run_plan_observation_repository import RunPlanObservationRepository
+        from .infrastructure.runner.http_observation_verifier import HTTPRunnerObservationVerifier
+        from .infrastructure.storage.run_plan_observation_artifacts import RunPlanObservationArtifacts
+        self.run_plan_observation_records = RunPlanObservationRecordApplicationService(self.run_plans, self.source_access,
+            RunPlanObservationApplicationService(HTTPRunnerObservationVerifier()), RunPlanObservationArtifacts(self.object_storage),
+            RunPlanObservationRepository())
+        from .application.quality_loop.generation_jobs import GenerationJobApplicationService
+        from .infrastructure.persistence.generation_job_repository import GenerationJobRepository
+        from .infrastructure.workflow.generation_runtime import TemporalGenerationRuntime
+        from .application.quality_loop.generation_batch_receipts import GenerationBatchReceiptApplicationService
+        from .application.quality_loop.generation_batch_results import GenerationBatchResultApplicationService
+        from .application.quality_loop.generation_batch_executor import GenerationBatchExecutorApplicationService
+        from .infrastructure.persistence.generation_batch_repository import GenerationBatchRepository
+        from .infrastructure.persistence.generation_batch_result_repository import GenerationBatchResultRepository
+        batch_receipts = GenerationBatchReceiptApplicationService(self.test_design_executor.batch_planning,
+            self.source_access, GenerationJobRepository(), GenerationBatchRepository(), self.test_design_results.batch_replies)
+        batch_results = GenerationBatchResultApplicationService(batch_receipts, GenerationBatchResultRepository(), self.test_design_results.artifacts)
+        self.test_design_executor.batch_executor = GenerationBatchExecutorApplicationService(batch_receipts,
+            self.test_design_executor.provider, results=batch_results)
+        from .application.quality_loop.generation_batch_recovery_results import GenerationBatchRecoveryApplicationService
+        from .infrastructure.persistence.generation_batch_recovery_repository import GenerationBatchRecoveryRepository
+        batch_recovery = GenerationBatchRecoveryApplicationService(self.test_design_executor.batch_planning, self.source_access,
+            GenerationBatchRecoveryRepository(), self.test_design_results.batch_replies, self.test_design_results.artifacts)
+        self.test_design_jobs = GenerationJobApplicationService(self.test_design_executor, GenerationJobRepository(),
+            TemporalGenerationRuntime(), batch_recovery=batch_recovery)
+        self.build_authorizations = BuildAuthorizationApplicationService(self.build_plans, BuildAuthorizationRepository())
+        structural_code_intelligence = TreeSitterCodeIntelligenceAdapter()
+        from .infrastructure.system_image.code_intelligence_factory import configured_code_graph
+        graph_code_intelligence = configured_code_graph(self.code_graph_config,
+            max_files=self.source_ingestion.max_files, max_source_bytes=self.source_ingestion.max_bytes)
         self.code_intelligence = CompositeCodeIntelligenceAdapter(
             structural_code_intelligence,
             graph_code_intelligence,
             mode=self.code_graph_config.mode,
         )
+        from .application.system_image.code_index_generations import CodeIndexGenerationApplicationService
+        from .application.system_image.code_index_lifecycle import CodeIndexLifecycleApplicationService
+        from .infrastructure.persistence.code_index_generation_repository import CodeIndexGenerationRepository
+        from .infrastructure.system_image.registered_code_intelligence import RegisteredCodeIntelligenceAdapter
+        self.code_index_lifecycle = CodeIndexLifecycleApplicationService(CodeIndexGenerationRepository(), self.source_access)
+        from .application.platform.tool_code_indexes import CodeIndexInvocationResourcePolicy
+        self.code_index_resource_policy = CodeIndexInvocationResourcePolicy(self.code_index_lifecycle)
+        self.project_access.invocation_resource_policy = self.code_index_resource_policy
+        self.code_index_generations = (CodeIndexGenerationApplicationService(CodeIndexGenerationRepository(),
+            self.source_ingestion, graph_code_intelligence) if graph_code_intelligence is not None else None)
+        source_code_intelligence = (RegisteredCodeIntelligenceAdapter(self.code_intelligence, self.code_index_generations)
+            if self.code_index_generations is not None else None)
         self.system_image_retrieval_index = SQLAlchemySystemImageRetrievalIndex(self.system_image_repository)
         self.system_image_ingestion_projection = CompatibilitySystemImageIngestionProjection(
             self.system_image_ingestion_lock.acquire,
             self.system_image_workspace,
             self.project_read_model_refresh,
         )
+        from .infrastructure.persistence.source_acquisition_repository import SourceAcquisitionIntentRepository
+        from .infrastructure.persistence.materialization_command_repository import MaterializationCommandInputRepository
         self.system_image_service = SystemImageService(
             self.system_image_workspace,
             self.source_ingestion,
             self.system_image_retrieval_index,
             self.system_image_ingestion_projection,
             self.code_intelligence,
+            source_code_intelligence=source_code_intelligence,
+            source_authorization=self.source_access,
+            acquisition_intents=SourceAcquisitionIntentRepository(),
+            materialization_commands=MaterializationCommandInputRepository(),
+            source_snapshots=SourceSnapshotRepository(),
+            code_entity_registry=CodeEntityRepository(),
+            image_candidates=self.image_candidates,
+            document_projections=DocumentProjectionApplicationService(ExplicitDocumentExtractor(), ArchivedDocumentProjection(
+                self.source_ingestion.snapshots, document_artifacts, document_repository,
+                max_files=self.source_ingestion.max_files, max_bytes=self.source_ingestion.max_bytes,
+                max_file_bytes=self.source_ingestion.max_single_file_bytes,
+            )),
+            code_analysis_inventory=ArchivedCodeAnalysisRecorder(
+                self.source_ingestion.snapshots, CodeAnalysisRepository(),
+                max_files=self.source_ingestion.max_files, max_bytes=self.source_ingestion.max_bytes,
+                max_file_bytes=self.source_ingestion.max_single_file_bytes,
+            ),
         )
+        self.structure_builds = StructureBuildApplicationService(self.build_plans,
+            self.system_image_service.candidate_preparation, StructureBuildRepository())
+        from .application.system_image.structure_jobs import StructureJobApplicationService
+        from .infrastructure.persistence.structure_job_repository import StructureJobRepository
+        from .infrastructure.workflow.structure_runtime import TemporalStructureRuntime
+        self.structure_jobs = StructureJobApplicationService(self.structure_builds, StructureJobRepository(), TemporalStructureRuntime())
+        from .application.system_image.structure_cancellations import StructureCancellationApplicationService
+        from .infrastructure.persistence.structure_cancel_repository import StructureCancellationRepository
+        from .application.platform.tool_structure_cancellations import StructureCancellationInvocationResourcePolicy
+        self.structure_cancellations = StructureCancellationApplicationService(self.build_plans, StructureCancellationRepository())
+        self.code_index_resource_policy = StructureCancellationInvocationResourcePolicy(
+            self.structure_cancellations, self.code_index_resource_policy)
+        from .application.system_image.investigations import InvestigationApplicationService
+        from .infrastructure.persistence.investigation_repository import InvestigationRepository
+        from .application.platform.tool_investigations import InvestigationInvocationResourcePolicy
+        self.investigations = InvestigationApplicationService(self.build_plans, self.image_revisions,
+            self.image_query_tools, InvestigationRepository())
+        self.code_index_resource_policy = InvestigationInvocationResourcePolicy(
+            self.investigations, self.code_index_resource_policy)
+        from .application.system_image.build_completions import BuildCompletionApplicationService
+        from .application.platform.tool_build_completions import BuildCompletionInvocationResourcePolicy
+        from .application.system_image.build_lineage import StructureBuildLineageApplicationService
+        from .infrastructure.persistence.build_lineage_repository import StructureBuildLineageRepository
+        self.build_completions = BuildCompletionApplicationService(self.investigations, self.source_deltas, self.code_analysis,
+            lineage=StructureBuildLineageApplicationService(self.build_plans, self.image_revisions,
+                self.code_analysis, StructureBuildLineageRepository()))
+        self.structure_builds.lineage = self.build_completions.lineage
+        self.code_index_resource_policy = BuildCompletionInvocationResourcePolicy(
+            self.build_completions, self.code_index_resource_policy)
+        from .application.system_image.gap_ownership import GapOwnershipApplicationService
+        from .application.platform.tool_gap_ownership import GapOwnershipInvocationResourcePolicy
+        from .infrastructure.persistence.gap_ownership_repository import GapOwnershipRepository
+        self.gap_ownership = GapOwnershipApplicationService(self.build_completions, None, GapOwnershipRepository())
+        self.build_completions.ownership = self.gap_ownership
+        self.code_index_resource_policy = GapOwnershipInvocationResourcePolicy(
+            self.gap_ownership, self.code_index_resource_policy)
+        from .application.platform.tool_plan_revisions import BuildPlanRevisionInvocationResourcePolicy
+        self.code_index_resource_policy = BuildPlanRevisionInvocationResourcePolicy(
+            self.build_plans.revisions, self.code_index_resource_policy)
+        from .application.platform.tool_image_plan_phases import ImagePlanPhaseInvocationResourcePolicy
+        self.code_index_resource_policy = ImagePlanPhaseInvocationResourcePolicy(
+            self.build_plans.phases, self.code_index_resource_policy)
+        from .application.platform.tool_case_approvals import CaseApprovalInvocationResourcePolicy
+        self.code_index_resource_policy = CaseApprovalInvocationResourcePolicy(
+            self.case_approvals, self.code_index_resource_policy)
+        self.project_access.invocation_resource_policy = self.code_index_resource_policy
         self.system_image_app = SystemImageApplicationService(
             self.system_image_workspace,
             self.system_image_service,
+            SQLAlchemySystemImageSnapshotReader(
+                self.system_image_repository, self.source_access,
+                self.project_repository.get_project, self.system_image_service.get,
+                published=self.published_images,
+            ),
         )
         self.system_image_memory_retriever = SQLAlchemySystemImageRetriever(
             system_images=self.system_image_repository,
             conversations=self.conversation_repository,
             retrieval_index=self.system_image_retrieval_index,
             workspace=self.system_image_workspace,
+            source_access=self.source_access,
+            published=self.published_images,
+            frozen_indexes=self.frozen_indexes,
         )
         self.agent_memory = AgentMemoryManager(
             self.agent_application_ports.memory_state,
             self.system_image_memory_retriever,
-            self.system_image_workspace,
+            SystemImageMemoryContextApplicationService(SQLAlchemySystemImageContextReader(
+                self.system_image_repository, self.source_access,
+                lambda project_id: self.system_image_workspace.get_project(project_id).system_image_status,
+                published=self.published_images,
+            )),
             self.conversation_summaries,
             self.prompt_registry,
         )
@@ -595,6 +1028,7 @@ class RuntimeAssembly:
         self.agent_service = AgentService(
             self.agent_application_ports.goal_lifecycle,
             self.agent_workflow_runtime,
+            build_intents=self.saved_build_intents,
         )
         self.quality_loop_context_workspace = SQLAlchemyQualityLoopContextWorkspace(
             self.system_image_repository,
@@ -742,11 +1176,14 @@ class RuntimeAssembly:
             lambda: self.event_stream_lock,
         )
         event_stream_settings = event_stream_runtime_settings_from_env()
+        from .application.platform.case_approval_event_access import CaseApprovalEventAccess
+        self.case_approval_event_access = CaseApprovalEventAccess(self.case_approvals, self.tool_application_state)
         self.event_streams = PlatformEventStreamApplicationService(
             self.event_outbox_repository,
             self.event_stream_buffer,
             poll_seconds=event_stream_settings.poll_seconds,
             heartbeat_seconds=event_stream_settings.heartbeat_seconds,
+            authorize_event=self.case_approval_event_access.can_access,
         )
         self.platform_event_entities = CallablePlatformEventEntityReader(
             PlatformEventEntityAdapters(
@@ -759,10 +1196,49 @@ class RuntimeAssembly:
                 get_agent_swarm=self.agent_swarm_coordinator.get_swarm,
             )
         )
+        from .application.platform.source_refresh_receipts import SourceRefreshReceiptAccess
+        from .application.platform.run_plan_receipts import RunPlanReceiptAccess
+        from .application.platform.run_plan_build_receipts import RunPlanBuildReceiptAccess
+        from .application.platform.run_plan_observation_receipts import RunPlanObservationReceiptAccess
+        from .application.platform.run_plan_environment_receipts import RunPlanEnvironmentReceiptAccess
+        from .application.platform.run_plan_locator_receipts import RunPlanLocatorReceiptAccess
+        from .application.platform.environment_record_receipts import EnvironmentRecordReceiptAccess
+        from .application.platform.health_record_receipts import HealthRecordReceiptAccess
+        from .application.platform.http_locator_record_receipts import HttpLocatorRecordReceiptAccess
+        from .application.platform.http_fixture_recipe_receipts import HttpFixtureRecipeReceiptAccess
+        from .application.platform.http_fixture_grant_receipts import HttpFixtureGrantReceiptAccess
+        from .application.platform.native_build_receipts import NativeBuildReceiptAccess
+        from .application.platform.http_fixture_job_receipts import HttpFixtureJobReceiptAccess
+        from .application.platform.run_plan_case_receipts import RunPlanCaseReceiptAccess
+        from .application.platform.tool_receipt_access import ToolReceiptAccess
+        self.source_refresh_receipt_access = SourceRefreshReceiptAccess(self.source_access)
+        self.tool_receipt_access = ToolReceiptAccess(self.source_refresh_receipt_access, RunPlanReceiptAccess(self.run_plans),
+            RunPlanBuildReceiptAccess(self.run_plan_builds), RunPlanObservationReceiptAccess(self.run_plan_observation_records),
+            RunPlanEnvironmentReceiptAccess(self.run_plan_environments),
+            RunPlanLocatorReceiptAccess(self.run_plan_locators),
+            EnvironmentRecordReceiptAccess(self.environment_observation_records),
+            HealthRecordReceiptAccess(self.environment_health_records),
+            HttpLocatorRecordReceiptAccess(self.http_locator_records),
+            HttpFixtureRecipeReceiptAccess(self.http_fixture_recipes),
+            HttpFixtureGrantReceiptAccess(self.http_fixture_grants),
+            NativeBuildReceiptAccess(self.native_builds), HttpFixtureJobReceiptAccess(self.http_fixture_jobs),
+            RunPlanCaseReceiptAccess(self.run_plan_case_jobs))
+        def tool_broadcast_view(invocation):
+            return self.tool_receipt_access.broadcast_view(
+                self.code_index_resource_policy.broadcast_view(invocation))
         self.platform_events = PlatformEventApplicationService(
             self.event_streams,
             self.platform_event_entities,
             self.tool_projection,
+            tool_broadcast_view=tool_broadcast_view,
+        )
+        self.conversation_message_writer.bind_stream_committer(
+            SQLAlchemyConversationStreamCommitter(
+                conversations=self.conversation_repository,
+                outbox=self.event_outbox_repository,
+                events=self.platform_events,
+                streams=self.event_streams,
+            )
         )
         self.agent_app = AgentApplicationService(
             conversations=self.conversation_management,
@@ -772,6 +1248,7 @@ class RuntimeAssembly:
             memory=self.agent_memory,
             messages=self.conversation_messages,
             swarm=self.agent_swarm_coordinator,
+            tool_broadcast_view=tool_broadcast_view,
         )
         self.agent_replies = AgentReplyApplicationService(
             memory=self.agent_memory,
@@ -794,6 +1271,55 @@ class RuntimeAssembly:
                 tool_invocations=self.platform_events,
                 agent_replies=self.agent_replies,
                 agent=self.agent_app,
+                evidence=self.evidence_tools,
+                evidence_access=self.project_access,
+                images=self.image_query_tools,
+                build_plans=self.build_plans,
+                reference_links=self.reference_links,
+                link_decisions=self.link_decisions,
+                image_membership=self.image_membership,
+                semantic_evaluations=self.semantic_evaluations,
+                semantic_reviews=self.semantic_reviews,
+                semantic_membership=self.semantic_membership,
+                acceptance_specifications=self.acceptance_specifications,
+                business_rules=self.business_rules,
+                test_design_scopes=self.test_design_scopes,
+                test_design_mappings=self.test_design_mappings,
+                case_approvals=self.case_approvals,
+                test_design_mapping_parts=self.test_design_mapping_parts,
+                test_design_results=self.test_design_results,
+                test_design_generation=self.test_design_generation,
+                test_design_executor=self.test_design_executor,
+                automation_scripts=self.automation_scripts,
+                automation_script_reviews=self.automation_script_reviews,
+                run_plans=self.run_plans,
+                run_plan_builds=self.run_plan_builds,
+                run_plan_environments=self.run_plan_environments,
+                run_plan_locators=self.run_plan_locators,
+                http_locator_records=self.http_locator_records,
+                http_fixture_recipes=self.http_fixture_recipes,
+                http_fixture_grants=self.http_fixture_grants,
+                http_fixture_jobs=self.http_fixture_jobs,
+                run_plan_case_jobs=self.run_plan_case_jobs,
+                environment_observation_records=self.environment_observation_records,
+                environment_health_records=self.environment_health_records,
+                run_plan_observation_records=self.run_plan_observation_records,
+                native_builds=self.native_builds,
+                native_build_jobs=self.native_build_jobs,
+                test_design_jobs=self.test_design_jobs,
+                context_packs=self.context_packs,
+                context_invalidations=self.context_invalidations,
+                image_publications=self.image_publications,
+                frozen_indexes=self.frozen_indexes,
+                context_retrieval_jobs=self.context_retrieval_jobs,
+                structure_builds=self.structure_builds,
+                structure_cancellations=self.structure_cancellations,
+                investigations=self.investigations,
+                build_completions=self.build_completions,
+                gap_ownership=self.gap_ownership,
+                structure_jobs=self.structure_jobs,
+                code_index_lifecycle=self.code_index_lifecycle,
+                build_authorizations=self.build_authorizations,
             )
         )
         self.tool_runtime_state = SQLAlchemyToolInvocationRuntimeState(
@@ -804,6 +1330,9 @@ class RuntimeAssembly:
             self.project_access,
             lambda: self.user,
         )
+        from .application.system_image.build_tool_budgets import BuildToolBudgetApplicationService
+        from .infrastructure.persistence.build_tool_budget_repository import BuildToolBudgetRepository
+        self.build_tool_budgets = BuildToolBudgetApplicationService(BuildToolBudgetRepository())
         self.tool_invocation_runtime = ToolInvocationRuntime(
             state=self.tool_runtime_state,
             catalog=self.tool_runtime_catalog,
@@ -813,13 +1342,77 @@ class RuntimeAssembly:
             agent_replies=self.agent_replies,
             events=self.platform_events,
             handlers=self.tool_handler_registry,
+            execution_grants=self.build_authorizations,
+            replay_access=self.project_access,
+            replay_resources=self.tool_receipt_access,
+            work_budgets=self.build_tool_budgets,
+            operation_scope=self.system_image_workspace,
         )
         self.tool_invocations_app = ToolInvocationApplicationService(
             state=self.tool_application_state,
             runtime=self.tool_invocation_runtime,
             authorization=self.project_access,
             events=self.platform_events,
+            read_resources=self.tool_receipt_access,
         )
+        from .application.system_image.build_preparation import BuildPreparationApplicationService
+        from .application.agent.natural_build_entries import AgentNaturalBuildEntryApplicationService
+        self.saved_build_intents.preparations = AgentNaturalBuildEntryApplicationService(
+            BuildPreparationApplicationService(self.build_plans, self.system_image_app.snapshots),
+            self.build_plans, self.tool_invocations_app, self.saved_build_intents)
+        self.conversation_turn_graph = LangGraphConversationTurnGateway(
+            self.conversation_messages,
+        )
+        self.tool_images = ToolImageObservationApplicationService(self.tool_invocations_app, self.image_query_tools, self.project_access)
+        self.semantic_evaluations.recall_observations = self.tool_images
+        self.tool_plans = ToolBuildPlanObservationApplicationService(
+            self.tool_invocations_app, BuildPlanQueryApplicationService(self.build_plans), self.project_access)
+        from .application.platform.tool_code_indexes import ToolCodeIndexObservationApplicationService
+        from .application.platform.tool_investigations import ToolInvestigationObservationApplicationService
+        from .application.platform.tool_build_completions import ToolBuildCompletionObservationApplicationService
+        self.tool_build_completions = ToolBuildCompletionObservationApplicationService(
+            self.tool_invocations_app, self.build_completions, self.project_access)
+        self.gap_ownership.observations = self.tool_build_completions
+        from .application.platform.tool_gap_ownership import ToolGapOwnershipObservationApplicationService
+        self.tool_gap_ownership = ToolGapOwnershipObservationApplicationService(
+            self.tool_invocations_app, self.gap_ownership, self.project_access)
+        self.tool_evidence = ToolEvidenceObservationApplicationService(
+            self.tool_invocations_app, self.evidence_tools, self.project_access, self.tool_images, self.tool_plans,
+            ToolAcceptanceObservationApplicationService(self.tool_invocations_app, self.acceptance_specifications, self.project_access, rules=self.business_rules),
+            ToolContextPackObservationApplicationService(self.tool_invocations_app, self.context_packs, self.project_access),
+            ToolPublicationObservationApplicationService(self.tool_invocations_app, self.image_publications, self.project_access),
+            ToolIndexObservationApplicationService(self.tool_invocations_app, self.frozen_indexes, self.project_access, self.context_retrievals),
+            ToolTestDesignScopeObservationApplicationService(self.tool_invocations_app, self.test_design_scopes, self.project_access,
+                generation=self.test_design_generation, executor=self.test_design_executor, jobs=self.test_design_jobs,
+                mappings=self.test_design_mappings, drafts=self.test_design_results, automation=self.automation_scripts,
+                script_reviews=self.automation_script_reviews, run_plans=self.run_plans, run_plan_builds=self.run_plan_builds,
+                run_plan_observations=self.run_plan_observation_records, run_plan_environments=self.run_plan_environments,
+                environment_records=self.environment_observation_records, health_records=self.environment_health_records,
+                run_plan_locators=self.run_plan_locators, http_locator_records=self.http_locator_records,
+                http_fixture_recipes=self.http_fixture_recipes,
+                http_fixture_grants=self.http_fixture_grants),
+            code_indexes=ToolCodeIndexObservationApplicationService(self.tool_invocations_app, self.code_index_lifecycle, self.project_access),
+            investigations=ToolInvestigationObservationApplicationService(self.tool_invocations_app, self.investigations, self.project_access),
+            build_completions=self.tool_build_completions,
+            gap_ownership=self.tool_gap_ownership,
+        )
+        self.planner.evidence_observations = self.tool_evidence
+        from .application.agent.image_investigation_plans import AgentInvestigationPlanApplicationService
+        self.agent_goal_plan_compiler.investigations = AgentInvestigationPlanApplicationService(
+            self.tool_invocations_app, self.investigations, self.structure_builds, references=self.reference_links)
+        self.conversation_turns = ConversationTurnApplicationService(
+            self.conversation_turn_repository,
+            self.conversation_message_writer,
+            self.agent_application_ports.events,
+            self.conversation_turn_graph,
+        )
+        self.conversation_turn_workflow_runtime = (
+            build_conversation_turn_workflow_runtime(self.conversation_turns)
+        )
+        self.conversation_turns.bind_workflow_runtime(
+            self.conversation_turn_workflow_runtime
+        )
+        self.agent_app.bind_conversation_turns(self.conversation_turns)
         self.top_level_content = TopLevelContentApplicationService(
             SQLAlchemyTopLevelContentReadModel(
                 projects=self.project_repository,

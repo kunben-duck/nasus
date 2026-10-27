@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 from ...application.quality_loop.quality_models import ApprovalDetail
 from ..persistence.db_models import ApprovalRecord, ProjectRecord, VersionRecord
 from ..persistence.unit_of_work import session_scope
+from ..persistence.image_publication_models import ImagePublicationReviewRecord
 
 
 class SQLAlchemyGovernanceCommandRepository:
@@ -16,6 +17,8 @@ class SQLAlchemyGovernanceCommandRepository:
         approval: ApprovalDetail,
     ) -> int:
         with session_scope() as session:
+            if session.get(ImagePublicationReviewRecord, approval.id) is not None:
+                raise ValueError("Image publication reviews cannot be rewritten by generic governance commands")
             project = session.get(ProjectRecord, project_id)
             if project is None:
                 raise KeyError(project_id)

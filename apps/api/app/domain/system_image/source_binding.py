@@ -37,13 +37,11 @@ def is_placeholder_source(source: SourceBindingLike, project_name: str) -> bool:
 
 
 def missing_source_types(sources: Iterable[SourceBindingLike], project_name: str) -> list[str]:
-    sources_by_type = {source.source_type: source for source in sources}
-    missing: list[str] = []
-    for source_type in REQUIRED_SOURCE_TYPES:
-        source = sources_by_type.get(source_type)
-        if source is None or is_placeholder_source(source, project_name):
-            missing.append(source_type)
-    return missing
+    available = {
+        source.source_type for source in sources
+        if not is_placeholder_source(source, project_name)
+    }
+    return [kind for kind in REQUIRED_SOURCE_TYPES if kind not in available]
 
 
 def source_binding_incomplete(sources: Iterable[SourceBindingLike], project_name: str) -> bool:
@@ -54,12 +52,12 @@ def missing_optional_source_types(
     sources: Iterable[SourceBindingLike],
     project_name: str,
 ) -> list[str]:
-    sources_by_type = {source.source_type: source for source in sources}
+    available = {
+        source.source_type for source in sources
+        if not is_placeholder_source(source, project_name)
+    }
     return [
         source_type
         for source_type in OPTIONAL_SOURCE_TYPES
-        if (
-            source_type not in sources_by_type
-            or is_placeholder_source(sources_by_type[source_type], project_name)
-        )
+        if source_type not in available
     ]

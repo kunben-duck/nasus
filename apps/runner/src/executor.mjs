@@ -4,6 +4,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { chromium } from 'playwright'
+import { createExecutionReceipt, RECEIPT_SCHEMA, requestHash } from './execution-receipt.mjs'
+import { executeHttpJob } from './http-executor.mjs'
 
 const SUPPORTED_ACTIONS = new Set([
   'goto',
@@ -123,6 +125,13 @@ function validateStep(step, index) {
   if (step.timeout_ms !== undefined) {
     normalized.timeout_ms = Math.min(Math.max(Number(step.timeout_ms) || 1_000, 100), 30_000)
   }
+  const required = {
+    goto: ['path'], click: ['selector'], fill: ['selector', 'value'], press: ['selector', 'key'],
+    assert_text: ['text'], assert_visible: ['selector'], assert_url: ['value'], wait_for: ['selector'],
+  }
+  for (const field of required[action]) {
+    requiredString(normalized[field], `steps[${index}].${field}`, { allowEmpty: action === 'fill' && field === 'value' })
+  }
   return normalized
 }
 
@@ -131,6 +140,9 @@ function validateJob(rawJob) {
     throw new Error('Runner job must be a JSON object.')
   }
   const allowedHosts = allowedHostsFromEnv()
+  if (rawJob.receipt_protocol !== undefined && rawJob.receipt_protocol !== RECEIPT_SCHEMA) {
+    throw new Error('Runner execution receipt protocol is not supported.')
+  }
   const baseUrl = validatedUrl(requiredString(rawJob.base_url, 'base_url'), allowedHosts)
   if (!Array.isArray(rawJob.steps) || rawJob.steps.length === 0) {
     throw new Error('Runner job must include at least one structured step.')
@@ -240,7 +252,7 @@ function artifactFromText(artifactType, name, mediaType, text) {
   }
 }
 
-async function executeValidatedJob(job) {
+async function executeValidatedJob(job, inputHash) {
   const startedAt = isoNow()
   const timeline = []
   const logs = [`[runner] started ${job.jobId}`]
@@ -265,6 +277,8 @@ async function executeValidatedJob(job) {
   let context
   let status = 'error'
   let failureSummary = ''
+  const observations = createExecutionReceipt(job, inputHash)
+  let receipt
 
   try {
     browser = await chromium.launch({ headless: true })
@@ -285,7 +299,18 @@ async function executeValidatedJob(job) {
 
     const execution = (async () => {
       for (let index = 0; index < job.steps.length; index += 1) {
-        const summary = await executeStep(page, job.steps[index], job.baseUrl, job.allowedHosts)
+        if (observations.stopped()) return
+        observations.start(index)
+        let summary
+        try {
+          summary = await executeStep(page, job.steps[index], job.baseUrl, job.allowedHosts)
+          if (observations.stopped()) return
+          observations.observe(index, 'passed')
+        } catch (error) {
+          if (observations.stopped()) return
+          observations.observe(index, 'failed')
+          throw error
+        }
         timeline.push(`Step ${index + 1}/${job.steps.length}: ${summary}`)
         logs.push(`[step:${index + 1}] ${summary}`)
       }
@@ -303,6 +328,7 @@ async function executeValidatedJob(job) {
     status = 'passed'
   } catch (error) {
     status = error instanceof RunnerTimeoutError ? 'timed_out' : 'failed'
+    receipt = observations.finish(status)
     failureSummary = redact(error?.message ?? error)
     logs.push(`[runner:${status}] ${failureSummary}`)
     if (context) {
@@ -312,6 +338,7 @@ async function executeValidatedJob(job) {
       }
     }
   } finally {
+    receipt ??= observations.finish(status)
     if (context) {
       await context.tracing.stop({ path: tracePath }).catch(() => {})
       await context.close().catch(() => {})
@@ -351,14 +378,18 @@ async function executeValidatedJob(job) {
     timeline,
     artifacts,
     failure_fingerprint: status === 'passed' ? null : failureFingerprint(job.jobId, failureSummary),
+    execution_receipt: receipt,
   }
 }
 
-export async function executeJob(rawJob) {
+export async function executeJob(rawJob, { wireBody, signal } = {}) {
   const startedAt = isoNow()
   try {
+    if (rawJob?.execution_kind === 'http') return await executeHttpJob(rawJob, { wireBody, signal })
+    if (rawJob?.execution_kind !== undefined && rawJob.execution_kind !== 'browser') throw new Error('Unsupported execution kind.')
     const job = validateJob(rawJob)
-    return await executeValidatedJob(job)
+    const inputHash = requestHash(wireBody ?? Buffer.from(JSON.stringify(rawJob), 'utf8'))
+    return await executeValidatedJob(job, inputHash)
   } catch (error) {
     const jobId =
       rawJob && typeof rawJob === 'object' && typeof rawJob.job_id === 'string'
@@ -368,7 +399,7 @@ export async function executeJob(rawJob) {
     return {
       runner_job_id: jobId,
       status: 'error',
-      summary: 'Runner rejected an invalid or unsafe job before browser execution.',
+      summary: 'Runner rejected an invalid or unsafe job before execution.',
       failure_summary: failureSummary,
       started_at: startedAt,
       completed_at: isoNow(),

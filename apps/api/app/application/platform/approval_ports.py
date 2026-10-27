@@ -14,5 +14,8 @@ class ToolApprovalVerificationStatePort(Protocol):
     def approval_status(self, project_id: str, approval_id: str) -> str | None:
         ...
 
+    def approval_policy(self, project_id: str, approval_id: str) -> str | None:
+        ...
+
 
 __all__ = ["ToolApprovalVerificationStatePort"]

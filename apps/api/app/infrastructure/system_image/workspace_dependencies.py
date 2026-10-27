@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, ContextManager, Protocol
 
 from ...application.agent.agent_models import AgentMemoryItem
 from ...application.platform.model_settings import StudioSettings
@@ -126,6 +126,8 @@ class ObjectStoragePutResultPort(Protocol):
 
 
 class SystemImageObjectStoragePort(Protocol):
+    def write_session(self) -> ContextManager[None]: ...
+
     def put_json(
         self,
         key: str,

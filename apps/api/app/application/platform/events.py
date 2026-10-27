@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 from uuid import uuid4
 
 from .event_ports import (
@@ -9,7 +9,7 @@ from .event_ports import (
     PlatformEventStreamPort,
     ToolInvocationEventProjectionPort,
 )
-from .tool_models import EventPayload, ToolResult
+from .tool_models import EventPayload, ToolInvocation, ToolResult
 
 
 def _now_iso() -> str:
@@ -30,10 +30,12 @@ class PlatformEventApplicationService:
         streams: PlatformEventStreamPort,
         entities: PlatformEventEntityReaderPort,
         tool_projection: ToolInvocationEventProjectionPort,
+        tool_broadcast_view: Callable[[ToolInvocation], ToolInvocation] | None = None,
     ) -> None:
         self.streams = streams
         self.entities = entities
         self.tool_projection = tool_projection
+        self.tool_broadcast_view = tool_broadcast_view
 
     def _agent_goal_or_none(self, goal_id: str):
         return self.entities.get_agent_goal(goal_id)
@@ -63,6 +65,32 @@ class PlatformEventApplicationService:
         snapshot_hint: bool = False,
         payload: Dict[str, Any] | None = None,
     ) -> None:
+        event = self.build_conversation_event(
+            conversation_id=conversation_id,
+            event_type=event_type,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            mutation_kind=mutation_kind,
+            patch=patch,
+            query_keys=query_keys,
+            snapshot_hint=snapshot_hint,
+            payload=payload,
+        )
+        await self.streams.publish_conversation_event(conversation_id, event)
+
+    def build_conversation_event(
+        self,
+        *,
+        conversation_id: str,
+        event_type: str,
+        entity_type: str,
+        entity_id: str,
+        mutation_kind: str,
+        patch: Dict[str, Any],
+        query_keys: List[List[str]],
+        snapshot_hint: bool = False,
+        payload: Dict[str, Any] | None = None,
+    ) -> EventPayload:
         event_id = f"evt_{uuid4().hex[:10]}"
         event = EventPayload(
             event_id=event_id,
@@ -91,7 +119,7 @@ class PlatformEventApplicationService:
             snapshot_hint=snapshot_hint,
             payload=self.event_payload(entity_type, entity_id, patch, payload),
         )
-        await self.streams.publish_conversation_event(conversation_id, event)
+        return self._broadcast_event(event)
 
     async def push_goal_event(
         self,
@@ -142,6 +170,12 @@ class PlatformEventApplicationService:
         patch: Dict[str, Any],
         payload: Dict[str, Any] | None,
     ) -> Dict[str, Any]:
+        if entity_type == "tool_invocation" and self.tool_broadcast_view is not None:
+            invocation = self._tool_invocation_or_none(entity_id)
+            if invocation is not None:
+                projected = self.tool_broadcast_view(invocation)
+                if projected is not invocation:
+                    return {"patch": patch, "tool_invocation": projected.model_dump()}
         if payload is not None:
             return payload
         if entity_type == "agent_goal":
@@ -212,17 +246,28 @@ class PlatformEventApplicationService:
 
     async def stream_conversation_events(self, conversation_id: str, last_event_id: str | None = None):
         async for event in self.streams.stream_conversation_events(conversation_id, last_event_id):
-            yield event
+            yield self._broadcast_event(event)
 
     async def stream_goal_events(self, goal_id: str, last_event_id: str | None = None):
         async for event in self.streams.stream_goal_events(goal_id, last_event_id):
-            yield event
+            yield self._broadcast_event(event)
+
+    def _broadcast_event(self, event):
+        if event is None or self.tool_broadcast_view is None or not event.payload.get("tool_invocation"):
+            return event
+        invocation = ToolInvocation.model_validate(event.payload["tool_invocation"])
+        projected = self.tool_broadcast_view(invocation)
+        if projected is invocation:
+            return event
+        patch = {"status": projected.status, "summary": projected.summary, "tool_id": projected.tool_id}
+        return event.model_copy(update={"patch": patch,
+            "payload": {"patch": patch, "tool_invocation": projected.model_dump()}})
 
     async def stream_swarm_events(self, swarm_id: str, last_event_id: str | None = None):
         if last_event_id is None:
             yield self.swarm_snapshot_event(swarm_id)
         async for event in self.streams.stream_swarm_events(swarm_id, last_event_id):
-            yield event
+            yield self._broadcast_event(event)
 
     def swarm_snapshot_event(self, swarm_id: str) -> EventPayload:
         swarm = self._agent_swarm(swarm_id)

@@ -37,16 +37,17 @@
   - `NASUS_TEMPORAL_ADDRESS`
   - `NASUS_TEMPORAL_NAMESPACE`
   - `NASUS_TEMPORAL_TASK_QUEUE`
+  - `NASUS_TEMPORAL_CONVERSATION_TURN_TASK_QUEUE`
   - `NASUS_TEMPORAL_AGENT_GOAL_WORKFLOW`
   - `NASUS_TEMPORAL_CURRENT_GOAL_QUERY`
   - `NASUS_TEMPORAL_RESUME_SIGNAL`
   - `NASUS_LANGGRAPH_AGENT_LOOP_GRAPH`
   - `NASUS_LANGGRAPH_CHECKPOINT_BACKEND=postgres`
-- Temporal worker 契约固定为：启动 `NasusAgentGoalWorkflow`，接收 `{conversation_id, proposal, workflow_id}`，暴露 `current_goal` query，接收 `resume_goal` signal，并把 `AgentGoal`、`AgentStep`、`ToolInvocation` 和 `AuditEvent` 写入同一领域存储。
+- Temporal worker 契约固定为：分别启动 `NasusAgentGoalWorkflow` 和 `NasusConversationTurnWorkflow`；二者使用独立 Task Queue，避免 Turn 委派 AgentGoal 时争用同一个 Activity 并发槽。AgentGoal workflow 接收 `{conversation_id, proposal, workflow_id}`，暴露 `current_goal` query，接收 `resume_goal` signal，并把 `AgentGoal`、`AgentStep`、`ToolInvocation` 和 `AuditEvent` 写入同一领域存储。
 - 当前 `workflow-service` 启动入口：
   - `python -m apps.api.app.infrastructure.workflow.agent_goal_workflow_worker`
-  - 该 worker 注册 `NasusAgentGoalWorkflow`
-  - 注册 activities：`start_agent_goal`、`resume_agent_goal`
+  - 该进程注册 `NasusAgentGoalWorkflow` 和 `NasusConversationTurnWorkflow`
+  - 注册 activities：`start_agent_goal`、`resume_agent_goal`、`run_conversation_turn`
   - activity 只调用 `AgentLoopRuntime`，不得调用 `AgentService` 再次启动 workflow，避免递归调度。
 - LangGraph worker/节点契约固定为：外层 graph 承接 `prepare -> think -> act -> observe -> decide` 路由，所有业务动作仍必须经 `ToolInvocationRuntime`，不允许直接写正式领域对象。
 - `AgentGoal`、`AgentStep`、`ToolInvocation` 是 PostgreSQL 中的业务事实；LangGraph checkpoint 只保存图游标和恢复状态，不能成为领域事实源。

@@ -2,9 +2,14 @@ import type { ProjectRouteContext } from './ProjectRouteTypes'
 import { useProjectConversationModel } from './useProjectConversationModel'
 import { useProjectRouteActions } from './useProjectRouteActions'
 import { useProjectRouteData } from './useProjectRouteData'
+import { useSearchParams } from 'react-router-dom'
 
 export function useProjectRouteContext() {
-  const routeData = useProjectRouteData()
+  const [params] = useSearchParams()
+  // Review navigation must not create a conversation before its original
+  // goal, command, source permissions and candidate have been verified.
+  const reviewingBuild = params.has('build_review_goal') || params.has('build_review_invocation')
+  const routeData = useProjectRouteData({ reviewingBuild })
   const project = routeData.project
   const {
     projectConversation,
@@ -15,7 +20,7 @@ export function useProjectRouteContext() {
     swarmRuns,
     visibleMessages,
   } =
-    useProjectConversationModel(project)
+    useProjectConversationModel(project, { existingOnly: reviewingBuild, canReadWorkspace: routeData.canReadWorkspace })
   const projectActions = useProjectRouteActions({
     project,
     projectConversation,
@@ -27,6 +32,8 @@ export function useProjectRouteContext() {
         project,
         workspace: routeData.workspace,
         systemImage: routeData.systemImage,
+        systemImageError: routeData.systemImageError,
+        reviewingBuild,
         releaseReadiness: routeData.releaseReadiness,
         messages: visibleMessages,
         agentGoal: latestProjectGoal,

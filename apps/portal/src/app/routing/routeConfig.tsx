@@ -16,6 +16,9 @@ import {
   projectWorkspaceElement,
   registerElement,
   requireAuthElement,
+  systemImageDirectoryElement,
+  qualityLoopDirectoryElement,
+  runsDirectoryElement,
   welcomeElement,
 } from './routeElements'
 
@@ -50,6 +53,18 @@ export const appRoutes: RouteObject[] = [
       {
         path: '/dashboard',
         element: dashboardElement,
+      },
+      {
+        path: '/system-image',
+        element: systemImageDirectoryElement,
+      },
+      {
+        path: '/quality-loops',
+        element: qualityLoopDirectoryElement,
+      },
+      {
+        path: '/runs',
+        element: runsDirectoryElement,
       },
       {
         path: '/documentation',

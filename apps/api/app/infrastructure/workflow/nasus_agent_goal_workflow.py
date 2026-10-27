@@ -20,6 +20,7 @@ class NasusAgentGoalWorkflow:
         self._current_goal: dict[str, Any] | None = None
         self._resume_requested = False
         self._resume_payload: dict[str, Any] = {}
+        self._resume_seen: set[str] = set()
 
     @workflow.run
     async def run(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -37,6 +38,9 @@ class NasusAgentGoalWorkflow:
             actor = self._resume_payload.get("actor")
             if actor is not None:
                 resume_payload["actor"] = actor
+            expected = self._resume_payload.get("expected_resume")
+            if expected is not None:
+                resume_payload["expected_resume"] = expected
             self._resume_payload = {}
             self._current_goal = await workflow.execute_activity(
                 "resume_agent_goal",
@@ -51,12 +55,23 @@ class NasusAgentGoalWorkflow:
 
     @workflow.signal(name=RESUME_GOAL_SIGNAL)
     async def resume_goal(self, payload: Optional[dict[str, Any]] = None) -> None:
+        if self._current_goal and self._current_goal.get("_start_error"):
+            return
+        expected = (payload or {}).get("expected_resume")
+        if expected is not None:
+            if (not isinstance(expected, dict) or not self._current_goal
+                    or expected.get("goal_id") != self._current_goal["id"]
+                    or not isinstance(expected.get("digest"), str)):
+                return
+            if expected["digest"] in self._resume_seen or self._resume_requested:
+                return
+            self._resume_seen.add(expected["digest"])
         self._resume_payload = dict(payload or {})
         self._resume_requested = True
 
     @staticmethod
     def _is_waiting_for_resume(goal: dict[str, Any] | None) -> bool:
-        return bool(goal and goal.get("status") in WAITING_AGENT_GOAL_STATUSES)
+        return bool(goal and not goal.get("_start_error") and goal.get("status") in WAITING_AGENT_GOAL_STATUSES)
 
 
 __all__ = [

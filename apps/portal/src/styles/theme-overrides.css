@@ -153,6 +153,12 @@
   background: rgba(255, 255, 255, 0.72);
 }
 
+:root[data-theme='light'] .build-agent-feedback {
+  border-color: rgba(66, 133, 244, 0.16);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 8px 24px rgba(32, 45, 64, 0.08);
+}
+
 :root[data-theme='light'] .source-chip-row .build-skill-card,
 :root[data-theme='light'] .tool-chip {
   border-color: rgba(31, 35, 40, 0.07);

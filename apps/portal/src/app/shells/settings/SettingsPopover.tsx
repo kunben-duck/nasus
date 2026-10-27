@@ -1,12 +1,11 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
-
 import type { ModelConfigCreateRequest, ModelConfigTestRequest, ModelConfigUpdateRequest, ModelRoute, SettingsConnectionResult, StudioSettings } from '../../../domains/platform/types'
 import { SettingsMenu } from './SettingsMenu'
 import { SettingsPanelRenderer } from './SettingsPanelRenderer'
 import { buildSettingsMenuItems } from './settingsMenuModel'
 import type { SettingsPanel } from './settingsTypes'
-
+import { useI18n } from '../../../shared/i18n/I18nProvider'
 export function SettingsPopover({
   settings,
   disabled,
@@ -38,9 +37,10 @@ export function SettingsPopover({
   onActivateModel: (configId: string) => Promise<StudioSettings>
   onUseSystemDefaultModel: (route: ModelRoute) => Promise<StudioSettings>
 }) {
+  const { t } = useI18n()
   const [activePanel, setActivePanel] = useState<SettingsPanel>('theme')
   const [activeRoute, setActiveRoute] = useState<ModelRoute>('chat')
-  const menuItems = buildSettingsMenuItems(settings, activeRoute, Boolean(projectMembersPanel))
+  const menuItems = buildSettingsMenuItems(settings, activeRoute, Boolean(projectMembersPanel), t)
 
   return (
     <div className="settings-pop">

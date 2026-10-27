@@ -6,6 +6,7 @@ from typing import Literal, Protocol
 from .agent_models import AgentGoal
 from ...domain.agent.runtime_models import AgentGoalProposal
 from ...domain.agent.state_machine import AgentGoalRuntimeCheckpoint
+from ...domain.agent.resume_checkpoint import AgentResumeCheckpoint
 
 
 class AgentWorkflowRuntime(Protocol):
@@ -14,7 +15,7 @@ class AgentWorkflowRuntime(Protocol):
     async def start_goal(self, conversation_id: str, proposal: AgentGoalProposal) -> AgentGoal:
         ...
 
-    async def resume_goal(self, goal_id: str) -> AgentGoal:
+    async def resume_goal(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
         ...
 
     def checkpoint(self, goal_id: str) -> AgentGoalRuntimeCheckpoint:
@@ -27,7 +28,7 @@ class TemporalWorkflowGateway(Protocol):
     async def start_goal(self, conversation_id: str, proposal: AgentGoalProposal) -> AgentGoal:
         ...
 
-    async def resume_goal(self, goal_id: str) -> AgentGoal:
+    async def resume_goal(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
         ...
 
     def checkpoint(self, goal_id: str) -> AgentGoalRuntimeCheckpoint:
@@ -44,8 +45,10 @@ class LocalAgentWorkflowRuntime:
     async def start_goal(self, conversation_id: str, proposal: AgentGoalProposal) -> AgentGoal:
         return await self.loop_runtime.start_goal(conversation_id, proposal)
 
-    async def resume_goal(self, goal_id: str) -> AgentGoal:
-        return await self.loop_runtime.resume_goal(goal_id)
+    async def resume_goal(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
+        if expected_resume is None:
+            return await self.loop_runtime.resume_goal(goal_id)
+        return await self.loop_runtime.resume_goal(goal_id, expected_resume=expected_resume)
 
     def checkpoint(self, goal_id: str) -> AgentGoalRuntimeCheckpoint:
         return self.loop_runtime.checkpoint(goal_id)
@@ -65,8 +68,10 @@ class TemporalAgentWorkflowRuntime:
     async def start_goal(self, conversation_id: str, proposal: AgentGoalProposal) -> AgentGoal:
         return await self.gateway.start_goal(conversation_id, proposal)
 
-    async def resume_goal(self, goal_id: str) -> AgentGoal:
-        return await self.gateway.resume_goal(goal_id)
+    async def resume_goal(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
+        if expected_resume is None:
+            return await self.gateway.resume_goal(goal_id)
+        return await self.gateway.resume_goal(goal_id, expected_resume=expected_resume)
 
     def checkpoint(self, goal_id: str) -> AgentGoalRuntimeCheckpoint:
         return self.gateway.checkpoint(goal_id)

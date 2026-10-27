@@ -5,6 +5,7 @@ import asyncio
 from ..query_tools import QueryToolApplicationService
 from ..tool_invocation_ports import ToolStatusEventPort
 from ..tool_models import ToolInvocation
+from ...agent.turn_stream import current_turn_stream_emitter
 
 
 class QueryToolHandler:
@@ -28,8 +29,16 @@ class QueryToolHandler:
         )
         await asyncio.sleep(0.05)
 
-        answer = await self.query_app.answer(invocation, plan)
-        await self.query_app.persist_answer(invocation, answer)
+        stream_emitter = current_turn_stream_emitter()
+        if stream_emitter is not None and invocation.input_payload.get("_stream_reply"):
+            answer = await self.query_app.stream_answer(
+                invocation,
+                plan,
+                stream_emitter,
+            )
+        else:
+            answer = await self.query_app.answer(invocation, plan)
+            await self.query_app.persist_answer(invocation, answer)
         result = self.query_app.complete(invocation, plan)
 
         await self.tool_invocations.emit_tool_status(

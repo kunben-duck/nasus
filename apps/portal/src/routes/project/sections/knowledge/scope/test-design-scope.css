@@ -1,0 +1,57 @@
+.test-design-scope { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); min-width: 0; }
+.test-design-scope fieldset { min-inline-size: 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; margin: 12px 0; }
+.test-design-scope legend { padding: 0 6px; font-weight: 600; }
+.test-design-scope label:not(.context-pack-consent) { display: grid; gap: 6px; margin: 8px 0; }
+.test-design-scope textarea, .test-design-scope select, .test-design-generation input[type="number"] { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font: inherit; }
+.test-design-scope textarea { resize: vertical; scrollbar-width: none; }
+.test-design-scope textarea::-webkit-scrollbar { display: none; }
+.test-design-scope :is(textarea, select, button, input):focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.test-design-scope details { margin: 10px 0; }
+.test-design-scope summary { cursor: pointer; overflow-wrap: anywhere; padding: 8px 0; }
+.test-design-scope summary span { color: var(--muted); margin-inline-start: 6px; }
+.scope-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.scope-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.test-design-scope .scope-references label { display: flex; align-items: flex-start; gap: 8px; }
+.scope-references input { margin-top: 4px; flex-shrink: 0; }
+.scope-references span { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.scope-record { margin: 12px 0; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.scope-record fieldset:disabled :is(textarea, select, input) { opacity: 1; color: var(--text); -webkit-text-fill-color: var(--text); }
+.test-design-generation { min-width: 0; margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.test-design-mapping { min-width: 0; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.mapping-assertions { min-width: 0; }
+.mapping-assertions code { display: block; }
+.mapping-staging { min-width: 0; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); scroll-margin-top: 80px; }
+.mapping-staging :is(code, p, legend) { overflow-wrap: anywhere; }
+.mapping-staging fieldset { min-inline-size: 0; }
+.mapping-staging code { display: block; font-size: 11px; }
+.mapping-part-scroll { max-height: min(600px, 65dvh); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
+.mapping-part-scroll::-webkit-scrollbar { display: none; }
+.mapping-part-editor, .mapping-finalization { scroll-margin-top: 80px; }
+.partitioned-mapping-summary { scroll-margin-top: 80px; }
+.test-design-generation :is(code, dd, li, p) { overflow-wrap: anywhere; white-space: pre-wrap; }
+.test-design-generation dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 8px; }
+.test-design-generation dd { margin: 0; }
+.test-design-generation pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; }
+@media (max-width: 680px) {
+  .scope-grid { grid-template-columns: minmax(0, 1fr); }
+  .test-design-scope fieldset { padding: 8px; }
+  .mapping-assertions dl { display: block; }
+  .mapping-assertions dt { font-weight: 600; }
+  .mapping-assertions dd { margin: 4px 0 12px; }
+}
+
+@media (max-width: 640px) {
+  .test-design-scope .scope-record { padding: 8px; }
+  /* Pipeline wrappers must not compound the inset of each nested review. */
+  .test-design-scope .scope-record:has(> .test-design-generation, > .test-design-mapping),
+  .test-design-scope .script-decision-case {
+    padding-inline: 0;
+    border-inline: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  .test-design-scope .script-decisions { padding: 0; border: 0; }
+  .test-design-generation dl { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .test-design-generation dt { color: var(--muted); }
+  .test-design-generation dd { margin-bottom: 8px; }
+}

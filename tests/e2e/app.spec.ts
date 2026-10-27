@@ -20,14 +20,38 @@ async function createBrowserSession(page: import('@playwright/test').Page) {
     throw new Error(`Unable to create E2E auth session: ${response.status} ${await response.text()}`)
   }
   const session = await response.json() as { access_token: string }
+  const settingsResponse = await fetch(`${apiUrl}/v1/settings`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${session.access_token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ language: 'en' }),
+  })
+  if (!settingsResponse.ok) {
+    throw new Error(`Unable to select E2E language: ${settingsResponse.status} ${await settingsResponse.text()}`)
+  }
   await page.addInitScript((token) => {
     window.localStorage.setItem('nasus_api_token', token)
+    if (!window.localStorage.getItem('nasus.locale')) window.localStorage.setItem('nasus.locale', 'en')
   }, session.access_token)
 }
 
 async function createPlatformAdminBrowserSession(page: import('@playwright/test').Page) {
+  const settingsResponse = await fetch(`${apiUrl}/v1/settings`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${adminToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ language: 'en' }),
+  })
+  if (!settingsResponse.ok) {
+    throw new Error(`Unable to select admin E2E language: ${settingsResponse.status} ${await settingsResponse.text()}`)
+  }
   await page.addInitScript((token) => {
     window.localStorage.setItem('nasus_api_token', token)
+    if (!window.localStorage.getItem('nasus.locale')) window.localStorage.setItem('nasus.locale', 'en')
   }, adminToken)
 }
 
@@ -35,30 +59,135 @@ test('unauthenticated users register with email before entering build', async ({
   const email = `signup-${Date.now()}-${Math.random().toString(16).slice(2)}@example.com`
 
   await page.goto('/welcome')
-  await expect(page.getByRole('heading', { name: /Build quality project from now/i })).toBeVisible()
-  await expect(page.getByText(/Initialize system image from code/i)).toBeVisible()
-  await expect(page.getByRole('heading', { name: /Build on a living system image/i })).not.toBeInViewport()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
+  await expect(page.getByRole('heading', { name: /从这里开始你的质量项目/ })).toBeVisible()
+  await expect(page.getByText(/从代码初始化系统画像/)).toBeVisible()
+  await expect(page.getByRole('heading', { name: /构建持续演进的系统画像/ })).not.toBeInViewport()
   await page.mouse.wheel(0, 900)
-  await expect(page.getByRole('heading', { name: /Build on a living system image/i })).toBeInViewport({ timeout: 5_000 })
+  await expect(page.getByRole('heading', { name: /构建持续演进的系统画像/ })).toBeInViewport({ timeout: 5_000 })
 
-  await page.getByRole('link', { name: /Get started/i }).first().click()
+  await page.getByRole('link', { name: /开始使用/ }).first().click()
   await expect(page).toHaveURL(/\/login$/)
-  await expect(page.getByRole('heading', { name: /Sign in to Nasus Studio/i })).toBeVisible()
-  await expect(page.getByRole('link', { name: /^Get started$/i })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: /登录 Nasus Studio/ })).toBeVisible()
+  await expect(page.getByRole('link', { name: /^开始使用$/ })).toHaveCount(0)
 
-  await page.getByRole('link', { name: /^Create account$/i }).click()
+  await page.getByRole('link', { name: /^创建账号$/ }).click()
   await expect(page).toHaveURL(/\/register$/)
-  await expect(page.getByRole('heading', { name: /Create your Nasus account/i })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /创建 Nasus 账号/ })).toBeVisible()
 
-  await page.getByLabel(/Name/i).fill('Signup Admin')
-  await page.getByLabel(/Email/i).fill(email)
-  await page.getByLabel(/^Password$/i).fill('strong-password-123')
-  await page.getByLabel(/Confirm password/i).fill('strong-password-123')
-  await page.getByRole('button', { name: /Create account/i }).click()
+  await page.getByLabel(/姓名/).fill('Signup Admin')
+  await page.getByLabel(/邮箱/).fill(email)
+  await page.getByLabel(/^密码$/).fill('strong-password-123')
+  await page.getByLabel(/确认密码/).fill('strong-password-123')
+  await page.getByRole('button', { name: /创建账号/ }).click()
 
   await expect(page).toHaveURL(/\/build$/)
-  await expect(page.getByRole('heading', { name: /Build quality projects with Nasus/i })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /用 Nasus 构建质量项目/ })).toBeVisible()
   await expect(page.getByRole('button', { name: new RegExp(email, 'i') })).toBeVisible()
+
+  await page.getByTestId('build-agent-input').fill('帮我创建一个新的质量项目')
+  await page.getByTestId('build-agent-submit').click()
+  await expect(page.getByTestId('build-agent-feedback')).toContainText(/请先提供项目名称/, { timeout: 10_000 })
+})
+
+test('language setting switches immediately and persists after reload', async ({ page, request }) => {
+  await createBrowserSession(page)
+  await page.goto('/build')
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  await expect(page.getByRole('heading', { name: /Build quality projects with Nasus/i })).toBeVisible()
+
+  await page.getByRole('button', { name: /^Settings$/ }).click()
+  await page.getByRole('button', { name: /Language.*English/ }).click()
+  const saveChinese = page.waitForResponse((response) =>
+    response.url().endsWith('/v1/settings') && response.request().method() === 'PATCH',
+  )
+  await page.getByRole('button', { name: /^○ 中文$/ }).click()
+  await saveChinese
+
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
+  await expect(page.getByRole('heading', { name: /用 Nasus 构建质量项目/ })).toBeVisible()
+  const remoteSettings = await request.patch(`${apiUrl}/v1/settings`, {
+    headers: { Authorization: `Bearer ${adminToken}` }, data: { language: 'en' },
+  })
+  expect(remoteSettings.ok()).toBeTruthy()
+  const refreshedSettings = page.waitForResponse((response) => response.url().endsWith('/v1/settings')
+    && response.request().method() === 'GET' && response.ok())
+  await page.context().setOffline(true)
+  await page.context().setOffline(false)
+  await refreshedSettings
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
+  await expect(page.getByRole('heading', { name: /用 Nasus 构建质量项目/ })).toBeVisible()
+
+  const localizedProjectName = `Localized Runtime Hub ${Date.now()}`
+  await page.getByTestId('build-agent-input').fill(`Help me create a new project called ${localizedProjectName}`)
+  await page.getByTestId('build-agent-submit').click()
+  await expect(page).toHaveURL(/\/projects\//, { timeout: 15_000 })
+  await expect(page.getByRole('heading', { name: /与 Agent 协同构建/ })).toBeVisible()
+  await page.getByTestId('agent-card-system-image-builder').click()
+  await expect(page.getByTestId('agent-goal-panel')).toContainText(/准备构建系统画像/, { timeout: 15_000 })
+  await expect(page.getByTestId('agent-goal-explanation')).toContainText(/等待采集代码/, { timeout: 15_000 })
+  await expect(page.getByTestId('agent-goal-explanation')).toContainText(/单独确认结构分析预算/)
+  await expect(page.getByTestId('agent-current-step')).toContainText(/等待代码采集完成/)
+  await expect(page.getByTestId('agent-goal-panel')).not.toContainText(/Waiting for captured code|source capture|Add and capture/)
+  await expect(page.getByTestId('confirm-agent-goal')).toHaveCount(0)
+
+  await page.goto('/build')
+
+  await page.getByRole('button', { name: /^设置$/ }).click()
+  await page.getByRole('button', { name: /语言.*中文/ }).click()
+  const saveEnglish = page.waitForResponse((response) =>
+    response.url().endsWith('/v1/settings') && response.request().method() === 'PATCH',
+  )
+  await page.getByRole('button', { name: /^○ English$/ }).click()
+  await saveEnglish
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  await expect(page.getByRole('heading', { name: /Build quality projects with Nasus/i })).toBeVisible()
+})
+
+test('build agent feedback renders controlled markdown', async ({ page }) => {
+  await createBrowserSession(page)
+  await page.route('**/v1/conversations/*/messages', async (route) => {
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        conversation_id: 'conversation-markdown',
+        turn_id: 'turn-markdown',
+        user_message_id: 'message-markdown',
+        status: 'accepted',
+        events_url: '/v1/conversations/conversation-markdown/events',
+      }),
+    })
+  })
+  await page.route('**/v1/conversations/*/turns/turn-markdown', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'turn-markdown',
+        conversation_id: 'conversation-markdown',
+        user_message_id: 'message-markdown',
+        status: 'completed',
+        result: {
+          clarification: {
+            question: 'Create **Payment System** from `main`. <script>unsafe()</script>',
+          },
+        },
+      }),
+    })
+  })
+
+  await page.goto('/build')
+  await page.getByTestId('build-agent-input').fill('Create a project')
+  await page.getByTestId('build-agent-submit').click()
+
+  const feedback = page.getByTestId('build-agent-feedback')
+  await expect(feedback.locator('.markdown-content strong')).toHaveText('Payment System')
+  await expect(feedback.locator('.markdown-content code')).toHaveText('main')
+  await expect(feedback).not.toContainText('**')
+  await expect(feedback.locator('script')).toHaveCount(0)
 })
 
 test('agent-first build to project workspace path works end-to-end', async ({ page }) => {

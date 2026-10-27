@@ -30,6 +30,16 @@ from apps.api.app.infrastructure.system_image.hybrid_retrieval import (
 from apps.api.app.infrastructure.system_image.sqlalchemy_memory_retriever import (
     SQLAlchemySystemImageRetriever,
 )
+from apps.api.app.domain.system_image.source_access import SourceAccessSnapshot
+
+
+class ProjectOnlyAccess:
+    """Explicit membership double for these index/legacy compatibility tests."""
+    def scope(self, project_id):
+        return SourceAccessSnapshot(project_id, 0, ()).for_actor("reader", "viewer")
+
+    def require_current(self, scope):
+        assert scope == self.scope(scope.project_id)
 
 
 def _now() -> str:
@@ -180,6 +190,7 @@ def test_durable_agent_retrieval_is_project_scoped_reranked_and_traced() -> None
         conversations=conversations,
         retrieval_index=SQLAlchemySystemImageRetrievalIndex(system_images),
         workspace=workspace,  # type: ignore[arg-type]
+        source_access=ProjectOnlyAccess(),
     )
     conversation = ConversationSession(
         id=f"conversation_{suffix}",
@@ -237,6 +248,7 @@ def test_semantic_retrieval_still_runs_when_query_terms_are_stopwords() -> None:
         conversations=ConversationRepository(),
         retrieval_index=SQLAlchemySystemImageRetrievalIndex(system_images),
         workspace=LiveRetrievalWorkspace(),  # type: ignore[arg-type]
+        source_access=ProjectOnlyAccess(),
     )
     conversation = ConversationSession(
         id=f"conversation_semantic_{suffix}",

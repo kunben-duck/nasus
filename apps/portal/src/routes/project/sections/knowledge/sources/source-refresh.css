@@ -1,0 +1,8 @@
+.source-refresh-list { list-style: none; padding: 0; display: grid; gap: 10px; }
+.source-refresh-list li { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.source-refresh-list label { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
+.source-refresh-list input { flex: 0 0 auto; margin-top: 3px; accent-color: var(--blue); }
+.source-refresh-list label > span { min-width: 0; display: grid; gap: 5px; overflow-wrap: anywhere; }
+.source-refresh-list small { color: var(--muted); }
+.source-refresh-inspector .evidence-integrity-details p { overflow-wrap: anywhere; }
+.source-refresh-command { margin-top: 20px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }

@@ -4,6 +4,7 @@ export interface RawAssetRecord {
   version_id?: string | null
   source_type: 'code' | 'us_doc' | 'test_asset'
   source_uri: string
+  tracked_ref?: string | null
   source_label?: string | null
   ingestion_status: 'pending' | 'ingesting' | 'indexed' | 'failed' | 'stale'
   content_hash: string
@@ -29,7 +30,7 @@ export interface RawAssetChunk {
   source_type: 'code' | 'us_doc' | 'test_asset'
   chunk_kind: 'code' | 'requirement' | 'test' | 'summary'
   section_path: string
-  content_ref: string
+  content_ref: string | null
   content_hash: string
   token_estimate: number
   metadata: Record<string, unknown>

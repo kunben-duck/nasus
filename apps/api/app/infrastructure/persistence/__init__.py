@@ -2,6 +2,7 @@
 
 from .database import Base, SessionLocal, engine, get_database_url, init_database
 from .conversation_repository import ConversationRepository
+from .conversation_turn_repository import ConversationTurnRepository
 from .event_outbox_repository import EventOutboxRepository
 from .model_config_test_grant_repository import (
     SQLAlchemyModelConfigTestGrantRepository,
@@ -22,6 +23,7 @@ from .unit_of_work import session_scope
 __all__ = [
     "Base",
     "ConversationRepository",
+    "ConversationTurnRepository",
     "DatabaseReadinessProbe",
     "EventOutboxRepository",
     "SQLAlchemyLLMCallRepository",

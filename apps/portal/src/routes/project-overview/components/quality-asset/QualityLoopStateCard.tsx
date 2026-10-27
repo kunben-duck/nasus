@@ -1,25 +1,25 @@
 import type { QualityLoopStateView } from '../../projectWorkspaceSelectors'
+import { useI18n } from '../../../../shared/i18n/I18nProvider'
 
 const qualityStages = ['Scenarios', 'Cases', 'Automation', 'Release']
 
 export function QualityLoopStateCard({ qualityState }: { qualityState?: QualityLoopStateView }) {
+  const { t, tx } = useI18n()
   if (!qualityState) return null
 
   return (
     <div className="quality-loop-state-card" data-testid="quality-loop-state">
       <div>
-        <strong>{qualityState.label}</strong>
-        <p>
-          Release score {qualityState.releaseScore} · Next tool {qualityState.nextTool}
-        </p>
+        <strong>{tx(qualityState.label)}</strong>
+        <p>{t('Release score {score} · Next tool {tool}', { score: qualityState.releaseScore, tool: qualityState.nextTool })}</p>
       </div>
-      <div className="quality-stage-bar" aria-label="Quality loop stage">
+      <div className="quality-stage-bar" aria-label={t('Quality loop stage')}>
         {qualityStages.map((stage, index) => {
           const active = qualityState.stageIndex >= index + 1
           return (
             <span className={active ? 'active' : ''} key={stage}>
               <i />
-              {stage}
+              {tx(stage)}
             </span>
           )
         })}
@@ -27,7 +27,7 @@ export function QualityLoopStateCard({ qualityState }: { qualityState?: QualityL
       {qualityState.blockers.length ? (
         <div className="quality-blocker-list">
           {qualityState.blockers.map((blocker) => (
-            <span key={blocker}>{blocker}</span>
+            <span key={blocker}>{tx(blocker)}</span>
           ))}
         </div>
       ) : null}

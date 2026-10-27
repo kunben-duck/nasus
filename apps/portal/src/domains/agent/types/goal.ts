@@ -51,6 +51,8 @@ export interface AgentGoal {
   thinking_tokens_used: number
   no_progress_observations: number
   started_at?: string | null
+  active_runtime_ms?: number | null
+  active_started_at?: string | null
   last_progress_at?: string | null
   last_progress_fingerprint?: string | null
   budget_exhausted_reason?: string | null
@@ -99,6 +101,8 @@ export interface AgentGoalExplanation {
     thinking_tokens_used: number
     no_progress_observations: number
     started_at?: string | null
+    active_runtime_ms?: number | null
+    active_started_at?: string | null
     last_progress_at?: string | null
     exhausted_reason?: string | null
   }

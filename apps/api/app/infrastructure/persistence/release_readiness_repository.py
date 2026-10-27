@@ -151,15 +151,15 @@ class SQLAlchemyReleaseReadinessRepository:
                 evidence_types=tuple(row.evidence_type for row in evidence_rows),
                 asset_part_statuses=asset_part_statuses,
                 task_context_readiness=task_context.readiness if task_context is not None else None,
-                task_context_confidence=task_context.confidence if task_context is not None else 0,
+                task_context_confidence=task_context.confidence if task_context is not None else None,
                 missing_context_count=(
                     len(task_context.missing_context or []) if task_context is not None else 0
                 ),
                 quality_profile_coverage=(
-                    quality_profile.coverage_score if quality_profile is not None else 0
+                    quality_profile.coverage_score if quality_profile is not None else None
                 ),
                 quality_profile_confidence=(
-                    quality_profile.confidence if quality_profile is not None else 0
+                    quality_profile.confidence if quality_profile is not None else None
                 ),
                 fallback_generated_parts=fallback_generated_parts,
                 open_failures=tuple(

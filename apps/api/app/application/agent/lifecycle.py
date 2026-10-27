@@ -12,13 +12,20 @@ from .agent_models import (
 from .ports import AgentGoalLifecycleStatePort
 from ...domain.agent.runtime_models import AgentGoalProposal, ModelUsage, ToolPlanStep
 from ...domain.agent.budget_policy import evaluate_agent_budget
+from ...domain.agent.active_runtime import settle_active_runtime
+from ...domain.agent.resume_checkpoint import AgentResumeCheckpoint
+from ...domain.agent.plan_policy import AgentPlanPolicyViolation
+from ...domain.agent.goal_creation import ActiveAgentGoalExists, ACTIVE_AGENT_GOAL_STATUSES, AgentGoalStartIdentity
+from .build_intent_entries import AgentBuildIntentEntryPort, DIGEST_REF
+from .natural_build_entries import REQUEST_REF
+from .source_build_wait import WAIT_REF, WAIT_REASON
 
 if TYPE_CHECKING:
     from .workflow import AgentWorkflowRuntime
 
 
 TERMINAL_GOAL_STATUSES = {"completed", "failed", "cancelled"}
-ACTIVE_GOAL_STATUSES = {"pending", "running", "paused", "blocked"}
+ACTIVE_GOAL_STATUSES = ACTIVE_AGENT_GOAL_STATUSES
 
 
 class AgentGoalLifecycleApplicationService:
@@ -28,13 +35,42 @@ class AgentGoalLifecycleApplicationService:
         self,
         state: AgentGoalLifecycleStatePort,
         runtime: "AgentWorkflowRuntime",
+        *,
+        build_intents: AgentBuildIntentEntryPort | None = None,
     ) -> None:
         self._state = state
         self.runtime = runtime
+        self.build_intents = build_intents
+
+    def _require_saved_entry_reuse(self, proposal: AgentGoalProposal, existing: AgentGoal) -> None:
+        if any(ref.startswith((REQUEST_REF, WAIT_REF)) for ref in proposal.target_refs):
+            if self.build_intents is None:
+                raise AgentPlanPolicyViolation("build_preparation_unavailable", "Build preparation is unavailable.")
+            self.build_intents.require_preparation_reuse(proposal, existing)
+            return
+        if not any(ref.startswith(DIGEST_REF) for ref in proposal.target_refs):
+            return
+        if self.build_intents is None or proposal.planned_tools or proposal.initial_tool_id:
+            raise AgentPlanPolicyViolation("saved_build_intent_steps_changed", "Saved-intent entries require the canonical compiler.")
+        if any(ref.startswith(REQUEST_REF) for ref in existing.target_refs):
+            self.build_intents.require_saved_preparation_reuse(proposal, existing)
+            return
+        self.build_intents.compile(proposal)
+        pins = {ref for ref in proposal.target_refs if ref.startswith(("project:", "build_plan:", DIGEST_REF))}
+        if (len(existing.target_refs) != 3 or pins != set(existing.target_refs)
+                or f"project:{existing.project_id}" not in pins):
+            raise AgentPlanPolicyViolation("saved_build_intent_active_goal_changed", "Another active goal controls this conversation; do not substitute the saved plan.")
 
     async def start_from_proposal(self, conversation_id: str, proposal: AgentGoalProposal) -> AgentGoal:
         existing = self.active_goal_for_conversation(conversation_id)
         if existing is not None:
+            self._require_saved_entry_reuse(proposal, existing)
+            if (existing.pause_reason == WAIT_REASON
+                    and any(ref.startswith(REQUEST_REF) for ref in proposal.target_refs)):
+                # An explicit bounded build request can fix newly captured
+                # inputs, but never release the later structural-budget gate.
+                return await self.resume_goal(existing.id,
+                    expected_resume=AgentResumeCheckpoint.capture(existing.model_dump(mode="json")))
             self._state.record_goal_audit(
                 existing,
                 action="agent.goal.active_goal_guard",
@@ -56,20 +92,24 @@ class AgentGoalLifecycleApplicationService:
                 },
             )
             return existing
-        return await self.runtime.start_goal(conversation_id, proposal)
+        try:
+            return await self.runtime.start_goal(conversation_id, proposal)
+        except ActiveAgentGoalExists as conflict:
+            return await self._reuse_claimed_goal(conversation_id, proposal, conflict.goal_id)
+
+    async def _reuse_claimed_goal(self, conversation_id, proposal, goal_id):
+        existing = self._state.get_goal(goal_id)
+        if existing.conversation_id != conversation_id:
+            raise AgentPlanPolicyViolation("active_agent_goal_scope_changed", "The controlling goal belongs to another conversation.")
+        self._require_saved_entry_reuse(proposal, existing)
+        self._state.record_goal_audit(existing, action="agent.goal.active_goal_guard", status=existing.status,
+            summary=f"Concurrent goal creation kept the original controller: {existing.title}",
+            actor="system", actor_kind="system")
+        return existing
 
     async def create_manual_goal(self, payload: AgentGoalCreateRequest) -> AgentGoal:
-        existing = self.active_goal_for_conversation(payload.conversation_id)
-        if existing is not None:
-            self._state.record_goal_audit(
-                existing,
-                action="agent.goal.active_goal_guard",
-                status=existing.status,
-                summary=f"Manual goal creation reused active goal: {existing.title}",
-                actor="system",
-                actor_kind="system",
-            )
-            return existing
+        if payload.steps and any(ref.startswith(DIGEST_REF) for ref in payload.target_refs):
+            raise AgentPlanPolicyViolation("saved_build_intent_steps_changed", "Saved-intent entries cannot supply replacement steps.")
         planned_tools = [
             ToolPlanStep(
                 tool_id=step.selected_tool_id,
@@ -103,9 +143,24 @@ class AgentGoalLifecycleApplicationService:
             max_runtime_seconds=payload.max_runtime_seconds,
             max_no_progress_observations=payload.max_no_progress_observations,
         )
-        return await self.runtime.start_goal(payload.conversation_id, proposal)
+        existing = self.active_goal_for_conversation(payload.conversation_id)
+        if existing is not None:
+            self._require_saved_entry_reuse(proposal, existing)
+            self._state.record_goal_audit(
+                existing,
+                action="agent.goal.active_goal_guard",
+                status=existing.status,
+                summary=f"Manual goal creation reused active goal: {existing.title}",
+                actor="system",
+                actor_kind="system",
+            )
+            return existing
+        try:
+            return await self.runtime.start_goal(payload.conversation_id, proposal)
+        except ActiveAgentGoalExists as conflict:
+            return await self._reuse_claimed_goal(payload.conversation_id, proposal, conflict.goal_id)
 
-    def create_goal_record(self, payload: AgentGoalCreateRequest) -> AgentGoal:
+    def create_goal_record(self, payload: AgentGoalCreateRequest, *, start_identity: AgentGoalStartIdentity | None = None) -> AgentGoal:
         goal = AgentGoal(
             id=f"goal_{uuid4().hex[:10]}",
             conversation_id=payload.conversation_id,
@@ -120,6 +175,7 @@ class AgentGoalLifecycleApplicationService:
             title=payload.title,
             status="pending",
             summary=payload.summary,
+            active_runtime_ms=0,
             autonomy_level=payload.autonomy_level,
             max_steps=payload.max_steps,
             max_model_calls=payload.max_model_calls,
@@ -132,7 +188,7 @@ class AgentGoalLifecycleApplicationService:
             thinking_tokens_used=(
                 payload.thinking_input_tokens_used + payload.thinking_output_tokens_used
             ),
-            workflow_id=f"wf_{uuid4().hex[:8]}",
+            workflow_id=start_identity.workflow_id if start_identity else f"wf_{uuid4().hex[:8]}",
             steps=payload.steps
             or [
                 AgentStep(id="step_context", title="Assemble context", status="pending"),
@@ -140,7 +196,10 @@ class AgentGoalLifecycleApplicationService:
                 AgentStep(id="step_output", title="Materialize output", status="pending"),
             ],
         )
-        self._state.create_goal(goal)
+        if start_identity is None:
+            self._state.create_goal(goal)
+        else:
+            self._state.create_goal(goal, start_identity=start_identity)
         self._state.record_goal_audit(
             goal,
             action="agent.goal.created",
@@ -163,7 +222,7 @@ class AgentGoalLifecycleApplicationService:
     def is_paused_goal(self, goal_id: str) -> bool:
         return self.has_goal(goal_id) and self.get_goal(goal_id).status == "paused"
 
-    async def resume_goal(self, goal_id: str) -> AgentGoal:
+    async def resume_goal(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
         goal = self._state.get_goal(goal_id)
         self._state.record_goal_audit(
             goal,
@@ -173,12 +232,15 @@ class AgentGoalLifecycleApplicationService:
             actor="user",
             actor_kind="user",
         )
-        return await self.runtime.resume_goal(goal_id)
+        if expected_resume is None:
+            return await self.runtime.resume_goal(goal_id)
+        return await self.runtime.resume_goal(goal_id, expected_resume=expected_resume)
 
     async def interrupt_goal(self, goal_id: str) -> AgentGoal:
         goal = self._state.get_goal(goal_id)
         if goal.status in TERMINAL_GOAL_STATUSES:
             return goal
+        settle_active_runtime(goal)
         goal.status = "paused"
         goal.pause_reason = "user_interrupt"
         self._state.persist_goal(goal)
@@ -252,11 +314,11 @@ class AgentGoalLifecycleApplicationService:
         return goal
 
     def active_goal_for_conversation(self, conversation_id: str) -> AgentGoal | None:
-        goals = tuple(self._state.list_goals_for_conversation(conversation_id))
-        for goal in reversed(goals):
-            if goal.status in ACTIVE_GOAL_STATUSES:
-                return goal
-        return None
+        goals = [goal for goal in self._state.list_goals_for_conversation(conversation_id)
+            if goal.status in ACTIVE_GOAL_STATUSES]
+        if len(goals) > 1:
+            raise AgentPlanPolicyViolation("active_agent_goal_ambiguous", "Multiple historical goals control this conversation; resolve them explicitly.")
+        return goals[0] if goals else None
 
 
 AgentService = AgentGoalLifecycleApplicationService

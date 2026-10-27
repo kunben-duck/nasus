@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any, Sequence
 
 from ...application.platform.project_models import ProjectCard, VersionSummary
@@ -33,6 +34,9 @@ class LegacySystemImageWorkspace:
     infrastructure adapters. This boundary never discovers services through
     the compatibility facade.
     """
+
+    def operation_session(self):
+        return nullcontext()
 
     def __init__(
         self,
@@ -201,6 +205,9 @@ class LegacySystemImageWorkspace:
 
     def put_json(self, key: str, payload: dict[str, Any]) -> str:
         return self._adapters.object_storage.put_json(key, payload).storage_ref
+
+    def artifact_write_session(self):
+        return self._adapters.object_storage.write_session()
 
     def get_json(self, storage_ref: str) -> dict[str, Any]:
         return self._adapters.object_storage.get_json(storage_ref)

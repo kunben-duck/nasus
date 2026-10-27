@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable
 from uuid import uuid4
 
 from ...application.agent.agent_models import AgentMemoryItem, ConversationSession
 from ...domain.platform.llm_call import LLMCallContext
+from ...domain.system_image.source_access import SourceAccessDenied, SourceAccessScope
 from ...application.system_image.retrieval import (
     SystemImageMemoryHit,
     SystemImageMemorySearchResult,
@@ -21,6 +22,11 @@ from ...application.system_image.retrieval_port import (
 )
 from ...application.system_image.system_image_models import RerankRecord, RetrievalRun
 from ...application.system_image.ports import SystemImageWorkspacePort
+from ...application.system_image.source_access import SourceScopeAuthorizationPort
+from .source_read_projection import SQLAlchemySourceReadProjection
+from ...application.system_image.published_reads import PublishedImageReadApplicationService
+from ...application.system_image.publication_read_models import ImageReadState
+from ...application.system_image.frozen_indexes import FrozenIndexApplicationService
 from ..persistence.conversation_repository import ConversationRepository
 from ..persistence.system_image_repository import (
     SystemImageProjectSnapshot,
@@ -54,11 +60,18 @@ class SQLAlchemySystemImageRetriever(SystemImageRetriever):
         conversations: ConversationRepository,
         retrieval_index: SystemImageRetrievalIndexPort,
         workspace: SystemImageWorkspacePort,
+        source_access: SourceScopeAuthorizationPort,
+        published: PublishedImageReadApplicationService | None = None,
+        frozen_indexes: FrozenIndexApplicationService | None = None,
     ) -> None:
         self._system_images = system_images
         self._conversations = conversations
         self._retrieval_index = retrieval_index
         self._workspace = workspace
+        self._source_access = source_access
+        self._source_projection = SQLAlchemySourceReadProjection()
+        self._published = published
+        self._frozen_indexes = frozen_indexes
 
     async def search_project_memory(
         self,
@@ -67,24 +80,54 @@ class SQLAlchemySystemImageRetriever(SystemImageRetriever):
         *,
         limit: int = 8,
         trace: bool = False,
+        expected_scope: SourceAccessScope | None = None,
     ) -> SystemImageMemorySearchResult:
         project_id = conversation.project_id
+        if expected_scope is not None:
+            if expected_scope.project_id != project_id:
+                raise SourceAccessDenied("retrieval scope project mismatch")
+            self._source_access.require_current(expected_scope)
         normalized_query = " ".join(query.split())
-        if not project_id or not normalized_query:
+        if not project_id:
             return SystemImageMemorySearchResult()
 
         terms = self._query_terms(normalized_query)
-        snapshot = self._system_images.load_project_snapshot(project_id)
+        scope = expected_scope or self._source_access.scope(project_id)
+        published = self._published.read(project_id, version_id=conversation.version_id) if self._published else None
+        if not normalized_query:
+            if published is not None:
+                self._published.require_current(published)
+            elif self._published:
+                self._published.require_legacy(project_id, version_id=conversation.version_id)
+            self._source_access.require_current(scope)
+            return SystemImageMemorySearchResult(image_read_state=published.state if published else ImageReadState(), strategy="empty_query")
+        if published is not None and self._frozen_indexes is not None:
+            indexed = await self._frozen_indexes.search(published, normalized_query, limit=limit, trace=trace,
+                conversation_id=conversation.id)
+            if indexed is not None:
+                self._source_access.require_current(scope)
+                return indexed
+        if published is not None:
+            # Legacy vectors and long-term memories are keyed by mutable aliases,
+            # not the frozen image. Never merge them into a published read.
+            snapshot = SystemImageProjectSnapshot(knowledge_objects=list(published.objects), raw_assets=list(published.sources),
+                raw_asset_chunks=[], baselines=list(published.baselines), relationships=list(published.relationships),
+                overlays=[], metric_snapshots=[], embedding_records=[], retrieval_runs=[], rerank_records=[], task_contexts=[], quality_profiles=[])
+            projection = None
+        else:
+            projection = self._source_projection.project(self._system_images.load_project_snapshot(project_id), scope)
+            snapshot = projection.snapshot
         memories = self._conversations.list_agent_memory_items(
             owner_ref=f"project:{project_id}",
             memory_scope="project_long_term",
             status="active",
             limit=24,
-        )
+        ) if projection is not None and projection.include_unproven_memory else []
         profile = self._embedding_profile(snapshot, conversation)
         candidates = self._durable_lexical_candidates(snapshot, memories, terms)
         indexed_hits: list[HybridRetrievalHit] = []
         query_embedding: Any | None = None
+        self._source_access.require_current(scope)
 
         if profile is not None:
             query_embedding = await self._workspace.embed_texts(
@@ -97,6 +140,7 @@ class SQLAlchemySystemImageRetriever(SystemImageRetriever):
                     conversation_id=conversation.id,
                 ),
             )
+            self._source_access.require_current(scope)
             query_vector = (
                 list(query_embedding.vectors[0])
                 if getattr(query_embedding, "vectors", None)
@@ -121,8 +165,14 @@ class SQLAlchemySystemImageRetriever(SystemImageRetriever):
                         allow_fallback_vectors=(
                             profile.allow_fallback or query_embedding.mode != "live"
                         ),
+                        authorized_subjects=projection.index_subjects,
                     )
                 )
+                self._source_access.require_current(scope)
+                if projection.index_subjects is not None:
+                    allowed = set(projection.index_subjects.subject_refs)
+                    if any(item.subject_ref not in allowed for item in indexed_hits):
+                        raise ValueError("retrieval adapter returned a subject outside the authorized scope")
                 self._merge_index_candidates(candidates, indexed_hits)
 
         ordered_candidates = self._diverse_slice(
@@ -135,6 +185,7 @@ class SQLAlchemySystemImageRetriever(SystemImageRetriever):
         rerank_result: Any | None = None
         ranked_candidates = ordered_candidates
         if ordered_candidates:
+            self._source_access.require_current(scope)
             rerank_result = await self._workspace.rerank_candidates(
                 query=normalized_query,
                 candidates=[item.search_text for item in ordered_candidates],
@@ -146,6 +197,7 @@ class SQLAlchemySystemImageRetriever(SystemImageRetriever):
                     conversation_id=conversation.id,
                 ),
             )
+            self._source_access.require_current(scope)
             ranked_candidates = self._apply_rerank(
                 ordered_candidates,
                 getattr(rerank_result, "ranked_indices", []),
@@ -156,7 +208,8 @@ class SQLAlchemySystemImageRetriever(SystemImageRetriever):
             max(1, limit),
         )
         retrieval_refs: tuple[str, ...] = ()
-        if trace:
+        self._source_access.require_current(scope)
+        if trace and not scope.requires_provenance and published is None:
             retrieval_refs = self._persist_trace(
                 conversation=conversation,
                 query=normalized_query,
@@ -167,9 +220,22 @@ class SQLAlchemySystemImageRetriever(SystemImageRetriever):
                 query_embedding=query_embedding,
                 rerank_result=rerank_result,
             )
+        self._source_access.require_current(scope)
+        state = ImageReadState()
+        hits = tuple(item.hit for item in selected)
+        if published is not None:
+            self._published.require_current(published)
+            state = published.state
+            if state.pin:
+                hits = tuple(replace(hit, ref=f"image_revision:{state.pin.image_revision_id}:{hit.ref}",
+                    summary=f"image_hash={state.pin.image_artifact_hash}; {hit.summary}") for hit in hits)
+        elif self._published:
+            self._published.require_legacy(project_id, version_id=conversation.version_id)
         return SystemImageMemorySearchResult(
-            hits=tuple(item.hit for item in selected),
+            hits=hits,
             retrieval_run_refs=retrieval_refs,
+            image_read_state=state,
+            strategy="published_lexical_rerank_unversioned_index_withheld" if published is not None else "legacy_hybrid",
         )
 
     def _persist_trace(

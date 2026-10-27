@@ -1,0 +1,38 @@
+import asyncio
+from datetime import datetime, timezone
+
+from ...quality_loop.environment_observation_records import EnvironmentRecordQuery
+from ...quality_loop.run_plan_environments import RunPlanEnvironmentQuery
+from ....domain.quality_loop.environment_health_record import HEALTH_RECORD_TOOL
+from ..tool_models import ToolResult
+from .query_input import query_payload
+
+
+class EnvironmentHealthRecordToolHandler:
+    def __init__(self, application, events, access):
+        self.application, self.events, self.access = application, events, access
+
+    async def handle(self, invocation):
+        keys = []
+        await self.events.emit_tool_status(invocation.id, "running", "Verifying original instance health evidence", [])
+        try:
+            self.access.require_invocation_project_scope(invocation)
+            payload = {key: value for key, value in query_payload(invocation.input_payload).items()
+                if key not in {"confirmed_by_user", "confirmed_at"}}
+            if invocation.tool_id == HEALTH_RECORD_TOOL:
+                metadata = await asyncio.to_thread(self.application.record, RunPlanEnvironmentQuery.model_validate(payload),
+                    invocation_id=invocation.id, recorded_at=datetime.now(timezone.utc).isoformat())
+                receipt = {"metadata": metadata, "historical_not_live": True}
+                keys = [["run-plan-health", payload["project_id"]]]
+            else:
+                query = EnvironmentRecordQuery.model_validate(payload)
+                receipt = await asyncio.to_thread(self.application.receipt, query.project_id, query.record_id)
+            self.access.require_invocation_project_scope(invocation)
+            result = ToolResult(invocation_id=invocation.id, status="completed", run_plan_health_record=receipt,
+                object_refs=["run_plan_health:" + receipt["metadata"]["record_id"]],
+                summary="Original instance health privately archived and reverified. Historical evidence only; no execution or business coverage authority.")
+        except Exception:
+            result = ToolResult(invocation_id=invocation.id, status="failed",
+                summary="Original health evidence unavailable. Verify saved inputs, source access, owned instances and independent confirmation. No business coverage recorded.")
+        await self.events.emit_tool_status(invocation.id, result.status, result.summary,
+            keys if result.status == "completed" else [], result)

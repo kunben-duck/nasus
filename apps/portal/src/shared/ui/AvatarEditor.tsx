@@ -3,6 +3,7 @@ import { useRef, useState } from 'react'
 import { avatarPresets } from './avatarPresets'
 import { UserAvatar } from './UserAvatar'
 import type { UserAvatarView } from './UserAvatar'
+import { useI18n } from '../i18n/I18nProvider'
 
 export function AvatarEditor({
   avatarImageUrl = '',
@@ -25,6 +26,7 @@ export function AvatarEditor({
   user?: UserAvatarView | null
   variant?: 'settings' | 'account'
 }) {
+  const { t, tx } = useI18n()
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [localPickerOpen, setLocalPickerOpen] = useState(variant === 'settings')
   const pickerOpen = controlledPickerOpen ?? localPickerOpen
@@ -39,7 +41,7 @@ export function AvatarEditor({
     <div className={`avatar-editor avatar-editor-${variant}`}>
       <button
         aria-expanded={pickerOpen}
-        aria-label={compact ? 'Edit account avatar' : 'Upload account avatar'}
+        aria-label={compact ? t('Edit account avatar') : t('Upload account avatar')}
         className={compact ? 'account-avatar-edit-button' : 'settings-avatar-button'}
         disabled={saving}
         onClick={() => {
@@ -52,7 +54,7 @@ export function AvatarEditor({
         type="button"
       >
         <UserAvatar user={user} imageUrl={avatarImageUrl} className={compact ? '' : 'large'} />
-        {!compact ? <span>{saving ? 'Uploading...' : 'Click to upload avatar'}</span> : null}
+        {!compact ? <span>{saving ? t('Uploading...') : t('Click to upload avatar')}</span> : null}
       </button>
       <input
         ref={inputRef}
@@ -74,18 +76,18 @@ export function AvatarEditor({
             onClick={() => inputRef.current?.click()}
             type="button"
           >
-            Upload image
+            {t('Upload image')}
           </button>
-          <div className="avatar-preset-grid" aria-label="Default avatar library">
+          <div className="avatar-preset-grid" aria-label={t('Default avatar library')}>
             {avatarPresets.map((preset) => (
               <button
-                aria-label={`Use ${preset.label} avatar`}
+                aria-label={t('Use {name} avatar', { name: tx(preset.label) })}
                 className={user?.avatar_preset === preset.id ? 'selected' : ''}
                 disabled={saving}
                 key={preset.id}
                 onClick={() => void onSelectPreset(preset.id)}
                 style={{ background: preset.background }}
-                title={preset.label}
+                title={tx(preset.label)}
                 type="button"
               >
                 <span aria-hidden="true">{preset.glyph}</span>

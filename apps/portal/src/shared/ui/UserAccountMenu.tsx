@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 
 import { UserAvatar } from './UserAvatar'
 import type { UserAvatarView } from './UserAvatar'
+import { useI18n } from '../i18n/I18nProvider'
 
 export type UserAccountMenuView = UserAvatarView & {
   role?: string | null
@@ -33,6 +34,7 @@ export function UserAccountMenu({
   onSwitchAccount: () => void
   user?: UserAccountMenuView | null
 }) {
+  const { t, tx } = useI18n()
   const [accountOpen, setAccountOpen] = useState(false)
   const accountRef = useRef<HTMLDivElement | null>(null)
 
@@ -54,21 +56,21 @@ export function UserAccountMenu({
           <div className="account-menu-profile">
             {avatarEditor}
             <div>
-              <strong>{user?.name || 'Nasus User'}</strong>
-              <span>{user?.email || 'Signed in'}</span>
+              <strong>{user?.name || t('Nasus User')}</strong>
+              <span>{user?.email || t('Signed in')}</span>
             </div>
           </div>
           <div className="account-role-row">
-            <span>Role</span>
-            <strong>{roleLabel(user?.role)}</strong>
+            <span>{t('Role')}</span>
+            <strong>{tx(roleLabel(user?.role))}</strong>
           </div>
-          <button className="account-menu-item" type="button" onClick={onSwitchAccount}>Switch account</button>
-          <button className="account-menu-item danger" type="button" onClick={() => void onSignOut()}>Sign out</button>
+          <button className="account-menu-item" type="button" onClick={onSwitchAccount}>{t('Switch account')}</button>
+          <button className="account-menu-item danger" type="button" onClick={() => void onSignOut()}>{t('Sign out')}</button>
         </div>
       ) : null}
       <button className="account-pill" type="button" aria-haspopup="menu" aria-expanded={accountOpen} onClick={() => setAccountOpen((value) => !value)}>
         <UserAvatar user={user} imageUrl={avatarImageUrl} />
-        <span>{user?.email || 'Account'}</span>
+        <span>{user?.email || t('Account')}</span>
       </button>
     </div>
   )

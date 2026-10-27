@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
 
 from .plans import AgentGoalPlanCompiler
+from .observation_receipts import observation_receipt_fingerprint
 from .agent_models import AgentGoal, AgentStep
 from .ports import AgentGraphStatePort
 from .replanning import AgentReplanDecision, AgentReplanRequest, AgentReplanner
@@ -18,8 +19,15 @@ from ...domain.agent.budget_policy import (
 )
 from ...domain.agent.memory import AgentMemoryContext, memory_context_hash, memory_context_summary
 from ...domain.agent.runtime_models import AgentGoalProposal, ToolPlanStep
+from ...domain.agent.image_plan_policy import BUILD_GOAL_TEMPLATES, is_pinned_image_plan, validate_image_plan
+from ...domain.agent.plan_policy import AgentPlanPolicyViolation
 from ...domain.agent.state_machine import AgentGoalStateMachine
+from ...domain.agent.resume_checkpoint import AgentResumeCheckpoint
+from ...domain.agent.active_runtime import settle_active_runtime
+from ...domain.agent.image_plan_phases import active_phase_start, phase_target_refs, PHASE_PREPARED
 from ..platform.tool_models import ToolInvocation, ToolInvocationRequest
+from ..system_image.build_preparation import BuildPreparationRequired
+from .source_build_wait import WAIT_REASON, WAIT_TOOL
 
 
 class AgentGraphRuntime(Protocol):
@@ -28,7 +36,7 @@ class AgentGraphRuntime(Protocol):
     async def start(self, goal_id: str, proposal: AgentGoalProposal) -> None:
         ...
 
-    async def resume(self, goal_id: str) -> AgentGoal:
+    async def resume(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
         ...
 
     def steps_for_proposal(self, proposal: AgentGoalProposal) -> list[AgentStep]:
@@ -41,7 +49,7 @@ class LangGraphGateway(Protocol):
     async def start(self, goal_id: str, proposal: AgentGoalProposal) -> None:
         ...
 
-    async def resume(self, goal_id: str) -> AgentGoal:
+    async def resume(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
         ...
 
     def steps_for_proposal(self, proposal: AgentGoalProposal) -> list[AgentStep]:
@@ -70,8 +78,10 @@ class LangGraphAgentGraphRuntime:
     async def start(self, goal_id: str, proposal: AgentGoalProposal) -> None:
         await self.gateway.start(goal_id, proposal)
 
-    async def resume(self, goal_id: str) -> AgentGoal:
-        return await self.gateway.resume(goal_id)
+    async def resume(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
+        if expected_resume is None:
+            return await self.gateway.resume(goal_id)
+        return await self.gateway.resume(goal_id, expected_resume=expected_resume)
 
     def steps_for_proposal(self, proposal: AgentGoalProposal) -> list[AgentStep]:
         return self.gateway.steps_for_proposal(proposal)
@@ -103,8 +113,8 @@ class LocalAgentGraphRuntime:
         outcome = await self.prepare_start(goal_id)
         await self._drive(goal_id, outcome, proposal=proposal)
 
-    async def resume(self, goal_id: str) -> AgentGoal:
-        outcome = await self.prepare_resume(goal_id)
+    async def resume(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
+        outcome = await self.prepare_resume(goal_id, expected_resume=expected_resume)
         await self._drive(goal_id, outcome, proposal=None)
         return self._state.get_goal(goal_id)
 
@@ -116,17 +126,99 @@ class LocalAgentGraphRuntime:
             await self._update_goal(goal, patch=self.state_machine.start_goal(goal))
         return self.route_for_goal(goal_id)
 
-    async def prepare_resume(self, goal_id: str) -> AgentGraphNodeOutcome:
+    async def prepare_resume(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGraphNodeOutcome:
         goal = self._state.get_goal(goal_id)
+        self._validate_goal_plan(goal)
+        if expected_resume is not None:
+            expected_resume.require_scope(goal.model_dump(mode="json"))
+            if self._state.is_resume_consumed(expected_resume):
+                # A retry can recover committed running steps, but can never
+                # confirm the independent gate reached by that continuation.
+                return self.route_for_goal(goal_id)
+            expected_resume.require_matches(goal.model_dump(mode="json"))
         if goal.status in self.state_machine.terminal_statuses:
+            return AgentGraphNodeOutcome("end")
+        if (goal.status in {"paused", "blocked"} and goal.goal_template in BUILD_GOAL_TEMPLATES
+                and goal.pause_reason == "build_completion_review"):
+            # Review is not executable work. Restarting the clock here changes
+            # the settled checkpoint without producing a new artifact.
             return AgentGraphNodeOutcome("end")
 
         checkpoint = self.state_machine.checkpoint(goal)
         blocked_index = checkpoint.resume_step_index
+        if goal.pause_reason == WAIT_REASON and blocked_index is not None:
+            resume_checkpoint = expected_resume or AgentResumeCheckpoint.capture(goal.model_dump(mode="json"))
+            try:
+                continuation = self.plan_compiler.compile_source_input_continuation(goal)
+            except BuildPreparationRequired as exc:
+                if exc.field != "captured_code":
+                    raise
+                return AgentGraphNodeOutcome("end")
+            if continuation is None or goal.steps[blocked_index].selected_tool_id != WAIT_TOOL:
+                raise AgentPlanPolicyViolation("build_input_wait_scope_changed", "The waiting command cannot be replaced.")
+            refs, tools = continuation
+            act_step = goal.steps[blocked_index]
+            goal.target_refs = refs
+            goal.steps[-1:-1] = self._agent_steps_for_tool_plan(tools,
+                goal_template=goal.goal_template, goal_description=goal.summary,
+                start_index=self._next_tool_plan_index(goal))
+            self._validate_goal_plan(goal)
+            await self._update_goal(goal, patch={
+                **self.state_machine.start_goal(goal),
+                **self.state_machine.complete_step(goal, blocked_index, decision="continue",
+                    decision_rationale="Fix captured inputs on the original target; structural consent remains independent."),
+                "resume_mode": "captured_build_inputs_supplied",
+                "added_tool_ids": ",".join(step.tool_id for step in tools)}, expected_resume=resume_checkpoint)
+            return AgentGraphNodeOutcome("observe", blocked_index + 1, act_step.tool_invocation_id)
+        if goal.pause_reason == "structural_candidate_review" and blocked_index is not None:
+            resume_checkpoint = expected_resume or AgentResumeCheckpoint.capture(goal.model_dump(mode="json"))
+            budget = evaluate_agent_budget(goal)
+            if budget.exhausted:
+                await self._pause_on_budget(goal, blocked_index, budget)
+                return AgentGraphNodeOutcome("end")
+            continuation = self.plan_compiler.compile_structure_continuation(goal)
+            if continuation:
+                self._validate_goal_plan(goal, continuation)
+                new_steps = self._agent_steps_for_tool_plan(continuation, goal_template=goal.goal_template,
+                    goal_description=goal.summary, start_index=self._next_tool_plan_index(goal))
+                # Save the consumed review gate and its next step together. A
+                # crash after this write resumes observation, not the old build.
+                goal.steps[-1:-1] = new_steps
+                act_step = goal.steps[blocked_index]
+                patch = {**self.state_machine.start_goal(goal),
+                    **self.state_machine.complete_step(goal, blocked_index, decision="continue",
+                        decision_rationale="Continue the same goal with independently confirmed evidence investigation."),
+                    "resume_mode": "structural_candidate_investigation",
+                    "added_tool_ids": ",".join(step.tool_id for step in continuation)}
+                await self._update_goal(goal, patch=patch, expected_resume=resume_checkpoint)
+                return AgentGraphNodeOutcome("observe", blocked_index + 1, act_step.tool_invocation_id)
+        if goal.pause_reason == "reference_candidate_review" and blocked_index is not None:
+            resume_checkpoint = expected_resume or AgentResumeCheckpoint.capture(goal.model_dump(mode="json"))
+            continuation = self.plan_compiler.compile_reference_continuation(goal)
+            if continuation:
+                budget = evaluate_agent_budget(goal)
+                if budget.exhausted:
+                    await self._pause_on_budget(goal, blocked_index, budget)
+                    return AgentGraphNodeOutcome("end")
+                self._validate_goal_plan(goal, continuation)
+                goal.steps[-1:-1] = self._agent_steps_for_tool_plan(continuation, goal_template=goal.goal_template,
+                    goal_description=goal.summary, start_index=self._next_tool_plan_index(goal))
+                act_step = goal.steps[blocked_index]
+                await self._update_goal(goal, patch={
+                    **self.state_machine.start_goal(goal),
+                    **self.state_machine.complete_step(goal, blocked_index, decision="continue",
+                        decision_rationale="Inspect the complete proposed reference report; no relation acceptance or coverage is granted."),
+                    "resume_mode": "reference_candidate_inspection",
+                    "added_tool_ids": ",".join(step.tool_id for step in continuation)}, expected_resume=resume_checkpoint)
+                return AgentGraphNodeOutcome("observe", blocked_index + 1, act_step.tool_invocation_id)
         if blocked_index is None:
             if goal.status in {"paused", "blocked"}:
                 pause_reason = goal.pause_reason
-                await self._update_goal(goal, patch=self.state_machine.start_goal(goal))
+                phase_checkpoint = (expected_resume or AgentResumeCheckpoint.capture(goal.model_dump(mode="json"))) if pause_reason == PHASE_PREPARED else None
+                patch = self.state_machine.start_goal(goal)
+                if pause_reason == PHASE_PREPARED:
+                    patch["resume_mode"] = "image_plan_phase_prepared"
+                await self._update_goal(goal, patch=patch, expected_resume=phase_checkpoint)
                 if pause_reason == "user_interrupt" and goal.planner_kind == "manual":
                     return AgentGraphNodeOutcome("end")
             return self.route_for_goal(goal_id)
@@ -144,6 +236,7 @@ class LocalAgentGraphRuntime:
                         "current_step": act_step.title,
                         "resume_mode": "budget_released",
                     },
+                    expected_resume=expected_resume,
                 )
                 return self.route_for_goal(goal_id)
             await self._update_goal(
@@ -157,7 +250,8 @@ class LocalAgentGraphRuntime:
             return AgentGraphNodeOutcome("end")
 
         pause_reason = goal.pause_reason
-        await self._update_goal(goal, patch={**self.state_machine.start_goal(goal), "current_step": act_step.title})
+        gate_checkpoint = (expected_resume or AgentResumeCheckpoint.capture(goal.model_dump(mode="json"))) if active_phase_start(goal) else None
+        start_patch = {**self.state_machine.start_goal(goal), "current_step": act_step.title}
         if pause_reason == "missing_source_binding":
             act_step.tool_invocation_id = None
             act_step.status = "pending"
@@ -167,10 +261,12 @@ class LocalAgentGraphRuntime:
             )
             await self._update_goal(
                 goal,
-                patch={"current_step": act_step.title, "resume_mode": "source_binding_supplied"},
+                patch={**start_patch, "resume_mode": "source_binding_supplied"},
+                expected_resume=expected_resume,
             )
             return AgentGraphNodeOutcome("act", blocked_index)
 
+        await self._update_goal(goal, patch=start_patch, expected_resume=gate_checkpoint)
         invocation = await self._state.confirm_tool_invocation(
             act_step.tool_invocation_id
         )
@@ -191,7 +287,11 @@ class LocalAgentGraphRuntime:
         if goal.status in self.state_machine.terminal_statuses or goal.status in {"paused", "blocked"}:
             return AgentGraphNodeOutcome("end")
 
+        self._validate_goal_plan(goal)
+        start = active_phase_start(goal)
         for index, step in enumerate(goal.steps):
+            if index < start:
+                continue
             if step.status not in {"pending", "running"}:
                 continue
             if index == 0:
@@ -216,6 +316,8 @@ class LocalAgentGraphRuntime:
         proposal: AgentGoalProposal,
     ) -> AgentGraphNodeOutcome:
         goal = self._state.get_goal(goal_id)
+        if active_phase_start(goal):
+            return self.route_for_goal(goal_id)
         think_step = goal.steps[0]
         if think_step.status == "completed":
             return self.route_for_goal(goal_id)
@@ -250,11 +352,17 @@ class LocalAgentGraphRuntime:
         invocation_id: str | None = None,
     ) -> AgentGraphNodeOutcome:
         goal = self._state.get_goal(goal_id)
-        if step_index is None or not (0 <= step_index < len(goal.steps) - 1):
+        if step_index is None or not (active_phase_start(goal) <= step_index < len(goal.steps) - 1):
             return self.route_for_goal(goal_id)
         act_step = goal.steps[step_index]
         if act_step.status == "completed":
             return self.route_for_goal(goal_id)
+        try:
+            self._validate_goal_plan(goal)
+        except AgentPlanPolicyViolation:
+            await self._update_goal(goal, patch=self.state_machine.fail_on_step(
+                goal, step_index, "Persisted investigation plan violates its fixed-input boundary; no tool was executed."))
+            return AgentGraphNodeOutcome("end")
         budget = evaluate_agent_budget(goal)
         if budget.exhausted:
             await self._pause_on_budget(goal, step_index, budget)
@@ -274,6 +382,8 @@ class LocalAgentGraphRuntime:
             return AgentGraphNodeOutcome("end")
 
         await self._update_goal(goal, patch={"current_step": act_step.title, "selected_tool_id": tool_id})
+        if tool_id == "system_image.build.investigate" and "goal_id" not in act_step.tool_input_payload:
+            act_step.tool_input_payload = {**act_step.tool_input_payload, "goal_id": goal.id}
         invocation = self._tool_invocation_or_none(invocation_id or act_step.tool_invocation_id or "")
         if invocation is None:
             attempt = int(act_step.tool_input_payload.get("agent_loop_attempt") or 0)
@@ -303,6 +413,29 @@ class LocalAgentGraphRuntime:
             },
         )
 
+        # A durable tool returning early has only accepted work, not completed it.
+        # Reuse its saved ID on activity restart instead of issuing another tool.
+        while invocation.status in {"pending", "running"}:
+            goal = self._state.get_goal(goal_id)
+            act_step = goal.steps[step_index]
+            if goal.status != "running":
+                return AgentGraphNodeOutcome("end", step_index, invocation.id)
+            budget = evaluate_agent_budget(goal)
+            if budget.exhausted:
+                await self._pause_on_budget(goal, step_index, budget)
+                return AgentGraphNodeOutcome("end", step_index, invocation.id)
+            await asyncio.sleep(0.25)
+            current = self._tool_invocation_or_none(invocation.id)
+            if current is None:
+                await self._update_goal(goal, patch=self.state_machine.fail_on_step(
+                    goal, step_index, "The accepted tool command is no longer available; no completed result was observed."))
+                return AgentGraphNodeOutcome("end", step_index, invocation.id)
+            invocation = current
+
+        if invocation.status == "cancelled":
+            await self._update_goal(goal, patch=self.state_machine.cancel_on_step(
+                goal, step_index, "The tool command was cancelled; no completed result was observed."))
+            return AgentGraphNodeOutcome("end", step_index, invocation.id)
         if invocation.status in {"waiting_confirmation", "waiting_approval"}:
             await self._update_goal(
                 goal,
@@ -310,12 +443,51 @@ class LocalAgentGraphRuntime:
             )
             return AgentGraphNodeOutcome("end", step_index, invocation.id)
         if invocation.status == "failed":
+            if invocation.result and invocation.result.followup_reason in {"build_execution_authorization_review", "build_tool_budget_review"}:
+                await self._update_goal(goal, patch=self.state_machine.pause_on_followup(
+                    goal, step_index, invocation.result.followup_reason, invocation.result.summary))
+                return AgentGraphNodeOutcome("end", step_index, invocation.id)
             await self._update_goal(
                 goal,
                 patch=self.state_machine.fail_on_step(goal, step_index, invocation.summary),
             )
             return AgentGraphNodeOutcome("end", step_index, invocation.id)
+        if tool_id == WAIT_TOOL and "build_input_request" in act_step.tool_input_payload:
+            try:
+                continuation = self.plan_compiler.compile_source_input_continuation(goal)
+            except BuildPreparationRequired as exc:
+                if exc.field != "captured_code":
+                    raise
+                await self._update_goal(goal, patch=self.state_machine.pause_on_followup(
+                    goal, step_index, WAIT_REASON, str(exc)))
+                return AgentGraphNodeOutcome("end", step_index, invocation.id)
+            if continuation is None:
+                raise AgentPlanPolicyViolation("build_input_wait_scope_changed", "The fixed input intent could not be continued.")
+            refs, tools = continuation
+            goal.target_refs = refs
+            goal.steps[-1:-1] = self._agent_steps_for_tool_plan(tools,
+                goal_template=goal.goal_template, goal_description=goal.summary,
+                start_index=self._next_tool_plan_index(goal))
+            self._validate_goal_plan(goal)
+            await self._update_goal(goal, patch={
+                **self.state_machine.complete_step(goal, step_index, decision="continue"),
+                "plan_extended": "captured_build_inputs_supplied",
+                "added_tool_ids": ",".join(step.tool_id for step in tools)})
+            return AgentGraphNodeOutcome("observe", step_index + 1, invocation.id)
         if invocation.result and invocation.result.requires_followup:
+            preparer = getattr(self.plan_compiler, "compile_preparation_continuation", None)
+            continuation = preparer(goal, invocation) if preparer else None
+            if continuation is not None:
+                refs, tools = continuation
+                goal.target_refs = refs
+                goal.steps[-1:-1] = self._agent_steps_for_tool_plan(tools,
+                    goal_template=goal.goal_template, goal_description=goal.summary,
+                    start_index=self._next_tool_plan_index(goal))
+                await self._update_goal(goal, patch={
+                    **self.state_machine.complete_step(goal, step_index, decision="continue"),
+                    "plan_extended": "source_pinned_build_preparation",
+                    "added_tool_ids": ",".join(item.tool_id for item in tools)})
+                return AgentGraphNodeOutcome("observe", step_index + 1, invocation.id)
             await self._update_goal(
                 goal,
                 patch=self.state_machine.pause_on_followup(
@@ -340,10 +512,13 @@ class LocalAgentGraphRuntime:
         invocation_id: str | None,
     ) -> AgentGraphNodeOutcome:
         goal = self._state.get_goal(goal_id)
-        if step_index is None or not (0 < step_index < len(goal.steps) - 1):
+        if step_index is None or not (max(1, active_phase_start(goal)) <= step_index < len(goal.steps) - 1):
             return self.route_for_goal(goal_id)
+        self._validate_goal_plan(goal)
         observe_step = goal.steps[step_index]
         if observe_step.status == "completed":
+            if goal.steps[step_index - 1].selected_tool_id == "system_image.build.investigate":
+                await self._extend_goal_plan_after_tool_success(goal, step_index - 1)
             return self.route_for_goal(goal_id)
 
         act_step = goal.steps[step_index - 1]
@@ -418,6 +593,7 @@ class LocalAgentGraphRuntime:
         goal = self._state.get_goal(goal_id)
         if goal.status in self.state_machine.terminal_statuses:
             return AgentGraphNodeOutcome("end")
+        self._validate_goal_plan(goal)
         budget = evaluate_agent_budget(goal)
         if budget.exhausted:
             await self._pause_on_budget(goal, len(goal.steps) - 1, budget)
@@ -425,6 +601,19 @@ class LocalAgentGraphRuntime:
 
         decide_index = len(goal.steps) - 1
         decide_step = goal.steps[decide_index]
+        steps = self._completed_tool_plan_steps(goal) + self._pending_tool_plan_steps(goal)
+        if goal.goal_template in BUILD_GOAL_TEMPLATES and is_pinned_image_plan(steps, phase_target_refs(goal)):
+            # A successful query or exhausted DAG is not a verified build completion report.
+            settle_active_runtime(goal)
+            goal.status = "paused"
+            goal.pause_reason = "build_completion_review"
+            decide_step.phase = "deciding"
+            decide_step.status = "pending"
+            decide_step.decision = "pause"
+            decide_step.decision_rationale = "Review fixed-input artifacts and unresolved gaps before declaring the build complete."
+            await self._update_goal(goal, patch={"status": "paused", "pause_reason": goal.pause_reason,
+                "current_step": decide_step.title, "lifecycle_transition": "paused"})
+            return AgentGraphNodeOutcome("end")
         last_observation = observation_summary or self._latest_observation(goal)
         if decide_step.status != "completed":
             self.state_machine.start_step(goal, decide_index, "deciding")
@@ -503,7 +692,7 @@ class LocalAgentGraphRuntime:
                 target_scope=step.tool_target_scope,
                 reason=step.reasoning or "",
             )
-            for step in goal.steps
+            for step in goal.steps[active_phase_start(goal):]
             if step.phase == "acting" and step.selected_tool_id
         ]
         return AgentGoalProposal(
@@ -655,16 +844,22 @@ class LocalAgentGraphRuntime:
 
         existing_tool_ids = {
             step.selected_tool_id
-            for step in goal.steps
+            for step in goal.steps[active_phase_start(goal):]
             if step.phase == "acting" and step.selected_tool_id
         }
         remaining_plan = [
             tool_step
             for tool_step in self.plan_compiler.compile_followup_tool_plan(goal)
-            if tool_step.tool_id not in existing_tool_ids
+            if completed_step.selected_tool_id == "system_image.build.investigate" or tool_step.tool_id not in existing_tool_ids
         ]
+        if completed_step.selected_tool_id == "system_image.build.investigate":
+            remaining_plan = [item for item in remaining_plan if not any(
+                step.phase == "acting" and step.selected_tool_id == item.tool_id
+                and all(step.tool_input_payload.get(key) == value for key, value in item.input_payload.items())
+                for step in goal.steps[active_phase_start(goal):])]
         if not remaining_plan:
             return
+        self._validate_goal_plan(goal, remaining_plan)
 
         new_steps = self._agent_steps_for_tool_plan(
             remaining_plan,
@@ -692,6 +887,9 @@ class LocalAgentGraphRuntime:
     ) -> None:
         if self.replanner is None or goal.status != "running":
             return
+        # v1 execution consent grants no model calls or model-egress capability.
+        if any(step.selected_tool_id in {"system_image.build.authorize", "system_image.build.investigate"} for step in goal.steps):
+            return
         remaining_steps = self._pending_tool_plan_steps(goal)
         if not remaining_steps:
             return
@@ -701,6 +899,7 @@ class LocalAgentGraphRuntime:
             observation_summary=observation_summary,
             completed_steps=self._completed_tool_plan_steps(goal),
             remaining_steps=remaining_steps,
+            latest_invocation_id=goal.steps[observation_step_index].tool_invocation_id,
         )
         try:
             decision = await self.replanner.replan(request)
@@ -709,6 +908,14 @@ class LocalAgentGraphRuntime:
                 "The replanner failed unexpectedly, so the validated pending plan was retained.",
                 planner_kind="replanner_error",
             )
+
+        if decision.action == "replace_remaining":
+            try:
+                self._validate_goal_plan(goal, decision.planned_tools)
+            except AgentPlanPolicyViolation as exc:
+                decision = AgentReplanDecision.keep(
+                    "The proposed replan changed fixed investigation inputs; the validated plan was retained.",
+                    planner_kind=f"replan_policy:{exc.code}", model_usage=decision.model_usage)
 
         record_model_usage(goal, decision.model_usage)
         await self._update_goal(
@@ -789,7 +996,7 @@ class LocalAgentGraphRuntime:
                 target_scope=step.tool_target_scope,
                 reason=step.reasoning or "",
             )
-            for step in goal.steps
+            for step in goal.steps[active_phase_start(goal):]
             if step.phase == "acting"
             and step.status == "completed"
             and step.selected_tool_id
@@ -804,11 +1011,21 @@ class LocalAgentGraphRuntime:
                 target_scope=step.tool_target_scope,
                 reason=step.reasoning or "",
             )
-            for step in goal.steps
+            for step in goal.steps[active_phase_start(goal):]
             if step.phase == "acting"
             and step.status == "pending"
             and step.selected_tool_id
         ]
+
+    def _validate_goal_plan(self, goal: AgentGoal, extra_steps: list[ToolPlanStep] | None = None) -> None:
+        validator = getattr(self.plan_compiler, "validate_goal_plan", None)
+        if validator is not None:
+            validator(goal, extra_steps)
+            return
+        if active_phase_start(goal) or any(step.id.startswith("build_plan_phase:") for step in goal.steps):
+            raise AgentPlanPolicyViolation("image_phase_receipt_missing", "No authoritative phase verifier is configured.")
+        validate_image_plan([*[ToolPlanStep(step.selected_tool_id, step.tool_input_payload)
+            for step in goal.steps if step.selected_tool_id], *(extra_steps or [])], goal.target_refs)
 
     @staticmethod
     def _is_replannable_system_image_step(step: AgentStep) -> bool:
@@ -956,8 +1173,12 @@ class LocalAgentGraphRuntime:
             return True
         return "system image" in goal.title.lower() or "system image" in goal.summary.lower()
 
-    async def _update_goal(self, goal: AgentGoal, *, patch: dict[str, Any]) -> None:
-        self._state.persist_goal(goal)
+    async def _update_goal(self, goal: AgentGoal, *, patch: dict[str, Any],
+                           expected_resume: AgentResumeCheckpoint | None = None) -> None:
+        if expected_resume is None:
+            self._state.persist_goal(goal)
+        else:
+            self._state.persist_goal_at_checkpoint(goal, expected_resume)
         event_patch = self._event_patch_for_goal(goal, patch)
         self._audit_goal_patch(goal, event_patch)
         await self._state.publish_goal_event(
@@ -1089,6 +1310,7 @@ class LocalAgentGraphRuntime:
             evidence_refs=result.evidence_refs if result else (),
             next_recommended_tools=result.next_recommended_tools if result else (),
             requires_followup=result.requires_followup if result else False,
+            receipt_fingerprint=observation_receipt_fingerprint(result),
         )
         record_observation_progress(
             goal,
@@ -1137,8 +1359,9 @@ class LocalAgentGraphRuntime:
             )
         if proposal.goal_template == "system_image_build":
             return (
-                "Build the system image as a durable tool chain: register sources, ingest evidence, "
-                "materialize context, then initialize the baseline."
+                "Keep the original goal and image target, capture required code, and prepare a source-pinned plan. "
+                "Confirm structure and evidence investigation separately. Saved candidates and findings do not "
+                "approve business expectations or publish the image."
                 + memory_summary
             )
         if proposal.goal_template == "quality_loop":

@@ -63,6 +63,7 @@ from .graph_state_dependencies import (
     AgentGraphToolRuntimeAdapters,
 )
 from .planning_dependencies import AgentPlannerContextAdapters
+from .resume_checkpoint_commit import SQLAlchemyAgentResumeCommit
 
 
 def _required(value: Any | None, entity: str, entity_id: str) -> Any:
@@ -184,6 +185,14 @@ class SQLAlchemyConversationMessageState(ConversationMessageStatePort):
         self._repository.append_message(conversation.id, message)
         self._repository.upsert_conversation(conversation)
 
+    def update_message(
+        self,
+        conversation: ConversationSession,
+        message: ConversationMessage,
+    ) -> None:
+        self._repository.update_message(conversation.id, message)
+        self._repository.upsert_conversation(conversation)
+
     async def maybe_create_summary_checkpoint(
         self,
         conversation: ConversationSession,
@@ -237,8 +246,8 @@ class SQLAlchemyAgentGoalLifecycleState(AgentGoalLifecycleStatePort):
         self._repository = repository
         self._effects = effects
 
-    def create_goal(self, goal: AgentGoal) -> None:
-        self._repository.upsert_goal(goal)
+    def create_goal(self, goal: AgentGoal, *, start_identity=None) -> None:
+        self._repository.create_goal(goal, start_identity=start_identity)
 
     def persist_goal(self, goal: AgentGoal) -> None:
         self._repository.upsert_goal(goal)
@@ -588,7 +597,6 @@ class SQLAlchemyAgentPlanState(AgentPlanStatePort):
         snapshot = self._system_image.load_project_snapshot(project_id)
         return bool(
             snapshot.knowledge_objects
-            and snapshot.relationships
             and snapshot.metric_snapshots
         )
 
@@ -616,6 +624,12 @@ class SQLAlchemyAgentWorkflowState:
 
     def accept_remote_goal(self, goal: AgentGoal) -> None:
         self._repository.upsert_goal(goal)
+
+    def get_goal(self, goal_id: str) -> AgentGoal:
+        return _required(self._repository.get_agent_goal(goal_id), "AgentGoal", goal_id)
+
+    def is_resume_consumed(self, checkpoint: AgentResumeCheckpoint) -> bool:
+        return self._repository.is_resume_consumed(checkpoint)
 
 
 class SQLAlchemyAgentApplicationPorts:
@@ -680,6 +694,7 @@ class SQLAlchemyAgentApplicationPorts:
                 is_confirmation_message=runtime.is_confirmation_message,
                 list_tool_invocations=runtime.list_tool_invocations,
                 is_paused_goal=runtime.is_paused_goal,
+                get_goal=runtime.get_goal,
                 resume_goal=runtime.resume_goal,
                 get_tool_invocation=runtime.get_tool_invocation,
                 confirm_tool_invocation=runtime.confirm_tool_invocation,
@@ -765,6 +780,7 @@ class SQLAlchemyAgentApplicationPorts:
                 ),
             ),
             lifecycle_effects,
+            resume_commits=SQLAlchemyAgentResumeCommit(conversations),
         )
         self.workflow_state = SQLAlchemyAgentWorkflowState(conversations)
 

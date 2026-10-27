@@ -41,7 +41,7 @@ class AgentGoalLifecycleAdapters:
 @dataclass(frozen=True)
 class AgentLoopRuntimeAdapters:
     get_conversation: Callable[[str], ConversationSession]
-    create_goal: Callable[[AgentGoalCreateRequest], AgentGoal]
+    create_goal: Callable[..., AgentGoal]
     get_goal: Callable[[str], AgentGoal]
 
 

@@ -1,0 +1,23 @@
+.run-plan-panel { min-width: 0; }
+.run-plan-panel input:not([type="checkbox"]), .run-plan-panel select { width: 100%; min-width: 0; box-sizing: border-box; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font: inherit; }
+.run-plan-panel code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.run-plan-panel pre { max-height: min(440px, 55dvh); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
+.run-plan-panel pre::-webkit-scrollbar { display: none; }
+.run-plan-panel .context-pack-consent { display: flex; align-items: flex-start; gap: 8px; }
+.run-plan-panel .context-pack-consent input { flex-shrink: 0; margin-top: 4px; }
+.run-plan-panel .context-pack-consent span { min-width: 0; overflow-wrap: anywhere; }
+.run-plan-locator-list { max-height: min(480px, 55dvh); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; padding-inline-start: 20px; }
+.run-plan-locator-list::-webkit-scrollbar { display: none; }
+.run-plan-locator-list li { min-width: 0; margin-block: 12px; overflow-wrap: anywhere; }
+.run-plan-fixture-input { display: grid; gap: 8px; min-width: 0; margin-block: 12px; }
+.run-plan-fixture-input textarea { width: 100%; min-width: 0; min-height: 160px; max-height: min(400px, 50dvh); box-sizing: border-box; resize: vertical; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font: inherit; overflow-y: auto; scrollbar-width: none; overscroll-behavior: contain; }
+.run-plan-fixture-input textarea::-webkit-scrollbar { display: none; }
+.fixture-operation-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-block: 12px; }
+.fixture-operation-fields label { display: grid; min-width: 0; gap: 6px; }
+.fixture-operation-fields button { justify-self: start; }
+.case-execution-fields fieldset { grid-column: 1 / -1; min-width: 0; display: grid; gap: 12px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.case-execution-fields fieldset legend { max-width: 100%; overflow-wrap: anywhere; }
+.run-plan-case-panel .small-btn { max-width: 100%; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); font: inherit; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.run-plan-case-panel .small-btn:hover:not(:disabled), .run-plan-case-panel .small-btn.primary { border-color: var(--blue); background: var(--surface-3); }
+.run-plan-case-panel .small-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+@media (max-width: 600px) { .fixture-operation-fields { grid-template-columns: minmax(0, 1fr); } }

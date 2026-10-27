@@ -3,18 +3,30 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 from ...domain.system_image.entity_resolution import (
     CrossSourceEntityResolver,
     EntityCandidate,
     ResolvedEntityLink,
 )
+from ...domain.system_image.code_alias import canonical_code_object_id
+from ...domain.system_image.source_snapshots import CapturedSourceManifest
+from ...domain.system_image.image_revision import ImageRevisionIntegrityError, require_frozen_inputs
 from .source_ports import (
     CodeIntelligencePort,
     CodeRelationshipCandidate,
     SourceIngestionPort,
+    analyze_with_control,
+    SourceCodeIntelligencePort,
 )
-from .system_image_models import ContextRelationship, KnowledgeObject, QualityMetricSnapshot, RawAssetRecord
+from .system_image_models import ContextRelationship, KnowledgeCodeReference, KnowledgeDocumentReference, KnowledgeObject, QualityMetricSnapshot, RawAssetRecord
+from .code_entity_registry import CodeEntityRegistryPort, CodeEntityRegistrationService, RegisteredCodeEntity, legacy_code_object_id
+from .code_analysis_inventory import CodeAnalysisInventoryPort
+from .document_projections import DocumentProjectionApplicationService, RegisteredDocument
+from .build_lineage import CodeExtractionReceipt
+from .source_ports import code_projection_payload
+from ...domain.system_image.source_snapshots import snapshot_digest
 
 
 @dataclass
@@ -22,6 +34,7 @@ class ExtractedContext:
     objects: list[KnowledgeObject] = field(default_factory=list)
     relationships: list[ContextRelationship] = field(default_factory=list)
     metrics: list[QualityMetricSnapshot] = field(default_factory=list)
+    code_extractions: tuple[CodeExtractionReceipt, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -32,6 +45,8 @@ class ContextAnchor:
     source_id: str
     provider_node_id: str | None = None
     confidence: float = 0.74
+    code_reference: RegisteredCodeEntity | None = None
+    document_reference: RegisteredDocument | None = None
 
     @property
     def primary_evidence_ref(self) -> str:
@@ -42,6 +57,7 @@ class ContextAnchor:
 class ExtractedSourceContext:
     anchors: tuple[ContextAnchor, ...]
     code_relationships: tuple[CodeRelationshipCandidate, ...] = ()
+    code_extraction: CodeExtractionReceipt | None = None
 
 
 class ContextExtractionService:
@@ -50,10 +66,18 @@ class ContextExtractionService:
         source_reader: SourceIngestionPort,
         code_intelligence: CodeIntelligencePort,
         entity_resolver: CrossSourceEntityResolver | None = None,
+        code_entity_registry: CodeEntityRegistryPort | None = None,
+        code_analysis_inventory: CodeAnalysisInventoryPort | None = None,
+        document_projections: DocumentProjectionApplicationService | None = None,
+        source_code_intelligence: Optional[SourceCodeIntelligencePort] = None,
     ) -> None:
         self._source_reader = source_reader
         self._code_intelligence = code_intelligence
         self._entity_resolver = entity_resolver or CrossSourceEntityResolver()
+        self._code_entity_registration = CodeEntityRegistrationService(code_entity_registry) if code_entity_registry else None
+        self._code_analysis_inventory = code_analysis_inventory
+        self._document_projections = document_projections
+        self._source_code_intelligence = source_code_intelligence
 
     def extract(
         self,
@@ -64,7 +88,14 @@ class ContextExtractionService:
         sources: list[RawAssetRecord],
         version_id: str | None,
         captured_at: str,
+        check_phase: Optional[Callable[[], None]] = None,
+        invocation_id: Optional[str] = None,
+        source_manifest: Optional[CapturedSourceManifest] = None,
     ) -> ExtractedContext:
+        if source_manifest is not None:
+            require_frozen_inputs(source_manifest)
+            if source_manifest.project_id != project_id:
+                raise ImageRevisionIntegrityError("Extraction project differs from its frozen manifest.")
         indexed_sources = [source for source in sources if source.ingestion_status == "indexed"]
         core = KnowledgeObject(
             id=f"CTX-{self._stable_id(project_id, 'core')}",
@@ -76,15 +107,24 @@ class ContextExtractionService:
             evidence=[source.id for source in indexed_sources],
             freshness="just now",
         )
-        objects: list[KnowledgeObject] = [core]
+        # Frozen candidates are rooted by SourceManifest/ImageRevision and their
+        # provenance DAG. Keep the synthetic display node only in the legacy path.
+        objects: list[KnowledgeObject] = [core] if source_manifest is None else []
         relationships: list[ContextRelationship] = []
         anchors_by_type: dict[str, list[ContextAnchor]] = {"code": [], "us_doc": [], "test_asset": []}
         entity_candidates: list[EntityCandidate] = []
-        objects_by_id = {core.id: core}
+        objects_by_id = {item.id: item for item in objects}
         provider_object_ids: dict[tuple[str, str], str] = {}
+        code_extractions = []
 
         for source in indexed_sources:
-            source_context = self._extract_source_context(source)
+            if check_phase is not None:
+                check_phase()
+            source_context = self._extract_source_context(source, captured_at=captured_at, check_phase=check_phase,
+                                                         invocation_id=invocation_id,
+                                                         frozen=source_manifest is not None)
+            if source_context.code_extraction is not None:
+                code_extractions.append(source_context.code_extraction)
             anchors = list(source_context.anchors)
             anchors_by_type[source.source_type].extend(anchors)
             for anchor in anchors:
@@ -92,6 +132,12 @@ class ContextExtractionService:
                     f"{anchor.name}|{anchor.primary_evidence_ref}"
                 )
                 object_id = f"CTX-{self._stable_id(project_id, source.id, canonical_seed)}"
+                if anchor.provider_node_id:
+                    object_id = legacy_code_object_id(project_id, source.id, anchor.provider_node_id)
+                if anchor.code_reference:
+                    object_id = canonical_code_object_id(anchor.code_reference.entity_id)
+                if anchor.document_reference:
+                    object_id = f"DOC-{anchor.document_reference.entity_id}"
                 relation_name = core.name
                 obj = KnowledgeObject(
                     id=object_id,
@@ -99,10 +145,21 @@ class ContextExtractionService:
                     type=anchor.object_type,
                     branch="Official",
                     confidence=f"{anchor.confidence:.2f}",
-                    relations=[relation_name],
+                    relations=[relation_name] if source_manifest is None else [],
                     evidence=list(dict.fromkeys((*anchor.evidence_refs, source.id))),
                     freshness="just now",
+                    code_reference=KnowledgeCodeReference(
+                        entity_id=anchor.code_reference.entity_id,
+                        entity_revision_id=anchor.code_reference.entity_revision_id,
+                        source_revision_id=anchor.code_reference.source_revision_id,
+                    ) if anchor.code_reference else None,
+                    document_reference=KnowledgeDocumentReference(
+                        document_revision_id=anchor.document_reference.document_revision_id,
+                        source_revision_id=anchor.document_reference.source_revision_id,
+                    ) if anchor.document_reference else None,
                 )
+                if obj.id in objects_by_id:
+                    raise ValueError("duplicate canonical object identity in materialization")
                 objects.append(obj)
                 objects_by_id[obj.id] = obj
                 if anchor.provider_node_id:
@@ -111,30 +168,32 @@ class ContextExtractionService:
                     EntityCandidate(
                         object_id=obj.id,
                         entity_kind=source.source_type,
-                        label=anchor.name,
+                        label=" ".join([anchor.name, *(field["value"] for field in anchor.document_reference.payload["fields"])])
+                              if anchor.document_reference else anchor.name,
                         evidence_refs=(source.id, *anchor.evidence_refs),
                     )
                 )
-                relationships.append(
-                    ContextRelationship(
-                        id=self._relationship_id(
-                            project_id,
-                            baseline_id,
-                            object_id,
-                            self._relationship_for_source(source.source_type),
-                            core.id,
-                        ),
-                        project_id=project_id,
-                        baseline_id=baseline_id,
-                        from_object_id=obj.id,
-                        relationship_type=self._relationship_for_source(source.source_type),
-                        to_object_id=core.id,
-                        confidence=min(0.86, anchor.confidence),
-                        source_refs=list(
-                            dict.fromkeys((source.id, *anchor.evidence_refs))
+                if source_manifest is None:
+                    relationships.append(
+                        ContextRelationship(
+                            id=self._relationship_id(
+                                project_id,
+                                baseline_id,
+                                object_id,
+                                self._relationship_for_source(source.source_type),
+                                core.id,
+                            ),
+                            project_id=project_id,
+                            baseline_id=baseline_id,
+                            from_object_id=obj.id,
+                            relationship_type=self._relationship_for_source(source.source_type),
+                            to_object_id=core.id,
+                            confidence=min(0.86, anchor.confidence),
+                            source_refs=list(
+                                dict.fromkeys((source.id, *anchor.evidence_refs))
+                            ),
                         ),
                     )
-                )
             relationships.extend(
                 self._code_relationships(
                     project_id=project_id,
@@ -146,7 +205,9 @@ class ContextExtractionService:
                 )
             )
 
-        resolved_links = self._entity_resolver.resolve(entity_candidates)
+        # Label overlap is a legacy navigation hint, not an evidenced business
+        # relation. Frozen images admit cross-source assertions separately.
+        resolved_links = self._entity_resolver.resolve(entity_candidates) if source_manifest is None else []
         relationships.extend(
             self._resolved_relationship(
                 project_id=project_id,
@@ -156,7 +217,15 @@ class ContextExtractionService:
             for link in resolved_links
         )
         self._attach_relation_names(objects_by_id, resolved_links)
-        metrics = self._metrics(
+        metrics = self._inventory_metrics(
+            manifest=source_manifest,
+            baseline_id=baseline_id,
+            version_id=version_id,
+            captured_at=captured_at,
+            anchors_by_type=anchors_by_type,
+            relationship_count=len(self._coalesce_relationships(relationships)),
+            source_ids=[source.id for source in indexed_sources],
+        ) if source_manifest is not None else self._metrics(
             project_id=project_id,
             baseline_id=baseline_id,
             version_id=version_id,
@@ -167,20 +236,45 @@ class ContextExtractionService:
             source_ids=[source.id for source in indexed_sources],
             resolved_links=resolved_links,
         )
-        core.relations = [item.name for item in objects[1:8]]
+        if source_manifest is None:
+            core.relations = [item.name for item in objects[1:8]]
         return ExtractedContext(
             objects=objects,
             relationships=self._coalesce_relationships(relationships),
             metrics=metrics,
+            code_extractions=tuple(code_extractions),
         )
 
-    def _extract_source_context(self, source: RawAssetRecord) -> ExtractedSourceContext:
-        try:
-            units = self._source_reader.extract_text_units(source)
-        except OSError:
-            return ExtractedSourceContext(anchors=())
+    def _extract_source_context(self, source: RawAssetRecord, *, captured_at: str,
+                                check_phase: Optional[Callable[[], None]] = None,
+                                invocation_id: Optional[str] = None,
+                                frozen: bool = False) -> ExtractedSourceContext:
+        if frozen and source.source_type == "code" and self._code_entity_registration is None:
+            raise ImageRevisionIntegrityError("Frozen code extraction requires the canonical entity registry.")
+        units = self._source_reader.extract_text_units(source)
+        if check_phase is not None:
+            check_phase()
         if source.source_type == "code":
-            result = self._code_intelligence.analyze(units)
+            if self._source_code_intelligence is not None and invocation_id and check_phase is not None:
+                result = self._source_code_intelligence.analyze_source(source, units,
+                    invocation_id=invocation_id, check_current=check_phase)
+            else:
+                result = (analyze_with_control(self._code_intelligence, units, check_phase)
+                          if check_phase is not None else self._code_intelligence.analyze(units))
+            analysis_id = None
+            if self._code_analysis_inventory is not None:
+                analysis_id = self._code_analysis_inventory.record(source, result, units, captured_at=captured_at)
+            if any(item.status == "failed" for item in result.file_analyses):
+                raise RuntimeError(f"code analysis contains failed files; analysis_id={analysis_id or 'unarchived'}")
+            if analysis_id is not None:
+                source.evidence_refs = list(dict.fromkeys((*source.evidence_refs, f"code-analysis:{analysis_id}")))
+            registered: dict[str, RegisteredCodeEntity] = {}
+            if self._code_entity_registration is not None:
+                registered = self._code_entity_registration.register(source, result, units, captured_at=captured_at)
+            if frozen and any(entity.provider_node_id not in registered for entity in result.entities) and (
+                not isinstance(analysis_id, str) or not analysis_id.strip()
+            ):
+                raise ImageRevisionIntegrityError("Unregistered code observations require a persisted analysis report.")
             provider_ref = f"code-intelligence:{result.provider}:{result.provider_version}"
             source.evidence_refs = list(
                 dict.fromkeys((*source.evidence_refs, provider_ref, *result.evidence_refs))
@@ -198,6 +292,7 @@ class ContextExtractionService:
                     ),
                     source_id=source.id,
                     provider_node_id=entity.provider_node_id,
+                    code_reference=registered.get(entity.provider_node_id),
                     confidence=(
                         0.62
                         if "parser:lexical-fallback" in entity.evidence_refs
@@ -205,11 +300,26 @@ class ContextExtractionService:
                     ),
                 )
                 for entity in result.entities
+                # Unresolved observations remain in the analysis inventory, not
+                # as invented identities in the frozen formal membership.
+                if not frozen or entity.provider_node_id in registered
             )
             return ExtractedSourceContext(
                 anchors=anchors,
                 code_relationships=result.relationships,
+                code_extraction=CodeExtractionReceipt(source.id, analysis_id,
+                    snapshot_digest(code_projection_payload(result)), result.execution_pin) if analysis_id else None,
             )
+
+        if self._document_projections is not None:
+            documents = self._document_projections.extract(source, units, captured_at=captured_at)
+            return ExtractedSourceContext(anchors=tuple(ContextAnchor(
+                name=item.title, object_type={"requirement": "USWorkItem", "test_case": "TestCase", "test_script": "TestCase",
+                    "acceptance_criterion": "SourceAcceptanceCriterion", "business_rule": "SourceBusinessRule",
+                    "requirement_document": "RequirementDocument", "test_document": "TestAsset"}[item.kind],
+                evidence_refs=tuple(f"evidence:{key}" for key in item.evidence_ids), source_id=source.id,
+                document_reference=item,
+            ) for item in documents))
 
         anchors: list[ContextAnchor] = []
         for unit in units:
@@ -326,6 +436,40 @@ class ContextExtractionService:
             return
         if target.name not in source.relations:
             source.relations.append(target.name)
+
+    @staticmethod
+    def _inventory_metrics(
+        *,
+        manifest: CapturedSourceManifest,
+        baseline_id: str,
+        version_id: str | None,
+        captured_at: str,
+        anchors_by_type: dict[str, list[ContextAnchor]],
+        relationship_count: int,
+        source_ids: list[str],
+    ) -> list[QualityMetricSnapshot]:
+        def count(source_type, kind):
+            return sum(anchor.document_reference.kind == kind for anchor in anchors_by_type[source_type]
+                       if anchor.document_reference is not None)
+
+        common = {
+            "measurement_basis": "admitted_projection_inventory_not_quality_assessment",
+            "coverage_status": "unknown",
+            "source_manifest_id": manifest.manifest_id,
+            "source_manifest_hash": manifest.content_hash,
+        }
+        groups = (
+            ("code", "code_quality", {"code_symbols": len(anchors_by_type["code"]),
+                "structural_relationship_count": relationship_count}),
+            ("us", "us_completion_quality", {"requirements_count": count("us_doc", "requirement"),
+                "acceptance_criterion_count": count("us_doc", "acceptance_criterion"),
+                "business_rule_count": count("us_doc", "business_rule")}),
+            ("tests", "test_quality", {"test_count": count("test_asset", "test_case") + count("test_asset", "test_script"),
+                "test_case_count": count("test_asset", "test_case"), "test_script_count": count("test_asset", "test_script")}),
+        )
+        return [QualityMetricSnapshot(id=f"metric_{manifest.project_id}_{suffix}", project_id=manifest.project_id,
+            baseline_id=baseline_id, version_id=version_id, metric_group=group, metrics={**common, **values},
+            evidence_refs=source_ids, captured_at=captured_at) for suffix, group, values in groups]
 
     @staticmethod
     def _metrics(

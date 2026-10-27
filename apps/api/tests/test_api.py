@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Optional
 from unittest.mock import patch
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -25,7 +26,6 @@ from starlette.requests import Request
 from apps.api.app.auth import AuthConfig, authenticate_request
 from apps.api.app.database import SessionLocal
 from apps.api.app.db_models import (
-    AccessSessionRecord,
     ModelConfigTestGrantRecord,
     ModelProviderConfigRecord,
     ModelRouteSelectionRecord,
@@ -38,14 +38,30 @@ from apps.api.app.llm import EmbeddingBatchResult, RerankBatchResult
 from apps.api.app.application.quality_loop.generation import QualityGenerationError
 from apps.api.app.application.platform.model_settings import StudioSettings
 from apps.api.app.application.platform.tool_models import EventPayload
+from apps.api.app.application.agent.agent_models import (
+    ConversationMessage,
+    ConversationTurn,
+    MessageBlock,
+)
+from apps.api.app.application.agent.tool_catalog_encoding import (
+    CATALOG_ENCODING_INSTRUCTIONS,
+    planner_catalog_tool_ids,
+)
 from apps.api.app.domain.platform.llm_call import LLMCallContext
 from apps.api.app.application.system_image.source_ports import IngestedSource, SourceSpec
 from apps.api.app.infrastructure.persistence.event_outbox_repository import EventOutboxRepository
+from apps.api.app.infrastructure.persistence.conversation_turn_repository import (
+    ConversationTurnRepository,
+)
 from apps.api.app.infrastructure.persistence.conversation_repository import (
     ConversationRepository,
 )
 from apps.api.app.infrastructure.persistence.model_config_test_grant_repository import (
     SQLAlchemyModelConfigTestGrantRepository,
+)
+from apps.api.app.infrastructure.platform.operator_identity import (
+    SQLAlchemyConfiguredIdentityReader,
+    SQLAlchemyOperatorIdentityBootstrap,
 )
 from apps.api.app.interface.sse.encoding import encode_event, encode_heartbeat
 from apps.api.app.models import ApprovalDetail, USItem
@@ -85,6 +101,17 @@ def test_platform_admin_can_query_redacted_llm_call_audit() -> None:
     assert "sensitive" not in str(record)
 
 
+def assert_persisted_model_key_is_encrypted(config_id: str, secret: str) -> None:
+    with SessionLocal() as session:
+        record = session.get(ModelProviderConfigRecord, config_id)
+        assert record is not None
+        assert record.api_key_encrypted and record.api_key_encrypted != secret
+        persisted_values = {column.name: getattr(record, column.name) for column in record.__table__.columns}
+        assert secret not in json.dumps(persisted_values)
+        route = record.route
+    assert store.model_configuration.get_custom_model_api_key(route) == secret
+
+
 def reset_model_configuration_tables():
     with SessionLocal() as session:
         session.execute(delete(ModelConfigTestGrantRecord))
@@ -92,14 +119,6 @@ def reset_model_configuration_tables():
         session.execute(delete(ModelProviderConfigRecord))
         session.commit()
     store.get_settings()
-
-
-def reset_auth_tables():
-    with SessionLocal() as session:
-        session.execute(delete(AccessSessionRecord))
-        session.execute(delete(ProjectRoleBindingRecord))
-        session.execute(delete(UserIdentityRecord))
-        session.commit()
 
 
 def restore_model_route(original_settings: dict, route: str = "chat"):
@@ -192,6 +211,7 @@ def test_auth_required_mode_rejects_missing_or_invalid_tokens_and_allows_valid_t
         user_email="prod@example.com",
         user_role="qa_lead",
     )
+    SQLAlchemyOperatorIdentityBootstrap().ensure(app.state.auth_config.user())
     protected_client = TestClient(app)
     try:
         assert protected_client.get("/healthz").status_code == 200
@@ -235,14 +255,15 @@ def test_auth_required_mode_allows_sse_query_token_for_eventsource():
         "scheme": "http",
     })
 
-    result = authenticate_request(request, config)
+    SQLAlchemyOperatorIdentityBootstrap().ensure(config.user())
+    result = authenticate_request(request, config,
+        configured_identity_authenticator=SQLAlchemyConfiguredIdentityReader().authenticate)
     assert not hasattr(result, "status_code")
     assert result.id == "user_sse"
 
 
 def test_email_registration_login_and_logout_session_flow():
-    reset_auth_tables()
-    email = "qa-admin@example.com"
+    email = f"qa-admin-{uuid4().hex}@example.com"
     password = "strong-password-123"
 
     registered = client.post(
@@ -335,7 +356,7 @@ def test_email_registration_login_and_logout_session_flow():
 
 
 def test_request_actor_and_project_membership_isolate_users_end_to_end():
-    reset_auth_tables()
+    namespace = uuid4().hex
 
     def register(email: str, name: str) -> tuple[dict, dict[str, str]]:
         response = client.post(
@@ -346,8 +367,8 @@ def test_request_actor_and_project_membership_isolate_users_end_to_end():
         body = response.json()
         return body["user"], {"Authorization": f"Bearer {body['access_token']}"}
 
-    owner, owner_headers = register("owner@example.com", "Project Owner")
-    outsider, outsider_headers = register("outsider@example.com", "Project Outsider")
+    owner, owner_headers = register(f"owner-{namespace}@example.com", "Project Owner")
+    outsider, outsider_headers = register(f"outsider-{namespace}@example.com", "Project Outsider")
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = [
@@ -441,6 +462,7 @@ def test_tool_runtime_enforces_role_based_authorization_and_audits_denial():
         user_email="viewer@example.com",
         user_role="viewer",
     )
+    SQLAlchemyOperatorIdentityBootstrap().ensure(app.state.auth_config.user())
     protected_client = TestClient(app)
     headers = {"Authorization": "Bearer viewer-token"}
     try:
@@ -517,6 +539,7 @@ def test_critical_tool_requires_project_admin_role_before_governance_gates():
         user_email="qa@example.com",
         user_role="qa_lead",
     )
+    SQLAlchemyOperatorIdentityBootstrap().ensure(app.state.auth_config.user())
     protected_client = TestClient(app)
     try:
         denied = protected_client.post(
@@ -554,6 +577,237 @@ def wait_until(predicate, timeout: float = 1.5):
     raise AssertionError("condition was not met before timeout")
 
 
+def post_conversation_message(path: str, **kwargs):
+    """Compatibility helper for assertions that predate asynchronous turns."""
+
+    response = client.post(path, **kwargs)
+    if response.status_code != 202:
+        return response
+    accepted = response.json()
+    turn_path = (
+        f"/v1/conversations/{accepted['conversation_id']}"
+        f"/turns/{accepted['turn_id']}"
+    )
+    terminal = {}
+
+    def turn_finished() -> bool:
+        nonlocal terminal
+        turn_response = client.get(turn_path, headers=kwargs.get("headers"))
+        if turn_response.status_code != 200:
+            return False
+        terminal = turn_response.json()
+        return terminal.get("status") in {"completed", "interrupted", "failed"}
+
+    wait_until(turn_finished, timeout=10.0)
+    return httpx.Response(
+        status_code=200,
+        json=terminal.get("result") or {},
+        request=httpx.Request("POST", f"http://testserver{path}"),
+    )
+
+
+def test_conversation_message_accepts_turn_before_stream_completes():
+    conversation = client.post(
+        "/v1/conversations",
+        json={
+            "space_type": "build",
+            "space_id": f"stream-{time.time_ns()}",
+            "title": "Streaming contract",
+        },
+    ).json()
+
+    async def slow_stream(_request):
+        yield {"kind": "started", "metadata": {"llm_provider": "test"}}
+        await asyncio.sleep(0.25)
+        yield {"kind": "delta", "delta": "First "}
+        yield {"kind": "delta", "delta": "streamed reply"}
+        yield {"kind": "completed", "metadata": {"llm_provider": "test"}}
+        yield {"kind": "turn_result", "result": {"kind": "direct_answer"}}
+
+    with patch.object(store.conversation_turn_graph, "astream", slow_stream):
+        started = time.perf_counter()
+        response = client.post(
+            f"/v1/conversations/{conversation['id']}/messages",
+            json={"content": "Stream this response"},
+            headers={"Idempotency-Key": "stream-contract-1"},
+        )
+        elapsed = time.perf_counter() - started
+
+        assert response.status_code == 202
+        assert elapsed < 0.2
+        accepted = response.json()
+        duplicate = client.post(
+            f"/v1/conversations/{conversation['id']}/messages",
+            json={"content": "Stream this response"},
+            headers={"Idempotency-Key": "stream-contract-1"},
+        )
+        assert duplicate.status_code == 202
+        assert duplicate.json()["turn_id"] == accepted["turn_id"]
+
+        def stream_started_before_completion() -> bool:
+            events = EventOutboxRepository().list_after(
+                stream_kind="conversation",
+                stream_id=conversation["id"],
+                after_event_id=None,
+            )
+            event_types = {event.event_type for event in events}
+            return (
+                "conversation.message.started" in event_types
+                and "conversation.message.completed" not in event_types
+            )
+
+        wait_until(stream_started_before_completion)
+
+        turn_path = (
+            f"/v1/conversations/{conversation['id']}"
+            f"/turns/{accepted['turn_id']}"
+        )
+        wait_until(
+            lambda: client.get(turn_path).json()["status"] == "completed",
+            timeout=2.0,
+        )
+
+    snapshot = client.get(f"/v1/conversations/{conversation['id']}").json()
+    assistant = next(message for message in snapshot["messages"] if message["role"] == "assistant")
+    assert assistant["status"] == "completed"
+    assert assistant["content_type"] == "markdown"
+    assert assistant["sequence_max"] >= 1
+    assert assistant["blocks"][0]["text"] == "First streamed reply"
+
+    events = EventOutboxRepository().list_after(
+        stream_kind="conversation",
+        stream_id=conversation["id"],
+        after_event_id=None,
+    )
+    event_types = [event.event_type for event in events]
+    assert "conversation.turn.accepted" in event_types
+    assert "conversation.message.started" in event_types
+    assert "conversation.message.delta" in event_types
+    assert "conversation.message.completed" in event_types
+    assert "conversation.turn.completed" in event_types
+
+
+def test_conversation_turn_repository_reports_idempotent_insert():
+    conversation = client.post(
+        "/v1/conversations",
+        json={
+            "space_type": "build",
+            "space_id": f"turn-idempotency-{time.time_ns()}",
+            "title": "Turn idempotency",
+        },
+    ).json()
+    now = datetime.now(timezone.utc).isoformat()
+    repository = ConversationTurnRepository()
+    original = ConversationTurn(
+        id=f"turn_{time.time_ns()}",
+        conversation_id=conversation["id"],
+        user_message_id="msg_original",
+        idempotency_key="same-client-request",
+        created_at=now,
+        updated_at=now,
+    )
+    competing = original.model_copy(
+        update={"id": f"turn_{time.time_ns()}", "user_message_id": "msg_competing"}
+    )
+
+    inserted, was_created = repository.create(original)
+    duplicate, duplicate_was_created = repository.create(competing)
+
+    assert was_created is True
+    assert inserted.id == original.id
+    assert duplicate_was_created is False
+    assert duplicate.id == original.id
+
+
+def test_stream_message_and_outbox_event_rollback_together():
+    conversation = client.post(
+        "/v1/conversations",
+        json={
+            "space_type": "build",
+            "space_id": f"stream-uow-{time.time_ns()}",
+            "title": "Stream transaction",
+        },
+    ).json()
+    message = ConversationMessage(
+        id=f"msg_{time.time_ns()}",
+        role="assistant",
+        status="streaming",
+        content_type="markdown",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        blocks=[MessageBlock(type="text", text="partial")],
+        stream_id=f"stream_{time.time_ns()}",
+        sequence_max=1,
+    )
+    event = store.platform_events.build_conversation_event(
+        conversation_id=conversation["id"],
+        event_type="conversation.message.delta",
+        entity_type="conversation_message",
+        entity_id=message.id,
+        mutation_kind="patch",
+        patch={"status": "streaming", "sequence_max": 1},
+        query_keys=[["conversation", conversation["id"]]],
+        payload={"message_id": message.id, "delta": "partial"},
+    )
+
+    class FailingOutbox:
+        @staticmethod
+        def append(*_args, **_kwargs):
+            raise RuntimeError("outbox unavailable")
+
+    with pytest.raises(RuntimeError, match="outbox unavailable"):
+        ConversationRepository().commit_stream_message_event(
+            operation="append",
+            conversation_id=conversation["id"],
+            message=message,
+            event=event,
+            outbox=FailingOutbox(),  # type: ignore[arg-type]
+        )
+
+    restored = ConversationRepository().get_conversation(conversation["id"])
+    assert restored is not None
+    assert all(item.id != message.id for item in restored.messages)
+
+
+def test_conversation_turn_cancel_preserves_partial_streamed_message():
+    conversation = client.post(
+        "/v1/conversations",
+        json={
+            "space_type": "build",
+            "space_id": f"cancel-stream-{time.time_ns()}",
+            "title": "Cancel streaming contract",
+        },
+    ).json()
+
+    async def cancellable_stream(_request):
+        yield {"kind": "started", "metadata": {"llm_provider": "test"}}
+        yield {"kind": "delta", "delta": "Keep this partial answer"}
+        await asyncio.sleep(5)
+        yield {"kind": "completed", "metadata": {"llm_provider": "test"}}
+
+    with patch.object(store.conversation_turn_graph, "astream", cancellable_stream):
+        accepted = client.post(
+            f"/v1/conversations/{conversation['id']}/messages",
+            json={"content": "Start then stop"},
+            headers={"Idempotency-Key": "cancel-stream-contract-1"},
+        ).json()
+        wait_until(
+            lambda: any(
+                message["role"] == "assistant" and message["status"] == "streaming"
+                for message in client.get(f"/v1/conversations/{conversation['id']}").json()["messages"]
+            )
+        )
+        cancelled = client.post(
+            f"/v1/conversations/{conversation['id']}/turns/{accepted['turn_id']}/cancel"
+        )
+
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "interrupted"
+    snapshot = client.get(f"/v1/conversations/{conversation['id']}").json()
+    assistant = next(message for message in snapshot["messages"] if message["role"] == "assistant")
+    assert assistant["status"] == "interrupted"
+    assert assistant["blocks"][0]["text"] == "Keep this partial answer"
+
+
 def create_system_image_source_dirs(prefix: str):
     source_root = Path(tempfile.mkdtemp(prefix=prefix))
     code_dir = source_root / "code"
@@ -570,6 +824,36 @@ def create_system_image_source_dirs(prefix: str):
 
 def system_image_source_prompt(code_dir: Path, us_dir: Path, tests_dir: Path) -> str:
     return f"code path {code_dir}, US docs path {us_dir}, tests path {tests_dir}"
+
+
+def capture_pinned_image_sources(project_id, conversation_id, directories, *, headers=None):
+    specs = [{"source_type": kind, "source_uri": str(path)} for kind, path in
+        zip(("code", "us_doc", "test_asset"), directories)]
+    for tool_id, payload in (("system_image.sources.register", {"source_specs": specs}),
+                             ("system_image.sources.ingest", {})):
+        response = client.post("/v1/tool-invocations", headers=headers, json={"conversation_id": conversation_id,
+            "tool_id": tool_id, "input": {"project_id": project_id, **payload}})
+        assert response.status_code == 200 and response.json()["status"] == "completed", response.text
+
+
+def resume_pinned_image_goal(goal, *, headers=None):
+    response = client.post(f"/v1/agent-goals/{goal['id']}/resume", headers=headers, json={"expected_goal": goal})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def require_unpublished_image_candidate(project_id, goal, *, headers=None):
+    assert goal["status"] == "paused" and goal["pause_reason"] == "structural_candidate_review", goal
+    plan_id = next(ref.removeprefix("build_plan:") for ref in goal["target_refs"] if ref.startswith("build_plan:"))
+    plan = client.get(f"/v1/projects/{project_id}/system-image/build-plans/{plan_id}", headers=headers).json()
+    assert len(plan["structural_artifacts"]) == len(plan["execution_authorizations"]) == 1
+    assert plan["execution_authorizations"][0]["goal_id"] == goal["id"]
+    assert plan["execution_authorizations"][0]["publication_allowed"] is False
+    image_id = plan["structural_artifacts"][0]["image_revision_id"]
+    image = client.get(f"/v1/projects/{project_id}/system-image/revisions/{image_id}", headers=headers)
+    assert image.status_code == 200, image.text
+    assert client.get(f"/v1/projects/{project_id}/system-image", headers=headers).json()["project"]["system_image_status"] != "ready"
+    return plan
 
 
 def create_project_with_materialized_system_image(name: str):
@@ -604,7 +888,7 @@ def create_project_with_materialized_system_image(name: str):
             },
         )
         assert invoked.status_code == 200
-        assert invoked.json()["status"] == "completed"
+        assert invoked.json()["status"] == "completed", invoked.text
     workspace = client.get(f"/v1/projects/{project['id']}").json()
     assert workspace["us_items"]
     return project, conversation, workspace
@@ -760,9 +1044,8 @@ def test_model_routes_can_be_configured_independently():
         assert rerank_body["model_profiles"]["rerank"]["custom_model"]["api_key_masked"] == "••••2222"
         assert rerank_body["model_configurations"]["rerank"]["active_config_id"] == rerank_config["config_id"]
 
-        persisted_db = Path(STATE_DIR) / "nasus.db"
-        assert b"sk-embedding-1111" not in persisted_db.read_bytes()
-        assert b"sk-rerank-2222" not in persisted_db.read_bytes()
+        assert_persisted_model_key_is_encrypted(embedding_config["config_id"], "sk-embedding-1111")
+        assert_persisted_model_key_is_encrypted(rerank_config["config_id"], "sk-rerank-2222")
     finally:
         restore_model_route(original, "embedding")
         restore_model_route(original, "rerank")
@@ -1020,9 +1303,7 @@ def test_model_config_is_persisted_and_api_key_is_encrypted_at_rest():
         )
         assert response["model_configurations"]["chat"]["active_config_id"] == config["config_id"]
 
-        persisted_db = Path(STATE_DIR) / "nasus.db"
-        assert persisted_db.exists()
-        assert b"sk-persisted-5678" not in persisted_db.read_bytes()
+        assert_persisted_model_key_is_encrypted(config["config_id"], "sk-persisted-5678")
 
         restored_store = InMemoryStore()
         restored = restored_store.get_settings()
@@ -1514,7 +1795,7 @@ def test_agent_goal_workflow_activity_service_uses_agent_loop_runtime_directly()
             self.started_actor_id = None
             self.resumed_actor_id = None
 
-        async def start_goal(self, conversation_id, proposal):
+        async def start_goal(self, conversation_id, proposal, *, workflow_id=None):
             self.started = (conversation_id, proposal)
             self.started_actor_id = current_user().id
             return AgentGoal(
@@ -1527,7 +1808,7 @@ def test_agent_goal_workflow_activity_service_uses_agent_loop_runtime_directly()
                 summary=proposal.summary,
                 steps=[],
                 autonomy_level=proposal.suggested_autonomy_level,
-                workflow_id="wf_local_worker",
+                workflow_id=workflow_id,
             )
 
         async def resume_goal(self, goal_id):
@@ -1589,7 +1870,7 @@ def test_agent_goal_workflow_activity_service_uses_agent_loop_runtime_directly()
     assert proposal.planned_tools[0].input_payload == {"project_id": "proj_worker"}
     assert fake_loop_runtime.started_actor_id == "user_worker"
     assert started["workflow_id"] == "temporal-wf-worker"
-    assert fake_goal_projector.upserted_goal_ids == ["goal_worker"]
+    assert fake_goal_projector.upserted_goal_ids == []
 
     resumed = asyncio.run(
         service.resume_agent_goal(
@@ -2158,7 +2439,16 @@ def test_approval_required_tool_requires_approved_project_approval():
         store.quality_loop_repository.replace_approvals(project["id"], [])
 
 
-def test_governance_tool_chain_approves_release_decision_and_promotes_baseline():
+def assert_unknown_inventory_blocks_release(release):
+    assert release["score"] <= 59
+    assert release["score"] == sum(release["score_breakdown"].values())
+    assert release["score_breakdown"]["system_context"] == 0
+    assert release["evidence_summary"]["quality_assessment_unknown"] == 1
+    assert release["blockers"] == len(release["blocker_items"])
+    assert any("quality assessment is unknown" in item for item in release["blocker_items"])
+
+
+def test_governance_approval_cannot_promote_an_unknown_inventory_release():
     project, conversation, workspace = create_project_with_materialized_system_image("Governance Release Project")
     us_id = workspace["us_items"][0]["id"]
     for tool_id, tool_input in [
@@ -2182,13 +2472,15 @@ def test_governance_tool_chain_approves_release_decision_and_promotes_baseline()
     workspace_after_release = client.get(f"/v1/projects/{project['id']}").json()
     assert workspace_after_release["release_decision"] is None
     release = client.get(f"/v1/projects/{project['id']}/release-readiness").json()
-    assert release["status"] == "Ready for release review"
-    assert release["score"] >= 80
-    assert release["score"] == sum(release["score_breakdown"].values())
+    assert release["status"] == "Needs additional release evidence"
+    assert_unknown_inventory_blocks_release(release)
     assert release["score_breakdown"]["execution"] > 0
-    assert release["score_breakdown"]["quality_assets"] == 25
+    assert release["score_breakdown"]["quality_assets"] == 8
     assert release["evidence_summary"]["passed_runs"] >= 1
-    assert release["evidence_summary"]["approved_asset_parts"] == 3
+    assert release["evidence_summary"]["approved_asset_parts"] == 1
+    assert release["evidence_summary"]["required_asset_parts"] == 3
+    assert any("case_set, scenario_set" in item for item in release["blocker_items"])
+    original_baselines = client.get(f"/v1/projects/{project['id']}/system-image").json()["baselines"]
 
     approval_request = client.post(
         "/v1/tool-invocations",
@@ -2229,7 +2521,7 @@ def test_governance_tool_chain_approves_release_decision_and_promotes_baseline()
                 "project_id": project["id"],
                 "approval_id": approval_id,
                 "decision": "approved",
-                "rationale": "Release evidence is complete and baseline promotion may proceed.",
+                "rationale": "Approval grants permission, not evidence of unknown quality.",
             },
         },
     )
@@ -2258,7 +2550,8 @@ def test_governance_tool_chain_approves_release_decision_and_promotes_baseline()
     assert submit_release.json()["status"] == "completed"
     submitted_workspace = client.get(f"/v1/projects/{project['id']}").json()
     decision = submitted_workspace["release_decision"]
-    assert decision["status"] == "ready"
+    assert decision["status"] == "blocked"
+    assert decision["score"] == release["score"]
     assert decision["approval_ref"] == f"approval:{approval_id}"
     assert any(ref.startswith("execution_evidence:") for ref in decision["evidence_refs"])
 
@@ -2276,12 +2569,13 @@ def test_governance_tool_chain_approves_release_decision_and_promotes_baseline()
         },
     )
     assert promote.status_code == 200
-    assert promote.json()["status"] == "completed"
+    assert promote.json()["status"] == "failed"
+    assert "current status is blocked" in promote.json()["summary"]
     promoted_image = client.get(f"/v1/projects/{project['id']}/system-image").json()
-    assert promoted_image["baselines"][0]["status"] == "promoted"
-    assert promoted_image["build_state"]["status"] == "ready"
+    assert promoted_image["baselines"] == original_baselines
     audit = client.get(f"/v1/audit-events?tool_invocation_id={promote.json()['id']}").json()
-    assert any("baseline:" in ref for event in audit for ref in event["object_refs"])
+    assert any(event["action"] == "tool.invocation.failed" for event in audit)
+    assert not any(ref.startswith("baseline:") for event in audit for ref in event["object_refs"])
 
 
 def test_build_message_creates_project():
@@ -2291,7 +2585,7 @@ def test_build_message_creates_project():
     )
     conversation_id = conversation.json()["id"]
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation_id}/messages",
         json={"content": "Help me create a new project called Loyalty Hub"},
     )
@@ -2309,7 +2603,7 @@ def test_build_message_without_project_name_requests_clarification():
     conversation_id = conversation.json()["id"]
     before = len(client.get("/v1/projects").json())
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation_id}/messages",
         json={"content": "Help me create a new project"},
     )
@@ -2329,14 +2623,14 @@ def test_build_clarification_follow_up_can_continue_project_creation():
     )
     conversation_id = conversation.json()["id"]
 
-    first = client.post(
+    first = post_conversation_message(
         f"/v1/conversations/{conversation_id}/messages",
         json={"content": "Help me create a new project"},
     )
     assert first.status_code == 200
     wait_until(lambda: len(client.get(f"/v1/conversations/{conversation_id}").json()["messages"]) >= 2)
 
-    second = client.post(
+    second = post_conversation_message(
         f"/v1/conversations/{conversation_id}/messages",
         json={"content": "Loyalty Follow Up"},
     )
@@ -2353,7 +2647,7 @@ def test_build_message_creates_project_from_chinese_name():
     )
     conversation_id = conversation.json()["id"]
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation_id}/messages",
         json={"content": "帮我创建一个新项目，名字叫 Loyalty Hub CN"},
     )
@@ -2361,6 +2655,23 @@ def test_build_message_creates_project_from_chinese_name():
     wait_until(lambda: any(project["name"] == "Loyalty Hub CN" for project in client.get("/v1/projects").json()))
     projects = client.get("/v1/projects").json()
     assert any(project["name"] == "Loyalty Hub CN" for project in projects)
+
+
+def test_build_message_creates_project_from_chinese_curly_quoted_starting_point():
+    conversation = client.post(
+        "/v1/conversations",
+        json={"space_type": "build", "space_id": "build", "title": "Build"},
+    )
+    conversation_id = conversation.json()["id"]
+
+    response = post_conversation_message(
+        f"/v1/conversations/{conversation_id}/messages",
+        json={"content": "基于“Payment System CN”起点创建质量项目，并引导我导入 Git 仓库。"},
+    )
+    assert response.status_code == 200
+    wait_until(lambda: any(project["name"] == "Payment System CN" for project in client.get("/v1/projects").json()))
+    projects = client.get("/v1/projects").json()
+    assert any(project["name"] == "Payment System CN" for project in projects)
 
 
 def test_tool_invocation_creates_project():
@@ -2686,25 +2997,40 @@ def test_system_image_tools_can_register_and_ingest_real_source_files():
     assert any("US-101" in name for name in object_names)
     assert any("test_checkout" in name for name in object_names)
     assert {"CodeFunction", "USWorkItem", "TestCase"}.issubset(object_types)
-    assert {"implements", "impacts", "covers", "validates", "belongs_to"}.issubset(
-        relationship_types
-    )
-    assert any(
-        ref.startswith("parser:tree-sitter:")
-        for ref in materialized_code_source["evidence_refs"]
-    )
+    assert "belongs_to" in relationship_types
+    assert not {"implements", "covers", "validates"}.intersection(relationship_types)
+    object_ids = {item["id"] for item in materialized_image["objects"]}
+    assert "System" not in object_types and "impacts" not in relationship_types
+    assert all(edge["from_object_id"] in object_ids and edge["to_object_id"] in object_ids
+        for edge in materialized_image["relationships"])
+    assert materialized_code_source == sources["code"]
+    code_evidence = [ref for item in materialized_image["objects"] if item["code_reference"] for ref in item["evidence"]]
     assert any(
         ref.startswith("code-intelligence:tree-sitter:")
-        for ref in materialized_code_source["evidence_refs"]
+        for ref in code_evidence
     )
+    code_revision = next(member["source_revision_id"] for member in materialized_image["source_manifest"]["members"]
+        if member["source_type"] == "code")
+    analyses = client.get(f"/v1/projects/{project['id']}/system-image/source-analyses",
+        params={"source_revision_id": code_revision})
+    assert analyses.status_code == 200 and analyses.json()["items"]
+    report = client.get(f"/v1/projects/{project['id']}/system-image/source-analyses/{analyses.json()['items'][0]['analysis_id']}",
+        params={"source_revision_id": code_revision, "section": "files"})
+    assert report.status_code == 200
+    assert report.json()["analysis"]["provider"] == "tree-sitter"
+    assert any(item["relative_path"] == "checkout.py" and item["status"] == "parsed"
+        and item["parser_version"].startswith("tree-sitter:") for item in report.json()["items"])
     assert metrics_by_group["code_quality"]["code_symbols"] >= 1
-    assert metrics_by_group["code_quality"]["implemented_requirement_count"] >= 1
-    assert metrics_by_group["code_quality"]["test_covered_code_count"] >= 1
     assert metrics_by_group["us_completion_quality"]["requirements_count"] >= 1
-    assert metrics_by_group["us_completion_quality"]["traceability_coverage"] > 0
-    assert metrics_by_group["us_completion_quality"]["validated_requirement_count"] >= 1
     assert metrics_by_group["test_quality"]["test_count"] >= 1
-    assert metrics_by_group["test_quality"]["cross_source_link_count"] >= 3
+    assert all(metric["measurement_basis"] == "admitted_projection_inventory_not_quality_assessment"
+        and metric["coverage_status"] == "unknown" for metric in metrics_by_group.values())
+    assert not {"implemented_requirement_count", "test_covered_code_count", "code_risk_score", "critical_paths"}.intersection(
+        metrics_by_group["code_quality"])
+    assert not {"traceability_coverage", "validated_requirement_count", "requirements_clarity"}.intersection(
+        metrics_by_group["us_completion_quality"])
+    assert not {"cross_source_link_count", "scenario_coverage", "automation_coverage", "failed_runs"}.intersection(
+        metrics_by_group["test_quality"])
     assert materialized_image["embedding_records"]
     assert len(materialized_image["retrieval_runs"]) == len(materialized_image["task_contexts"]) >= 1
     assert len(materialized_image["rerank_records"]) == len(materialized_image["retrieval_runs"])
@@ -2735,9 +3061,9 @@ def test_system_image_tools_can_register_and_ingest_real_source_files():
     assert any(ref.startswith("raw_asset_chunk:") for ref in task_context["evidence_refs"])
     assert any(ref.startswith(("local-object://", "s3://")) for ref in task_context["evidence_refs"])
     assert quality_profile["task_context_id"] == task_context["id"]
-    assert 0 <= quality_profile["risk_score"] <= 100
-    assert 0 <= quality_profile["coverage_score"] <= 100
-    assert 0 <= quality_profile["release_score"] <= 100
+    assert task_context["confidence"] is None
+    assert all(quality_profile[field] is None for field in
+        ("risk_score", "coverage_score", "release_score", "automation_feasibility", "confidence"))
     assert quality_profile["regression_scope_refs"]
     assert rerank_record["retrieval_run_id"] == retrieval_run["id"]
     assert rerank_record["status"] in {"completed", "fallback"}
@@ -3107,7 +3433,8 @@ def test_system_image_materialization_uses_live_embedding_and_rerank_adapters():
     assert all(item["latency_ms"] == 17 for item in image["rerank_records"])
 
 
-def test_production_system_image_materialization_rolls_back_embedding_fallback():
+def test_production_system_image_materialization_rolls_back_embedding_fallback(monkeypatch):
+    from apps.api.tests.test_materialization_source_inputs_api import running_materialization
     project = client.post(
         "/v1/projects",
         json={"name": f"Embedding Rollback {time.time_ns()}"},
@@ -3119,6 +3446,7 @@ def test_production_system_image_materialization_rolls_back_embedding_fallback()
     )
     store.system_image_service.ingest_sources(project["id"])
     before = _system_image_materialization_projection(project["id"])
+    command = running_materialization({"client": client, "project_id": project["id"], "headers": {}}, monkeypatch)
 
     async def fallback_embed_texts(*, settings, texts, custom_api_key=None, call_context=None):
         del call_context
@@ -3139,7 +3467,7 @@ def test_production_system_image_materialization_rolls_back_embedding_fallback()
                 RuntimeError,
                 match="embedding route must be live in production",
             ):
-                asyncio.run(store.system_image_service.materialize_context(project["id"]))
+                asyncio.run(store.system_image_service.materialize_context(project["id"], invocation_id=command["id"]))
     finally:
         store.system_image_workspace._require_live_model_routes = previous_policy
 
@@ -3151,7 +3479,8 @@ def test_production_system_image_materialization_rolls_back_embedding_fallback()
     ) == before
 
 
-def test_production_system_image_materialization_rolls_back_rerank_fallback():
+def test_production_system_image_materialization_rolls_back_rerank_fallback(monkeypatch):
+    from apps.api.tests.test_materialization_source_inputs_api import running_materialization
     project = client.post(
         "/v1/projects",
         json={"name": f"Rerank Rollback {time.time_ns()}"},
@@ -3163,6 +3492,7 @@ def test_production_system_image_materialization_rolls_back_rerank_fallback():
     )
     store.system_image_service.ingest_sources(project["id"])
     before = _system_image_materialization_projection(project["id"])
+    command = running_materialization({"client": client, "project_id": project["id"], "headers": {}}, monkeypatch)
 
     async def live_embed_texts(*, settings, texts, custom_api_key=None, call_context=None):
         del call_context
@@ -3198,7 +3528,7 @@ def test_production_system_image_materialization_rolls_back_rerank_fallback():
                 RuntimeError,
                 match="rerank route must be live in production",
             ):
-                asyncio.run(store.system_image_service.materialize_context(project["id"]))
+                asyncio.run(store.system_image_service.materialize_context(project["id"], invocation_id=command["id"]))
     finally:
         store.system_image_workspace._require_live_model_routes = previous_policy
 
@@ -3306,7 +3636,8 @@ def test_system_image_ingestion_rejects_empty_code_index_results():
     assert image["build_state"]["status"] == "failed"
     assert code_source["ingestion_status"] == "failed"
     assert code_source["file_count"] == 0
-    assert code_source["failure_reason"] == "code source produced no ingestible files"
+    assert code_source["failure_reason"] == "source_connector_failed"
+    assert code_source["content_ref"] is None
     assert image["chunks"] == []
 
 
@@ -3351,7 +3682,8 @@ def test_system_image_ingestion_rejects_disallowed_external_source_scheme():
     sources = {source["source_type"]: source for source in image["sources"]}
     assert sources["code"]["ingestion_status"] == "failed"
     assert sources["code"]["permission_status"] == "denied"
-    assert "scheme is not allowed" in sources["code"]["failure_reason"]
+    assert sources["code"]["failure_reason"] == "source_acquisition_denied"
+    assert sources["code"]["content_ref"] is None
     assert sources["us_doc"]["ingestion_status"] == "indexed"
     assert sources["test_asset"]["ingestion_status"] == "indexed"
 
@@ -3386,6 +3718,12 @@ def test_agent_memory_context_packages_system_image_state():
             "input": {"project_id": project["id"], "source_specs": source_specs},
         },
     )
+    captured = client.post(
+        "/v1/tool-invocations",
+        json={"conversation_id": conversation["id"], "tool_id": "system_image.sources.ingest",
+              "input": {"project_id": project["id"]}},
+    )
+    assert captured.status_code == 200 and captured.json()["status"] == "completed"
     client.post(
         "/v1/tool-invocations",
         json={
@@ -3402,7 +3740,9 @@ def test_agent_memory_context_packages_system_image_state():
     assert "[system_image]" in memory.context_snapshot
     assert "source=code; status=indexed" in memory.context_snapshot
     assert "context_object=" in memory.context_snapshot
-    assert "relationship=implements" in memory.context_snapshot
+    assert "relationship=belongs_to" in memory.context_snapshot
+    # Checkout code is not evidence for the unrelated retry-payment requirement.
+    assert "relationship=implements" not in memory.context_snapshot
     assert "metric=code_quality" in memory.context_snapshot
     assert "[retrieved_system_image_memory]" in memory.context_snapshot
     assert memory.retrieval_query.endswith("Agent Memory Image")
@@ -3434,7 +3774,9 @@ def test_agent_memory_uses_replaceable_system_image_retriever_port():
             *,
             limit=8,
             trace=False,
+            expected_scope=None,
         ):
+            assert expected_scope.project_id == conversation.project_id
             self.calls.append((conversation.id, query, limit))
             return SystemImageMemorySearchResult(
                 hits=(
@@ -3458,7 +3800,7 @@ def test_agent_memory_uses_replaceable_system_image_retriever_port():
     memory_manager = AgentMemoryManager(
         store.agent_application_ports.memory_state,
         system_image_retriever=retriever,
-        system_image_workspace=store.system_image_workspace,
+        system_image_memory_context=store.agent_memory.system_image_memory_context,
         conversation_summaries=store.conversation_summaries,
     )
     memory = asyncio.run(
@@ -3534,7 +3876,7 @@ def test_agent_memory_context_endpoint_exposes_system_image_agent_memory_view():
         json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "Build the official system image from code, US docs, and tests"},
     )
@@ -3552,7 +3894,7 @@ def test_agent_memory_context_endpoint_exposes_system_image_agent_memory_view():
     assert "system_image" in body["context_summary"]
     assert body["working_memory"]["active_goal_id"] == goal_id
     assert body["working_memory"]["status"] == "paused"
-    assert body["working_memory"]["pause_reason"] == "missing_source_binding"
+    assert body["working_memory"]["pause_reason"] == "missing_captured_code"
     assert body["conversation_memory"]["recent_turn_count"] >= 1
     assert "Build the official system image" in body["retrieved_context"]["query"]
     assert isinstance(body["retrieved_context"]["refs"], list)
@@ -3705,7 +4047,7 @@ def test_live_planner_receives_unified_memory_context_with_system_image_state():
             api_key="sk-planner-memory",
         )
         with patch.object(store.llm, "_call_custom", new=fake_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": "Use what you remember and plan the next system image step"},
             )
@@ -3716,7 +4058,13 @@ def test_live_planner_receives_unified_memory_context_with_system_image_state():
         assert "Nasus structured agent planner" in captured["system_prompt"]
         assert "Use what you remember" in captured["user_message"]
         assert "[tool_catalog]" in captured["context_snapshot"]
-        assert "system_image.baseline.initialize" in captured["context_snapshot"]
+        planner_catalog = json.loads(captured["context_snapshot"].split("[tool_catalog]\n", 1)[1])
+        catalog_reply = client.get("/v1/tools/catalog")
+        assert catalog_reply.status_code == 200
+        full_tool_ids = [tool["tool_id"] for tool in catalog_reply.json()]
+        assert planner_catalog_tool_ids(planner_catalog) == full_tool_ids
+        assert "system_image.baseline.initialize" in full_tool_ids
+        assert CATALOG_ENCODING_INSTRUCTIONS in captured["system_prompt"]
         assert "source=code; status=indexed" in captured["context_snapshot"]
         assert "context_object=" in captured["context_snapshot"]
         assert "metric=code_quality" in captured["context_snapshot"]
@@ -3725,7 +4073,7 @@ def test_live_planner_receives_unified_memory_context_with_system_image_state():
         restore_model_route(original, "chat")
 
 
-def test_live_planner_can_author_system_image_agent_goal_and_emit_thinking_delta():
+def test_live_planner_cannot_replace_the_source_pinned_system_image_goal():
     original = client.get("/v1/settings").json()
     project = client.post("/v1/projects", json={"name": "Live Planned System Image"}).json()
     conversation = client.post(
@@ -3780,33 +4128,32 @@ def test_live_planner_can_author_system_image_agent_goal_and_emit_thinking_delta
             api_key="sk-system-image-planner",
         )
         with patch.object(store.llm, "_call_custom", new=fake_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": "Initialize the system image from code, US docs, and test assets"},
             )
 
         assert response.status_code == 200
         body = response.json()
-        assert body["agent_goal"]["title"] == "LLM Planned Official System Image"
-        assert "Nasus structured agent planner" in captured["system_prompt"]
-        assert "[tool_catalog]" in captured["context_snapshot"]
-        assert "system_image.sources.register" in captured["context_snapshot"]
+        assert body["agent_goal"]["title"] == "Prepare a source-pinned system image"
+        assert captured == {}
 
         refreshed = client.get(f"/v1/conversations/{conversation['id']}").json()
         goal = refreshed["agent_goals"][-1]
-        assert goal["title"] == "LLM Planned Official System Image"
+        assert goal["title"] == "Prepare a source-pinned system image"
         assert goal["goal_template"] == "system_image_build"
-        assert goal["planner_kind"] == "llm_structured"
-        assert goal["goal_description"] == "Register sources first, then use tool results to continue the system image build."
-        assert f"system-image:{project['id']}" in goal["target_refs"]
+        assert goal["planner_kind"] == "deterministic"
+        assert goal["goal_description"] == "Keep the original project and image target while waiting for required inputs."
+        assert len(goal["target_refs"]) == 3
+        assert goal["target_refs"][2].startswith("build_source_wait_digest:")
         assert ["system-image", project["id"]] in goal["query_keys"]
-        assert "tools=system_image.sources.register" in goal["planning_summary"]
-        assert goal["pause_reason"] == "missing_source_binding"
+        assert "tools=state-aware compiler" in goal["planning_summary"]
+        assert goal["pause_reason"] == "missing_captured_code"
         first_act = next(step for step in goal["steps"] if step["phase"] == "acting")
-        assert first_act["selected_tool_id"] == "system_image.sources.register"
-        assert first_act["reasoning"] == "Identify and bind code, US, and test sources before ingestion."
+        assert first_act["selected_tool_id"] == "query.system_image.status"
+        assert first_act["tool_input_payload"]["build_input_request"]["project_id"] == project["id"]
         explanation = client.get(f"/v1/agent-goals/{goal['id']}/explanation").json()
-        assert explanation["planner_kind"] == "llm_structured"
+        assert explanation["planner_kind"] == "deterministic"
         assert explanation["goal_template"] == "system_image_build"
         assert explanation["target_refs"] == goal["target_refs"]
         assert explanation["query_keys"] == goal["query_keys"]
@@ -3825,7 +4172,7 @@ def test_live_planner_can_author_system_image_agent_goal_and_emit_thinking_delta
         assert thinking_event.patch["memory_retrieval_run_refs"]
         assert isinstance(thinking_event.patch["retrieved_context_refs"], list)
         assert thinking_event.patch["retrieved_context_summary"]
-        assert thinking_event.patch["planned_tool_ids"] == ["system_image.sources.register"]
+        assert thinking_event.patch["planned_tool_ids"] == ["query.system_image.status"]
         assert thinking_event.patch["sequence"] == 1
         assert thinking_event.patch["chunk_index"] == 0
         assert thinking_event.patch["is_final"] is True
@@ -3858,7 +4205,7 @@ def test_canonical_ui_system_image_command_uses_deterministic_goal_when_live_pla
             api_key="sk-ui-command-skip",
         )
         with patch.object(store.llm, "_call_custom", new=fake_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={
                     "content": (
@@ -3872,7 +4219,7 @@ def test_canonical_ui_system_image_command_uses_deterministic_goal_when_live_pla
         assert response.status_code == 200
         body = response.json()
         assert called is False
-        assert body["agent_goal"]["title"] == "Build Official System Image"
+        assert body["agent_goal"]["title"] == "Prepare a source-pinned system image"
         assert body["agent_goal"]["goal_template"] == "system_image_build"
         assert body["agent_goal"]["planner_kind"] == "deterministic"
     finally:
@@ -3926,7 +4273,8 @@ def test_system_image_ingest_failure_blocks_context_materialization():
     )
     assert materialized.status_code == 200
     assert materialized.json()["status"] == "failed"
-    assert "source ingestion failed" in materialized.json()["summary"]
+    assert materialized.json()["result"]["followup_reason"] == "materialization_source_capture_required"
+    assert materialized.json()["result"]["next_recommended_tools"] == ["system_image.sources.ingest"]
 
     image = client.get(f"/v1/projects/{project['id']}/system-image").json()
     assert image["project"]["system_image_status"] == "draft"
@@ -3942,48 +4290,35 @@ def test_project_conversation_can_initialize_system_image_from_natural_language(
         json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "Initialize the system image from code, US docs, and test assets"},
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["agent_goal"]["title"] == "Build Official System Image"
+    assert body["agent_goal"]["title"] == "Prepare a source-pinned system image"
     assert body["agent_goal"]["goal_template"] == "system_image_build"
-    assert body["agent_goal"]["goal_description"] == "Register sources, ingest evidence, materialize context, and initialize the baseline."
+    assert body["agent_goal"]["goal_description"] == "Keep the original project and image target while waiting for required inputs."
     assert body["agent_goal"]["planner_kind"] == "deterministic"
     assert f"project:{project['id']}" in body["agent_goal"]["target_refs"]
     assert ["system-image", project["id"]] in body["agent_goal"]["query_keys"]
     wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
     refreshed = client.get(f"/v1/conversations/{conversation['id']}").json()
     goal = refreshed["agent_goals"][-1]
-    assert goal["pause_reason"] == "missing_source_binding"
+    assert goal["pause_reason"] == "missing_captured_code"
     assert goal["goal_template"] == "system_image_build"
     assert goal["planner_kind"] == "deterministic"
-    assert "tools=system_image.sources.register" in goal["planning_summary"]
+    assert "tools=state-aware compiler" in goal["planning_summary"]
     assert [step["selected_tool_id"] for step in goal["steps"] if step["phase"] == "acting"] == [
-        "system_image.sources.register",
-        "system_image.sources.ingest",
-        "system_image.context.materialize",
-        "system_image.baseline.initialize",
+        "query.system_image.status",
     ]
-    blocked = next(step for step in goal["steps"] if step["status"] == "blocked")
-    assert blocked["selected_tool_id"] == "system_image.sources.register"
-    assert blocked["tool_invocation_id"]
-    assert all(
-        step["status"] == "pending"
-        for step in goal["steps"]
-        if step["selected_tool_id"] in {
-            "system_image.sources.ingest",
-            "system_image.context.materialize",
-            "system_image.baseline.initialize",
-        }
-    )
-    assert any(
-        message["metadata"].get("planner_kind") == "source_binding_required"
-        for message in refreshed["messages"]
-    )
+    original_status = next(step for step in goal["steps"] if step["selected_tool_id"])
+    assert original_status["status"] == "blocked" and original_status["tool_invocation_id"]
+    status_command = client.get(f"/v1/tool-invocations/{original_status['tool_invocation_id']}").json()
+    assert status_command["status"] == status_command["result"]["status"] == "completed"
+    assert status_command["result"]["requires_followup"] is False
+    assert goal["model_calls_used"] == 0
     explanation = client.get(f"/v1/agent-goals/{goal['id']}/explanation")
     assert explanation.status_code == 200
     explanation_body = explanation.json()
@@ -3992,67 +4327,87 @@ def test_project_conversation_can_initialize_system_image_from_natural_language(
     assert explanation_body["goal_description"] == goal["goal_description"]
     assert explanation_body["planner_kind"] == "deterministic"
     assert f"project:{project['id']}" in explanation_body["target_refs"]
-    assert ["knowledge", project["id"]] in explanation_body["query_keys"]
     assert "template=system_image_build" in explanation_body["planning_summary"]
     assert explanation_body["phase"] == "paused"
-    assert explanation_body["waiting_on"] == "source_binding"
-    assert "Provide code path or Git URL" in explanation_body["next_action"]
-    assert explanation_body["blocked_step"]["selected_tool_id"] == "system_image.sources.register"
+    assert explanation_body["waiting_on"] == "source_capture"
+    assert "capture" in explanation_body["next_action"]
     assert explanation_body["plan"][0]["phase"] == "thinking"
     assert explanation_body["memory_context"]["context_hash"].startswith("sha256:")
     assert "Memory context includes" in explanation_body["reasoning_summary"]
 
     code_dir, us_dir, tests_dir = create_system_image_source_dirs("nasus-guided-system-image-")
-    source_binding = client.post(
+    capture_pinned_image_sources(project["id"], conversation["id"], (code_dir, us_dir, tests_dir))
+    source_binding = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
-        json={"content": system_image_source_prompt(code_dir, us_dir, tests_dir)},
+        json={"content": "Build the system image"},
     )
     assert source_binding.status_code == 200
     wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["pause_reason"] == "waiting_confirmation")
     goal = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
+    assert goal["id"] == body["agent_goal"]["id"]
+    assert len(goal["target_refs"]) == 7
+    continued_status = next(step for step in goal["steps"] if step["selected_tool_id"] == "query.system_image.status")
+    assert continued_status["id"] == original_status["id"]
+    assert continued_status["tool_invocation_id"] == original_status["tool_invocation_id"]
+    assert continued_status["tool_input_payload"] == original_status["tool_input_payload"]
+    assert continued_status["status"] == "completed"
+    assert client.get(f"/v1/tool-invocations/{original_status['tool_invocation_id']}").json() == status_command
     confirmation_explanation = client.get(f"/v1/agent-goals/{goal['id']}/explanation").json()
     assert confirmation_explanation["waiting_on"] == "user_confirmation"
     assert "Confirm tool invocation" in confirmation_explanation["next_action"]
-    assert "system_image.baseline.initialize" in confirmation_explanation["executed_tool_ids"]
-    resume = client.post(f"/v1/agent-goals/{goal['id']}/resume")
-    assert resume.status_code == 200
-    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "completed")
-
-    image = client.get(f"/v1/projects/{project['id']}/system-image").json()
-    assert image["project"]["system_image_status"] == "ready"
-    assert all(source["ingestion_status"] == "indexed" for source in image["sources"])
-    completed_explanation = client.get(f"/v1/agent-goals/{goal['id']}/explanation").json()
-    assert completed_explanation["status"] == "completed"
-    assert completed_explanation["waiting_on"] == "none"
-    assert completed_explanation["memory_refs"]
+    assert "system_image.build.authorize" in confirmation_explanation["executed_tool_ids"]
+    assert "system_image.baseline.initialize" not in confirmation_explanation["executed_tool_ids"]
+    candidate = resume_pinned_image_goal(goal)
+    require_unpublished_image_candidate(project["id"], candidate)
+    stale_confirmation = client.post(f"/v1/agent-goals/{goal['id']}/resume", json={"expected_goal": goal})
+    assert stale_confirmation.status_code == 409
+    assert stale_confirmation.json()["error"]["code"] == "agent_checkpoint_changed"
+    assert client.get(f"/v1/agent-goals/{goal['id']}").json() == candidate
+    candidate_explanation = client.get(f"/v1/agent-goals/{goal['id']}/explanation").json()
+    assert candidate_explanation["waiting_on"] == "candidate_review"
     restored_store = InMemoryStore()
     restored_goal = restored_store.get_agent_goal(goal["id"])
     assert restored_goal.goal_template == "system_image_build"
     assert restored_goal.planner_kind == "deterministic"
-    assert f"system-image:{project['id']}" in restored_goal.target_refs
+    assert restored_goal.target_refs == candidate["target_refs"]
+    assert restored_goal.status == "paused"
 
 
 def test_system_image_agent_goal_lifecycle_is_audited_end_to_end():
-    project = client.post("/v1/projects", json={"name": "Audited System Image"}).json()
+    from apps.api.app.infrastructure.persistence.image_revision_models import ImageAssertionMemberRecord
+    from apps.api.app.infrastructure.persistence.link_decision_models import LinkDecisionRecord
+
+    registered = client.post("/v1/auth/register", json={"name": "Image reviewer",
+        "email": f"image-reviewer-{uuid4().hex}@example.com", "password": "strong-password-123"})
+    assert registered.status_code == 200, registered.text
+    account = registered.json()
+    headers = {"Authorization": f"Bearer {account['access_token']}"}
+    with SessionLocal() as session:
+        assert session.get(UserIdentityRecord, account["user"]["id"]).status == "active"
+    project = client.post("/v1/projects", headers=headers, json={"name": "Audited System Image"}).json()
     code_dir, us_dir, tests_dir = create_system_image_source_dirs("nasus-audited-system-image-")
+    (tests_dir / "TC-001.md").write_text(
+        "# TC-001 Checkout validation\nReferences: US-001\n"
+        "Preconditions: A buyer has a populated cart\n"
+        "Steps: Submit checkout\nExpected result: Checkout completes\n",
+        encoding="utf-8",
+    )
     conversation = client.post(
         "/v1/conversations",
+        headers=headers,
         json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
-    response = client.post(
+    capture_pinned_image_sources(project["id"], conversation["id"], (code_dir, us_dir, tests_dir), headers=headers)
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
-        json={
-            "content": (
-                "Build the official system image with "
-                f"{system_image_source_prompt(code_dir, us_dir, tests_dir)}"
-            )
-        },
+        headers=headers,
+        json={"content": "Build the official system image from code, US docs, and tests"},
     )
 
     assert response.status_code == 200
     goal_id = response.json()["agent_goal"]["id"]
-    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
+    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}", headers=headers).json()["agent_goals"][-1]["status"] == "paused")
 
     paused_audit = client.get(f"/v1/audit-events?agent_goal_id={goal_id}")
     assert paused_audit.status_code == 200
@@ -4067,17 +4422,57 @@ def test_system_image_agent_goal_lifecycle_is_audited_end_to_end():
         for event in paused_audit.json()
     )
 
-    resume = client.post(f"/v1/agent-goals/{goal_id}/resume")
-    assert resume.status_code == 200
-    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "completed")
+    goal = client.get(f"/v1/agent-goals/{goal_id}", headers=headers).json()
+    candidate = resume_pinned_image_goal(goal, headers=headers)
+    require_unpublished_image_candidate(project["id"], candidate, headers=headers)
+    investigation_gate = resume_pinned_image_goal(candidate, headers=headers)
+    assert investigation_gate["pause_reason"] == "waiting_confirmation"
+    reference_gate = resume_pinned_image_goal(investigation_gate, headers=headers)
+    assert reference_gate["status"] == "paused" and reference_gate["pause_reason"] == "reference_candidate_review"
+    proposal_step = next(step for step in reference_gate["steps"]
+        if step["selected_tool_id"] == "system_image.links.propose_references")
+    proposal_command = store.get_tool_invocation(proposal_step["tool_invocation_id"])
+    assert proposal_step["status"] == "blocked" and proposal_command.status == "completed"
+    assert proposal_command.input_payload["agent_goal_id"] == goal_id
+    assert len(proposal_command.result.object_refs) == 1
+    proposal_id = proposal_command.result.object_refs[0].removeprefix("image_reference_proposal:")
+    reference_url = f"/v1/projects/{project['id']}/system-image/reference-proposals/{proposal_id}"
+    before_read = client.get(reference_url, headers=headers)
+    assert before_read.status_code == 200, before_read.text
+    proposal = before_read.json()
+    assert proposal["assertion_count"] == 1 and proposal["publication"] == "not_in_image_membership"
+    assert proposal["items"][0]["reference_id"] == "US-001"
+    assert proposal["items"][0]["status"] == "proposed"
+    assert proposal["items"][0]["subject_evidence_ids"] and proposal["items"][0]["object_evidence_ids"]
+
+    reviewed = resume_pinned_image_goal(reference_gate, headers=headers)
+    assert reviewed["pause_reason"] == "build_completion_review", json.dumps({
+        "status": reviewed["status"], "pause_reason": reviewed["pause_reason"],
+        "failed_steps": [{key: step.get(key) for key in ("selected_tool_id", "status", "observation_summary", "decision_rationale")}
+            for step in reviewed["steps"] if step["decision"] == "fail"],
+    })
+    investigation_step = next(step for step in reviewed["steps"] if step["selected_tool_id"] == "system_image.build.investigate")
+    investigation_command = store.get_tool_invocation(investigation_step["tool_invocation_id"])
+    assert investigation_command.input_payload["confirmed_actor_id"] == account["user"]["id"]
+    assert investigation_command.result.investigation is not None
+    assert proposal_command.input_payload["image_revision_id"] == investigation_command.input_payload["image_revision_id"]
+    reads = [step for step in reviewed["steps"] if step["selected_tool_id"] == "query.system_image.references.read"]
+    assert [step["tool_input_payload"]["section"] for step in reads] == ["assertions", "gaps"]
+    assert all(step["status"] == "completed" and step["tool_input_payload"]["proposal_id"] == proposal_id for step in reads)
+    assert resume_pinned_image_goal(reference_gate, headers=headers) == reviewed
+    assert resume_pinned_image_goal(reviewed, headers=headers) == reviewed
+    assert client.get(reference_url, headers=headers).json() == proposal
+    with SessionLocal() as session:
+        assert session.scalar(select(LinkDecisionRecord).where(LinkDecisionRecord.project_id == project["id"])) is None
+        assert session.scalar(select(ImageAssertionMemberRecord).where(ImageAssertionMemberRecord.project_id == project["id"])) is None
+    assert client.get(f"/v1/projects/{project['id']}/system-image", headers=headers).json()["project"]["system_image_status"] != "ready"
 
     completed_audit = client.get(f"/v1/audit-events?agent_goal_id={goal_id}").json()
     completed_actions = {event["action"] for event in completed_audit}
-    assert {"agent.goal.resume_requested", "agent.goal.resumed", "agent.goal.completed"}.issubset(completed_actions)
-    assert any(
-        event["action"] == "agent.goal.completed" and event["metadata"]["steps_completed"] >= 1
-        for event in completed_audit
-    )
+    assert {"agent.goal.resume_requested", "agent.goal.resumed", "agent.goal.paused"}.issubset(completed_actions)
+    assert "agent.goal.completed" not in completed_actions
+    assert all(event["agent_goal_id"] == goal_id for event in completed_audit)
+    assert reviewed["id"] == reference_gate["id"] == candidate["id"] == goal_id
 
 
 def test_agent_goal_budget_exhaustion_pauses_before_extra_tool_calls():
@@ -4439,7 +4834,7 @@ def test_system_image_agent_replans_remaining_steps_after_partial_tool_plan():
     )
     assert f"agent_memory:{memory_item.id}" in recalled_memory.retrieved_context_refs
 
-    followup = client.post(
+    followup = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "What did the previous system image agent complete?"},
     )
@@ -4519,7 +4914,8 @@ def test_under_specified_system_image_goal_replans_after_source_binding_followup
     assert all(source["ingestion_status"] == "indexed" for source in image["sources"])
 
 
-def test_project_conversation_binds_explicit_system_image_sources_from_natural_language():
+def test_legacy_ingestion_swarm_remains_persistent_but_path_text_cannot_start_it():
+    from apps.api.app.domain.agent.runtime_models import AgentGoalProposal
     project = client.post("/v1/projects", json={"name": "Conversation Bound Sources"}).json()
     source_root = Path(tempfile.mkdtemp(prefix="nasus-conversation-sources-"))
     code_dir = source_root / "code"
@@ -4536,7 +4932,7 @@ def test_project_conversation_binds_explicit_system_image_sources_from_natural_l
         json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={
             "content": (
@@ -4546,6 +4942,17 @@ def test_project_conversation_binds_explicit_system_image_sources_from_natural_l
         },
     )
     assert response.status_code == 200
+    assert response.json()["clarification"]["reason"] == "system_image_build_preparation"
+    assert client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"] == []
+    # Explicit compatibility setup retains the old swarm contract. Production
+    # chat does not admit paths or bypass the new pinned-source build flow.
+    proposal = AgentGoalProposal(goal_template="system_image_build", title="Legacy ingestion compatibility",
+        summary="Check the retained source-ingestion swarm", goal_description="Verify explicitly supplied legacy ingestion sources.",
+        initial_tool_id="system_image.sources.register",
+        initial_tool_input={"project_id": project["id"],
+            "source_specs": [{"source_type": kind, "source_uri": str(path)} for kind, path in
+                zip(("code", "us_doc", "test_asset"), (code_dir, us_dir, tests_dir))]})
+    asyncio.run(store.agent_loop_runtime.start_goal(conversation["id"], proposal))
     wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
     goal = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
     register_step = next(step for step in goal["steps"] if step["selected_tool_id"] == "system_image.sources.register")
@@ -4580,7 +4987,9 @@ def test_project_conversation_binds_explicit_system_image_sources_from_natural_l
     }
     swarm_updates = [
         event
-        for event in store.event_queues[conversation["id"]]._queue
+        for event in EventOutboxRepository().list_after(
+            stream_kind="conversation", stream_id=conversation["id"], after_event_id=None
+        )
         if event.event_type == "agent.swarm.updated" and event.swarm_run_id == swarm.id
     ]
     assert swarm_updates
@@ -4624,14 +5033,10 @@ def test_agent_goal_tool_invocations_are_queryable_as_system_image_execution_tra
         json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
-    response = client.post(
+    capture_pinned_image_sources(project["id"], conversation["id"], (code_dir, us_dir, tests_dir))
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
-        json={
-            "content": (
-                "Build the official system image with "
-                f"{system_image_source_prompt(code_dir, us_dir, tests_dir)}"
-            )
-        },
+        json={"content": "Build the official system image from code, US docs, and tests"},
     )
 
     assert response.status_code == 200
@@ -4640,26 +5045,24 @@ def test_agent_goal_tool_invocations_are_queryable_as_system_image_execution_tra
 
     paused_trace = client.get(f"/v1/tool-invocations?agent_goal_id={goal_id}").json()
     assert [item["tool_id"] for item in paused_trace] == [
-        "system_image.sources.register",
-        "system_image.sources.ingest",
-        "system_image.context.materialize",
-        "system_image.baseline.initialize",
+        "system_image.build.plan",
+        "query.system_image.build_plans.read",
+        "system_image.build.authorize",
     ]
     assert all(item["conversation_id"] == conversation["id"] for item in paused_trace)
     assert all(item["initiator_actor"] == "agent" for item in paused_trace)
     assert all(item["initiator_surface"] == "agent_loop" for item in paused_trace)
     assert any(item["status"] == "waiting_confirmation" for item in paused_trace)
 
-    completed = client.post(f"/v1/agent-goals/{goal_id}/resume")
-    assert completed.status_code == 200
-    wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "completed")
+    candidate = resume_pinned_image_goal(client.get(f"/v1/agent-goals/{goal_id}").json())
+    require_unpublished_image_candidate(project["id"], candidate)
 
-    completed_trace = client.get(f"/v1/tool-invocations?conversation_id={conversation['id']}&status=completed").json()
+    completed_trace = client.get(f"/v1/tool-invocations?conversation_id={conversation['id']}&agent_goal_id={goal_id}&status=completed").json()
     assert [item["tool_id"] for item in completed_trace] == [
-        "system_image.sources.register",
-        "system_image.sources.ingest",
-        "system_image.context.materialize",
-        "system_image.baseline.initialize",
+        "system_image.build.plan",
+        "query.system_image.build_plans.read",
+        "system_image.build.authorize",
+        "system_image.build.structure",
     ]
     assert all(item["result"] and item["result"]["summary"] for item in completed_trace)
 
@@ -4671,7 +5074,7 @@ def test_agent_service_keeps_single_active_goal_per_conversation():
         json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
-    created = client.post(
+    created = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "Initialize the official system image from code, US docs, and tests"},
     )
@@ -4679,9 +5082,9 @@ def test_agent_service_keeps_single_active_goal_per_conversation():
     wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
     first_goal = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
 
-    duplicate = client.post(
+    duplicate = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
-        json={"content": "Build the official system image again before the first one completes"},
+        json={"content": "Build the system image"},
     )
     assert duplicate.status_code == 200
     assert duplicate.json()["agent_goal"]["id"] == first_goal["id"]
@@ -4714,7 +5117,7 @@ def test_development_live_planner_provider_failure_falls_back_to_deterministic_w
             raise RuntimeError("planner provider unavailable")
 
         with patch.object(store.llm, "_call_custom", new=failing_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": "Help me create a new project called Deterministic Planner Guard"},
             )
@@ -4758,7 +5161,7 @@ def test_production_planner_provider_failure_blocks_deterministic_write_plan():
             patch.object(store.planner, "allow_deterministic_write_fallback", False),
             patch.object(store.llm, "_call_custom", new=failing_call_custom),
         ):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": f"Help me create a new project called {project_name}"},
             )
@@ -4779,7 +5182,7 @@ def test_production_planner_provider_failure_blocks_deterministic_write_plan():
         restore_model_route(original, "chat")
 
 
-def test_production_canonical_ui_action_requires_explicit_action_id():
+def test_production_canonical_ui_and_direct_build_request_share_the_same_pinned_goal():
     original = client.get("/v1/settings").json()
     project = client.post(
         "/v1/projects",
@@ -4815,11 +5218,11 @@ def test_production_canonical_ui_action_requires_explicit_action_id():
             patch.object(store.planner, "allow_deterministic_write_fallback", False),
             patch.object(store.llm, "_call_custom", new=failing_call_custom),
         ):
-            plain_chat = client.post(
+            plain_chat = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": command},
             )
-            canonical_action = client.post(
+            canonical_action = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={
                     "content": command,
@@ -4828,13 +5231,13 @@ def test_production_canonical_ui_action_requires_explicit_action_id():
             )
 
         assert plain_chat.status_code == 200
-        assert plain_chat.json()["clarification"]["reason"] == (
-            "planner_provider_unavailable:provider_fallback"
-        )
+        assert plain_chat.json()["agent_goal"]["pause_reason"] == "missing_captured_code"
         assert canonical_action.status_code == 200
         assert canonical_action.json()["agent_goal"]["goal_template"] == (
             "system_image_build"
         )
+        assert canonical_action.json()["agent_goal"]["id"] == plain_chat.json()["agent_goal"]["id"]
+        assert canonical_action.json()["agent_goal"]["model_calls_used"] == 0
         detail = client.get(f"/v1/conversations/{conversation['id']}").json()
         canonical_messages = [
             message
@@ -4889,7 +5292,7 @@ def test_live_llm_structured_planner_can_drive_open_build_goal():
             )
 
         with patch.object(store.llm, "_call_custom", new=fake_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": "Launch an assurance workspace for enterprise checkout"},
             )
@@ -4965,7 +5368,7 @@ def test_live_llm_planner_can_drive_quality_domain_tools_with_bound_workspace_sc
             )
 
         with patch.object(store.llm, "_call_custom", new=fake_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": "Prepare this US for governed quality work and refresh its assets"},
             )
@@ -5093,7 +5496,7 @@ def test_live_agent_replans_remaining_quality_steps_after_observation():
             )
 
         with patch.object(store.llm, "_call_custom", new=fake_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": "Prepare this US and adapt the plan after each result"},
             )
@@ -5195,7 +5598,7 @@ def test_live_agent_replan_cannot_complete_quality_goal_before_release_assessmen
             )
 
         with patch.object(store.llm, "_call_custom", new=fake_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": "Complete this quality goal without skipping release assessment"},
             )
@@ -5354,7 +5757,7 @@ def test_live_llm_planner_can_execute_multi_tool_read_plan_without_agent_goal():
             )
 
         with patch.object(store.llm, "_call_custom", new=fake_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": "Compare project progress with system image readiness"},
             )
@@ -5424,7 +5827,7 @@ def test_live_llm_planner_rejects_cross_project_tool_scope_before_invocation():
             for invocation in store.conversation_repository.load_tool_invocations()
         }
         with patch.object(store.llm, "_call_custom", new=fake_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": "Assess the release status in another project"},
             )
@@ -5488,7 +5891,7 @@ def test_live_llm_planner_requests_missing_execution_target_before_starting_goal
             for invocation in store.conversation_repository.load_tool_invocations()
         }
         with patch.object(store.llm, "_call_custom", new=fake_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": "Run the generated automation"},
             )
@@ -5542,7 +5945,7 @@ def test_live_llm_planned_high_risk_action_still_pauses_at_governance_gate():
             )
 
         with patch.object(store.llm, "_call_custom", new=fake_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": "Prepare a formal release approval request"},
             )
@@ -5599,33 +6002,28 @@ def test_project_conversation_confirmation_message_resumes_paused_system_image_g
         json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
-    response = client.post(
+    capture_pinned_image_sources(project["id"], conversation["id"], (code_dir, us_dir, tests_dir))
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
-        json={
-            "content": (
-                "Initialize the system image with "
-                f"{system_image_source_prompt(code_dir, us_dir, tests_dir)}"
-            )
-        },
+        json={"content": "Initialize the system image from code, US docs, and test assets"},
     )
     assert response.status_code == 200
     wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
 
-    confirmation = client.post(
+    confirmation = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "确认，继续执行"},
     )
     assert confirmation.status_code == 200
     body = confirmation.json()
-    assert body["agent_goal"]["status"] == "completed"
+    assert body["agent_goal"]["id"] == response.json()["agent_goal"]["id"]
+    require_unpublished_image_candidate(project["id"], body["agent_goal"])
     assert body["tool_invocation"]["status"] == "completed"
-
-    image = client.get(f"/v1/projects/{project['id']}/system-image").json()
-    assert image["project"]["system_image_status"] == "ready"
-    assert all(source["ingestion_status"] == "indexed" for source in image["sources"])
+    assert body["tool_invocation"]["tool_id"] == "system_image.build.authorize"
 
 
 def test_paused_system_image_agent_goal_can_resume_after_store_restart():
+    from apps.api.app.domain.agent.resume_checkpoint import AgentResumeCheckpoint, InvalidAgentResumeCheckpoint
     project = client.post("/v1/projects", json={"name": "Restartable System Image"}).json()
     code_dir, us_dir, tests_dir = create_system_image_source_dirs("nasus-restartable-system-image-")
     conversation = client.post(
@@ -5633,14 +6031,10 @@ def test_paused_system_image_agent_goal_can_resume_after_store_restart():
         json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
-    response = client.post(
+    capture_pinned_image_sources(project["id"], conversation["id"], (code_dir, us_dir, tests_dir))
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
-        json={
-            "content": (
-                "Build the system image from source evidence with "
-                f"{system_image_source_prompt(code_dir, us_dir, tests_dir)}"
-            )
-        },
+        json={"content": "Build the system image from code, US docs, and tests"},
     )
     assert response.status_code == 200
     wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
@@ -5660,14 +6054,19 @@ def test_paused_system_image_agent_goal_can_resume_after_store_restart():
     assert restored_checkpoint.blocked_tool_invocation_id == checkpoint["blocked_tool_invocation_id"]
     assert restored_checkpoint.resume_step_index == checkpoint["resume_step_index"]
 
-    resumed = asyncio.run(restored_store.resume_agent_goal(paused_goal["id"]))
-    assert resumed.status == "completed"
+    with pytest.raises(InvalidAgentResumeCheckpoint):
+        asyncio.run(restored_store.resume_agent_goal(paused_goal["id"]))
+    resumed = asyncio.run(restored_store.agent_service.resume_goal(paused_goal["id"],
+        expected_resume=AgentResumeCheckpoint.capture(paused_goal)))
+    require_unpublished_image_candidate(project["id"], resumed.model_dump(mode="json"))
+    assert resumed.workflow_id == paused_goal["workflow_id"]
     image = restored_store.get_system_image(project["id"])
-    assert image.project.system_image_status == "ready"
+    assert image.project.system_image_status != "ready"
     assert all(source.ingestion_status == "indexed" for source in image.sources)
 
 
-def test_missing_source_binding_agent_goal_can_resume_after_store_restart():
+def test_missing_captured_code_goal_can_resume_after_store_restart():
+    from apps.api.app.domain.agent.resume_checkpoint import AgentResumeCheckpoint
     project = client.post("/v1/projects", json={"name": "Restartable Source Binding"}).json()
     code_dir, us_dir, tests_dir = create_system_image_source_dirs("nasus-restartable-source-binding-")
     conversation = client.post(
@@ -5675,43 +6074,44 @@ def test_missing_source_binding_agent_goal_can_resume_after_store_restart():
         json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "Build the official system image from code, US docs, and tests"},
     )
     assert response.status_code == 200
     wait_until(lambda: client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]["status"] == "paused")
     paused_goal = client.get(f"/v1/conversations/{conversation['id']}").json()["agent_goals"][-1]
-    assert paused_goal["pause_reason"] == "missing_source_binding"
+    assert paused_goal["pause_reason"] == "missing_captured_code"
     checkpoint = client.get(f"/v1/agent-goals/{paused_goal['id']}/checkpoint").json()
-    blocked_invocation_id = checkpoint["blocked_tool_invocation_id"]
-    assert blocked_invocation_id
+    assert checkpoint["status"] == "paused"
+    status_step = next(step for step in paused_goal["steps"] if step["selected_tool_id"] == "query.system_image.status")
+    original_invocation_id = status_step["tool_invocation_id"]
+    assert original_invocation_id
 
     restored_store = InMemoryStore()
     restored_goal = restored_store.get_agent_goal(paused_goal["id"])
     assert restored_goal.status == "paused"
-    assert restored_goal.pause_reason == "missing_source_binding"
-    restored_invocation = restored_store.get_tool_invocation(blocked_invocation_id)
+    assert restored_goal.pause_reason == "missing_captured_code"
+    restored_invocation = restored_store.get_tool_invocation(original_invocation_id)
     assert restored_invocation.result is not None
-    assert restored_invocation.result.requires_followup is True
-    assert restored_invocation.result.followup_reason == "missing_source_binding"
+    assert restored_invocation.status == restored_invocation.result.status == "completed"
+    assert restored_invocation.result.requires_followup is False
+    assert restored_invocation.result.followup_reason is None
 
+    capture_pinned_image_sources(project["id"], conversation["id"], (code_dir, us_dir, tests_dir))
     resumed_after_source = asyncio.run(
-        restored_store.handle_message(
-            conversation["id"],
-            system_image_source_prompt(code_dir, us_dir, tests_dir),
-        )
+        restored_store.agent_service.resume_goal(paused_goal["id"], expected_resume=AgentResumeCheckpoint.capture(paused_goal))
     )
-    assert resumed_after_source["agent_goal"].id == paused_goal["id"]
-    assert resumed_after_source["agent_goal"].status == "paused"
-    assert resumed_after_source["agent_goal"].pause_reason == "waiting_confirmation"
-    restored_with_sources = restored_store.get_system_image(project["id"])
-    assert all(source.ingestion_status == "indexed" for source in restored_with_sources.sources)
+    assert resumed_after_source.id == paused_goal["id"]
+    assert resumed_after_source.status == "paused"
+    assert resumed_after_source.pause_reason == "waiting_confirmation"
+    assert next(step for step in resumed_after_source.steps if step.selected_tool_id == "query.system_image.status").tool_invocation_id == original_invocation_id
 
-    completed = asyncio.run(restored_store.resume_agent_goal(paused_goal["id"]))
-    assert completed.status == "completed"
+    candidate = asyncio.run(restored_store.agent_service.resume_goal(paused_goal["id"],
+        expected_resume=AgentResumeCheckpoint.capture(resumed_after_source.model_dump(mode="json"))))
+    require_unpublished_image_candidate(project["id"], candidate.model_dump(mode="json"))
     image = restored_store.get_system_image(project["id"])
-    assert image.project.system_image_status == "ready"
+    assert image.project.system_image_status != "ready"
 
 
 def test_project_conversation_routes_system_image_query_to_canonical_tool():
@@ -5720,7 +6120,7 @@ def test_project_conversation_routes_system_image_query_to_canonical_tool():
         json={"space_type": "project", "space_id": "proj_payment", "title": "Payment System"},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "Show me the current system image freshness and baseline status"},
     )
@@ -5772,7 +6172,7 @@ def test_workspace_message_generates_agent_goal():
         json={"space_type": "workspace", "space_id": us_id, "title": f"{us_id} Workspace"},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "Generate scenarios for this US"},
     )
@@ -5796,7 +6196,7 @@ def test_workspace_quality_loop_request_creates_agent_goal_proposal_and_runtime_
         json={"space_type": "workspace", "space_id": us_id, "title": f"{us_id} Workspace"},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "Help me complete the quality loop for this US"},
     )
@@ -5962,7 +6362,7 @@ def test_quality_loop_continue_starts_from_first_incomplete_asset_lane():
             "title": f"{us_id} Workspace",
         },
     ).json()
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{workspace_conversation['id']}/messages",
         json={
             "content": (
@@ -6018,7 +6418,7 @@ def test_quality_execution_clarification_resumes_when_user_supplies_target_url()
             "title": f"{us_id} Workspace",
         },
     ).json()
-    clarification = client.post(
+    clarification = post_conversation_message(
         f"/v1/conversations/{workspace_conversation['id']}/messages",
         json={"content": "Run the automation now"},
     )
@@ -6028,7 +6428,7 @@ def test_quality_execution_clarification_resumes_when_user_supplies_target_url()
     assert clarification.json()["clarification"]["missing_context"] == ["base_url"]
     assert client.get(f"/v1/projects/{project['id']}/runs").json() == []
 
-    resumed = client.post(
+    resumed = post_conversation_message(
         f"/v1/conversations/{workspace_conversation['id']}/messages",
         json={"content": TEST_TARGET_BASE_URL},
     )
@@ -6056,7 +6456,7 @@ def test_project_quality_loop_request_selects_first_us_and_completes_release_ass
         json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={
             "content": (
@@ -6073,19 +6473,19 @@ def test_project_quality_loop_request_selects_first_us_and_completes_release_ass
         current_workspace = client.get(f"/v1/projects/{project['id']}/workspaces/{us_id}").json()
         lanes = {lane["label"]: lane for lane in current_workspace["asset_lanes"]}
         return (
-            lanes.get("Scenarios", {}).get("status") == "approved"
-            and lanes.get("Cases", {}).get("status") == "approved"
+            lanes.get("Scenarios", {}).get("status") == "ready_for_review"
+            and lanes.get("Cases", {}).get("status") == "ready_for_review"
             and lanes.get("Automation", {}).get("status") == "completed"
-            and lanes.get("Release Assessment", {}).get("status") == "completed"
+            and lanes.get("Release Assessment", {}).get("status") == "blocked"
             and bool(current_workspace["runs"])
         )
 
     wait_until(quality_loop_completed, timeout=3)
     completed_workspace = client.get(f"/v1/projects/{project['id']}").json()
-    assert completed_workspace["quality_loop_state"]["status"] == "ready_for_release"
-    assert completed_workspace["quality_loop_state"]["stage_index"] == completed_workspace["quality_loop_state"]["stage_total"]
-    assert completed_workspace["quality_loop_state"]["release_score"] >= 80
-    assert completed_workspace["quality_asset_pack"]["status"] == "completed"
+    assert completed_workspace["quality_loop_state"]["status"] == "blocked"
+    assert completed_workspace["quality_loop_state"]["stage_index"] == 1
+    assert completed_workspace["quality_loop_state"]["release_score"] <= 59
+    assert completed_workspace["quality_asset_pack"]["status"] == "blocked"
     assert {
         part["part_type"]
         for part in completed_workspace["quality_asset_pack"]["parts"]
@@ -6118,6 +6518,7 @@ def test_project_quality_loop_request_selects_first_us_and_completes_release_ass
     assert generated_parts["verification_plan"]["generation"]["prompt_id"] == "quality.plan.generate"
     assert generated_parts["change_document"]["generation"]["prompt_id"] == "quality.change-doc.generate"
     assert generated_parts["scenario_set"]["generation"]["mode"] in {"live", "fallback"}
+    assert all(part["status"] == "ready_for_review" for part in generated_parts.values())
     assert completed_workspace["execution_evidence"]
     assert all(item["content_hash"].startswith("sha256:") for item in completed_workspace["execution_evidence"])
     assert all(
@@ -6126,8 +6527,8 @@ def test_project_quality_loop_request_selects_first_us_and_completes_release_ass
     )
     assert completed_workspace["release_decision"] is None
     release = client.get(f"/v1/projects/{project['id']}/release-readiness").json()
-    assert release["status"] == "Ready for release review"
-    assert release["score"] >= 80
+    assert release["status"] == "Needs additional release evidence"
+    assert_unknown_inventory_blocks_release(release)
 
     image = client.get(f"/v1/projects/{project['id']}/system-image").json()
     quality_loop_metrics = [
@@ -6166,7 +6567,8 @@ def test_project_quality_loop_request_selects_first_us_and_completes_release_ass
     )
     restored_workspace = restored_store.get_project_workspace(project["id"])
     assert restored_workspace.quality_asset_pack is not None
-    assert restored_workspace.quality_asset_pack.status == "completed"
+    assert restored_workspace.quality_asset_pack.status == "blocked"
+    assert restored_workspace.quality_loop_state.status == "blocked"
     assert restored_workspace.execution_evidence
     assert restored_workspace.release_decision is None
 
@@ -6179,7 +6581,7 @@ def test_full_quality_loop_prompt_mentions_release_without_skipping_assets():
         json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={
             "content": (
@@ -6191,7 +6593,11 @@ def test_full_quality_loop_prompt_mentions_release_without_skipping_assets():
 
     assert response.status_code == 200
     goal_id = response.json()["agent_goal"]["id"]
-    wait_until(lambda: len(client.get(f"/v1/tool-invocations?agent_goal_id={goal_id}").json()) >= 8)
+    def assessed_trace():
+        current = client.get(f"/v1/tool-invocations?agent_goal_id={goal_id}").json()
+        return len(current) == 8 and all(item["status"] == "completed" for item in current)
+
+    wait_until(assessed_trace)
     trace = client.get(f"/v1/tool-invocations?agent_goal_id={goal_id}").json()
     assert [item["tool_id"] for item in trace] == [
         "quality.scope.generate",
@@ -6204,7 +6610,9 @@ def test_full_quality_loop_prompt_mentions_release_without_skipping_assets():
         "release.assess",
     ]
     completed_workspace = client.get(f"/v1/projects/{project['id']}/workspaces/{us_id}").json()
-    assert completed_workspace["quality_loop_state"]["status"] == "ready_for_release"
+    assert completed_workspace["quality_loop_state"]["status"] == "blocked"
+    release = client.get(f"/v1/projects/{project['id']}/release-readiness").json()
+    assert_unknown_inventory_blocks_release(release)
 
 
 def test_project_workspace_selects_latest_quality_context_us():
@@ -6271,16 +6679,17 @@ def test_project_workspace_selects_latest_quality_context_us():
         assert response.json()["status"] == "completed"
 
     project_workspace = client.get(f"/v1/projects/{project['id']}").json()
-    assert project_workspace["quality_loop_state"]["status"] == "ready_for_release"
+    assert project_workspace["quality_loop_state"]["status"] == "blocked"
     assert project_workspace["quality_asset_pack"]["us_id"] == second_us_id
+    assert project_workspace["task_context"]["us_id"] == second_us_id
     assert project_workspace["release_decision"] is None
     assert {lane["label"]: lane["status"] for lane in project_workspace["asset_lanes"]} == {
-        "Scenarios": "approved",
-        "Verification Plan": "approved",
-        "Cases": "approved",
+        "Scenarios": "ready_for_review",
+        "Verification Plan": "ready_for_review",
+        "Cases": "ready_for_review",
         "Automation": "completed",
-        "Change Document": "completed",
-        "Release Assessment": "completed",
+        "Change Document": "ready_for_review",
+        "Release Assessment": "blocked",
     }
 
 
@@ -6388,7 +6797,8 @@ def test_run_start_failed_runner_result_creates_report_and_blocks_release():
 
     release = client.get(f"/v1/projects/{project['id']}/release-readiness").json()
     assert release["status"] == "Blocked by failure analysis"
-    assert release["blockers"] == 1
+    assert release["blockers"] == 2
+    assert_unknown_inventory_blocks_release(release)
     assert release["score"] <= 59
     assert release["evidence_summary"]["open_failures"] == 1
     assert release["evidence_summary"]["passed_runs"] == 0
@@ -6701,7 +7111,8 @@ def test_failed_run_creates_failure_report_and_falls_back_to_human_after_healing
     assert completed_workspace["release_decision"] is None
     release = client.get(f"/v1/projects/{project['id']}/release-readiness").json()
     assert release["status"] == "Blocked by failure analysis"
-    assert release["blockers"] == 1
+    assert release["blockers"] == 2
+    assert_unknown_inventory_blocks_release(release)
 
     run_detail = client.get(f"/v1/projects/{project['id']}/runs/{run.id}").json()
     assert run_detail["healing_status"] == "fallback_to_human"
@@ -6763,7 +7174,7 @@ def test_workspace_asset_lane_updates_are_persisted_across_store_restart():
         json={"space_type": "workspace", "space_id": us_id, "title": f"{us_id} Workspace"},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={
             "content": (
@@ -6776,7 +7187,7 @@ def test_workspace_asset_lane_updates_are_persisted_across_store_restart():
     def release_lane_persisted() -> bool:
         current_workspace = client.get(f"/v1/projects/{project['id']}/workspaces/{us_id}").json()
         release = next((lane for lane in current_workspace["asset_lanes"] if lane["label"] == "Release Assessment"), None)
-        return release is not None and release["status"] == "completed"
+        return release is not None and release["status"] == "blocked"
 
     wait_until(release_lane_persisted, timeout=6)
 
@@ -6788,11 +7199,16 @@ def test_workspace_asset_lane_updates_are_persisted_across_store_restart():
     cases = next(lane for lane in restored_lanes if lane.label == "Cases")
     automation = next(lane for lane in restored_lanes if lane.label == "Automation")
     release = next(lane for lane in restored_lanes if lane.label == "Release Assessment")
-    assert scenarios.status == "approved"
+    assert scenarios.status == "ready_for_review"
     assert "risk-based test scenarios" in scenarios.summary
-    assert cases.status == "approved"
+    assert cases.status == "ready_for_review"
     assert automation.status == "completed"
-    assert release.status == "completed"
+    assert release.status == "blocked"
+    restored_workspace = restored_store.get_project_workspace(project["id"])
+    assert restored_workspace.quality_loop_state.status == "blocked"
+    assert any("quality assessment is unknown" in item
+        for item in restored_workspace.quality_loop_state.blockers)
+    assert restored_workspace.release_decision is None
 
 
 def test_project_message_can_create_version():
@@ -6802,7 +7218,7 @@ def test_project_message_can_create_version():
         json={"space_type": "project", "space_id": project["id"], "title": "Project Overview"},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": 'Create version branch "2026.Q3" for this project'},
     )
@@ -6823,7 +7239,7 @@ def test_dashboard_message_returns_portfolio_summary():
         json={"space_type": "dashboard", "space_id": "dashboard", "title": "Dashboard"},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "Show me the current testing progress across the portfolio"},
     )
@@ -6840,7 +7256,7 @@ def test_dashboard_query_routes_through_query_tool_plan():
         json={"space_type": "dashboard", "space_id": "dashboard", "title": "Dashboard"},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "What is the current testing progress across the portfolio?"},
     )
@@ -6856,7 +7272,7 @@ def test_workspace_status_query_routes_through_workspace_query_tool():
         json={"space_type": "workspace", "space_id": "us_123", "title": "US-123 Workspace"},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "What is the current workspace status?"},
     )
@@ -6872,7 +7288,7 @@ def test_direct_conversation_answer_is_persisted_as_query_answer_tool_invocation
         json={"space_type": "build", "space_id": "build", "title": "Build"},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "Hello Nasus"},
     )
@@ -6908,7 +7324,7 @@ def test_dashboard_message_uses_current_model_preset_metadata():
             json={"space_type": "dashboard", "space_id": "dashboard", "title": "Dashboard"},
         ).json()
 
-        response = client.post(
+        response = post_conversation_message(
             f"/v1/conversations/{conversation['id']}/messages",
             json={"content": "Show me the current testing progress across the portfolio"},
         )
@@ -6930,7 +7346,7 @@ def test_conversation_can_be_archived_and_searched():
         json={"space_type": "dashboard", "space_id": "dashboard", "title": "Delivery Watch"},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "Show me the riskiest project and blocked versions"},
     )
@@ -6958,7 +7374,7 @@ def test_conversation_merge_moves_messages_into_target():
         json={"space_type": "workspace", "space_id": "us_123", "title": "Checkout Workspace"},
     ).json()
 
-    post_source = client.post(
+    post_source = post_conversation_message(
         f"/v1/conversations/{source['id']}/messages",
         json={"content": "What is the current workspace status for refund status timeline?"},
     )
@@ -6999,7 +7415,7 @@ def test_conversation_messages_are_persisted_across_store_restart():
         json={"space_type": "dashboard", "space_id": "dashboard", "title": "Dashboard"},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "Show me the current testing progress across the portfolio"},
     )
@@ -7045,7 +7461,7 @@ def test_conversation_summary_checkpoint_is_created_and_persisted():
         "Give me a concise delivery recommendation",
     ]
     for prompt in prompts:
-        response = client.post(
+        response = post_conversation_message(
             f"/v1/conversations/{conversation['id']}/messages",
             json={"content": prompt},
         )
@@ -7077,7 +7493,7 @@ def test_agent_memory_checkpoint_can_be_created_explicitly_for_system_image_goal
         json={"space_type": "project", "space_id": project["id"], "title": project["name"]},
     ).json()
 
-    response = client.post(
+    response = post_conversation_message(
         f"/v1/conversations/{conversation['id']}/messages",
         json={"content": "Build the official system image from code, US docs, and tests"},
     )
@@ -7125,7 +7541,7 @@ def test_llm_generate_reply_receives_conversation_history_snapshot():
             json={"space_type": "dashboard", "space_id": "dashboard", "title": "Dashboard"},
         ).json()
 
-        first = client.post(
+        first = post_conversation_message(
             f"/v1/conversations/{conversation['id']}/messages",
             json={"content": "Show me the current testing progress across the portfolio"},
         )
@@ -7139,7 +7555,7 @@ def test_llm_generate_reply_receives_conversation_history_snapshot():
             return "Memory-aware response."
 
         with patch.object(store.llm, "_call_custom", new=fake_call_custom):
-            response = client.post(
+            response = post_conversation_message(
                 f"/v1/conversations/{conversation['id']}/messages",
                 json={"content": "Which project is riskiest right now?"},
             )

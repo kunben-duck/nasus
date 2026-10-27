@@ -1,3 +1,9 @@
+export interface KnowledgeCodeReference {
+  entity_id: string
+  entity_revision_id: string
+  source_revision_id: string
+}
+
 export interface KnowledgeObject {
   id: string
   name: string
@@ -7,6 +13,8 @@ export interface KnowledgeObject {
   relations: string[]
   evidence: string[]
   freshness: string
+  code_reference?: KnowledgeCodeReference | null
+  document_reference?: { document_revision_id: string; source_revision_id: string } | null
 }
 
 export interface ContextRelationship {

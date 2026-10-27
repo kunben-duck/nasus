@@ -8,11 +8,20 @@ const portalPort = process.env.PLAYWRIGHT_PORTAL_PORT ?? '4173'
 const apiUrl = `http://127.0.0.1:${apiPort}`
 const portalUrl = `http://127.0.0.1:${portalPort}`
 const stateDir = process.env.NASUS_E2E_STATE_DIR ?? mkdtempSync(join(tmpdir(), `nasus-playwright-${apiPort}-`))
-const databaseUrl = process.env.NASUS_E2E_DATABASE_URL ?? `sqlite+pysqlite:///${join(stateDir, 'nasus.db')}`
+const databaseUrl = process.env.NASUS_E2E_DATABASE_URL
+if (!databaseUrl || !/^postgresql(?:\+[a-z0-9_]+)?:\/\//.test(databaseUrl)) {
+  throw new Error('Browser tests require isolated PostgreSQL. Use npm run test:e2e.')
+}
+if (!new URL(databaseUrl).pathname.startsWith('/nasus_test_')) {
+  throw new Error('Browser tests must not write to a development or production database. Use npm run test:e2e.')
+}
 const adminToken = process.env.NASUS_E2E_ADMIN_TOKEN ?? 'nasus-e2e-platform-admin-token'
 
 export default defineConfig({
   testDir: './tests/e2e',
+  outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? 'test-results',
+  // Studio settings are shared by the test API; parallel theme writes race.
+  workers: 1,
   use: {
     baseURL: portalUrl,
     trace: 'retain-on-failure',

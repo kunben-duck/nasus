@@ -1,0 +1,77 @@
+.knowledge-heading > .segmented { flex-wrap: wrap; }
+.image-revision-inspector { width: min(940px, calc(100vw - 32px)); }
+.image-revision-data { margin-top: 20px; }
+.code-member-delta-panel { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 14px; min-width: 0; font-size: 12px; }
+.code-member-delta-panel p { overflow-wrap: anywhere; line-height: 1.6; }
+.code-member-delta-panel form { display: grid; gap: 10px; }
+.code-member-delta-panel label { display: grid; gap: 8px; min-width: 0; }
+.code-member-delta-panel select { width: 100%; min-width: 0; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
+.code-member-delta-panel form > button { justify-self: start; }
+.code-member-delta-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 12px; }
+.code-member-delta-counts dt { color: var(--muted); }
+.code-member-delta-counts dd { margin: 6px 0 0; font-size: 18px; }
+.image-revision-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.image-revision-tabs button[aria-pressed="true"] { background: var(--surface-3); border-color: var(--blue); }
+.image-revision-status { margin-top: 18px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; }
+.image-revision-status > span { font-size: 12px; font-weight: 500; color: var(--text); }
+.image-revision-status p { margin: 6px 0 0; font-size: 12px; }
+.image-record-navigation { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 12px; }
+.image-record-navigation > span { color: var(--muted); }
+.image-record-navigation label { display: flex; align-items: center; gap: 8px; }
+.image-record-navigation input { width: 90px; min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
+.image-revision-rows { margin: 14px 0; padding: 0; display: grid; gap: 10px; list-style: none; }
+.image-revision-rows > li { padding: 16px; min-width: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+.image-row-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.image-row-heading strong { min-width: 0; overflow-wrap: anywhere; font-size: 13px; font-weight: 500; }
+.image-row-heading > span { flex-shrink: 0; color: var(--muted); font-size: 11px; }
+.image-revision-rows .evidence-integrity-details { margin-top: 10px; }
+.image-row-evidence { margin-top: 12px; }
+.image-row-evidence > p { margin: 5px 0; font-size: 11px; }
+.image-row-evidence > button { margin-top: 6px; font-size: 12px; }
+.image-source-document { margin: 14px 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 12px; }
+.image-source-document dl { display: grid; gap: 12px; }
+.image-source-document dt { color: var(--text-muted); margin-bottom: 4px; }
+.image-source-document dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.image-frozen-evidence { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.image-evidence-location { overflow-wrap: anywhere; font: 11px monospace; }
+.image-reference-reviews { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 16px; }
+.image-reference-reviews p, .reference-decision-editor { font-size: 12px; }
+.reference-candidate-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; }
+.reference-candidate-row code, .reference-decision-row { overflow-wrap: anywhere; }
+.reference-decision-editor { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: var(--surface-2); }
+.reference-decision-row { border-top: 1px solid var(--border); padding: 12px 0; }
+.reference-decision-row p { white-space: pre-wrap; }
+.reference-decision-row small { color: var(--muted); }
+.reference-decision-editor form, .reference-decision-editor form > label { display: grid; gap: 8px; }
+.reference-decision-editor form { gap: 14px; margin-top: 16px; }
+.reference-decision-editor select, .reference-decision-editor textarea { width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 9px; background: var(--surface); color: var(--text); font: inherit; }
+.reference-decision-editor textarea { min-height: 80px; resize: vertical; }
+.reference-decision-editor form > .reference-review-confirm { display: flex; align-items: flex-start; line-height: 1.5; }
+.reference-review-confirm input { flex-shrink: 0; margin-top: 3px; }
+.freeze-reference-review { border-top: 1px solid var(--border); padding-top: 12px; }
+.freeze-reference-review code { overflow-wrap: anywhere; }
+.image-link-candidates { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 14px; }
+.image-link-candidate-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.build-completion-panel { min-width: 0; }
+.build-completion-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+.build-completion-metrics dt { color: var(--muted); font-size: 11px; }
+.build-completion-metrics dd { margin: 6px 0 0; font-size: 18px; font-weight: 500; }
+.build-completion-blocked { color: var(--text); }
+.build-completion-panel details { margin-top: 14px; font-size: 12px; }
+.build-completion-panel summary { cursor: pointer; }
+.build-completion-panel h3 { margin: 16px 0 8px; font-size: 13px; }
+.build-completion-blockers { display: grid; gap: 6px; padding-left: 18px; font-size: 11px; overflow-wrap: anywhere; }
+.build-gap-ownership { min-width: 0; }
+.build-gap-ownership p { overflow-wrap: anywhere; }
+.build-gap-ownership label { display: grid; gap: 8px; margin-top: 12px; font-size: 12px; }
+.build-gap-ownership select, .build-gap-ownership textarea { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; padding: 9px; background: var(--surface); color: var(--text); font: inherit; }
+.build-gap-ownership textarea { min-height: 72px; resize: vertical; }
+.link-candidate-list { list-style: none; display: grid; gap: 10px; padding: 0; }
+.link-candidate-list > li { min-width: 0; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.link-candidate-list strong, .link-candidate-list code { overflow-wrap: anywhere; }
+.link-candidate-list > li > span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+@media (max-width: 600px) {
+  .image-revision-inspector { width: calc(100vw - 16px); }
+  .image-row-heading { flex-direction: column; gap: 6px; }
+  .image-revision-rows > li { padding: 12px; }
+}

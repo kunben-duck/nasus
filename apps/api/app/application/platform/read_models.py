@@ -140,6 +140,9 @@ class ReadModelSummaryService:
         )
 
     def knowledge_status_summary(self, project_id: str) -> str:
+        image = self._state.get_system_image(project_id)
+        if image.visibility.mode == "source_filtered":
+            return image.summary
         project = self._state.get_project(project_id)
         summary = (
             f"{project.name} currently has an active system image and version-scoped knowledge changes awaiting promotion. "
@@ -151,6 +154,8 @@ class ReadModelSummaryService:
 
     def system_image_status_summary(self, project_id: str) -> str:
         image = self._state.get_system_image(project_id)
+        if image.visibility.mode == "source_filtered":
+            return image.summary
         indexed = sum(1 for source in image.sources if source.ingestion_status == "indexed")
         metric_groups = ", ".join(sorted({metric.metric_group for metric in image.metric_snapshots})) or "none"
         summary = (

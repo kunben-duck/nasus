@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, Sequence
+from typing import Optional, Protocol, Sequence
 
 from .system_image_models import EmbeddingRecord
+from .retrieval_scope import AuthorizedRetrievalSubjects
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,11 @@ class HybridRetrievalQuery:
     limit: int = 24
     candidate_limit: int = 72
     allow_fallback_vectors: bool = False
+    authorized_subjects: Optional[AuthorizedRetrievalSubjects] = None
+
+    def __post_init__(self) -> None:
+        if self.authorized_subjects is not None and self.authorized_subjects.project_id != self.project_id:
+            raise ValueError("retrieval access scope project mismatch")
 
 
 @dataclass(frozen=True)

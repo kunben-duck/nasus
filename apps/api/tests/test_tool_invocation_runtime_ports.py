@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 
+import pytest
+
+from apps.api.app.application.platform.errors import PlatformApplicationError
 from apps.api.app.application.platform.runtime import ToolInvocationRuntime
 from apps.api.app.application.platform.tool_handlers import (
     FunctionToolInvocationHandler,
@@ -132,6 +136,32 @@ class RuntimeEvents:
         self.updates.append(payload)
 
 
+class RuntimeReadResources:
+    def __init__(self) -> None:
+        self.allowed = True
+        self.checked: list[str] = []
+
+    def require_access(self, invocation: ToolInvocation) -> None:
+        self.checked.append(invocation.id)
+        if not self.allowed:
+            raise PlatformApplicationError("source_access_denied", "Source access was revoked.", 403)
+
+
+class RuntimeOperationScope:
+    def __init__(self):
+        self.active = 0
+        self.entries = 0
+
+    @contextmanager
+    def operation_session(self):
+        self.active += 1
+        self.entries += 1
+        try:
+            yield
+        finally:
+            self.active -= 1
+
+
 def tool_definition(*, confirmation_mode: str = "none") -> ToolDefinition:
     return ToolDefinition(
         tool_id="quality.test.execute",
@@ -148,6 +178,8 @@ def build_runtime(
     *,
     tool: ToolDefinition,
     authorization: RuntimeAuthorization | None = None,
+    replay_resources: RuntimeReadResources | None = None,
+    operation_scope: RuntimeOperationScope | None = None,
 ) -> tuple[
     ToolInvocationRuntime,
     MemoryRuntimeState,
@@ -160,9 +192,11 @@ def build_runtime(
     audit = RuntimeAudit()
     replies = RuntimeReplies()
     events = RuntimeEvents()
+    operation_scope = operation_scope or RuntimeOperationScope()
     handled: list[str] = []
 
     async def complete(invocation: ToolInvocation) -> None:
+        assert operation_scope.active == 1
         handled.append(invocation.id)
         invocation.status = "completed"
         invocation.summary = "Quality test completed."
@@ -185,6 +219,8 @@ def build_runtime(
         agent_replies=replies,
         events=events,
         handlers=handlers,
+        replay_resources=replay_resources,
+        operation_scope=operation_scope,
     )
     return runtime, state, audit, replies, events, handled
 
@@ -237,9 +273,31 @@ def test_runtime_rejects_reusing_idempotency_key_for_different_payload() -> None
     assert len(handled) == 1
 
 
+@pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
+def test_runtime_releases_operation_scope_when_handler_fails_or_is_cancelled(error):
+    scope = RuntimeOperationScope()
+    tool = tool_definition()
+    runtime, _, _, _, _, _ = build_runtime(tool=tool, operation_scope=scope)
+
+    async def fail(invocation):
+        assert scope.active == 1
+        raise error("interrupted handler")
+
+    runtime.handlers = ToolInvocationHandlerRegistry()
+    runtime.handlers.register(tool.tool_id, FunctionToolInvocationHandler(fail))
+    request = ToolInvocationRequest(tool_id=tool.tool_id)
+    if error is asyncio.CancelledError:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(runtime.create(request))
+    else:
+        assert asyncio.run(runtime.create(request)).status == "failed"
+    assert scope.entries == 1 and scope.active == 0
+
+
 def test_runtime_confirmation_gate_publishes_message_and_resumes_same_invocation() -> None:
+    scope = RuntimeOperationScope()
     runtime, _, audit, replies, events, handled = build_runtime(
-        tool=tool_definition(confirmation_mode="user_confirm")
+        tool=tool_definition(confirmation_mode="user_confirm"), operation_scope=scope,
     )
 
     pending = asyncio.run(
@@ -253,6 +311,7 @@ def test_runtime_confirmation_gate_publishes_message_and_resumes_same_invocation
 
     assert pending.status == "waiting_confirmation"
     assert handled == []
+    assert scope.entries == 0 and scope.active == 0
     assert len(replies.messages) == 1
     assert len(events.updates) == 1
     assert audit.events[-1].action == "tool.invocation.gated"
@@ -263,8 +322,35 @@ def test_runtime_confirmation_gate_publishes_message_and_resumes_same_invocation
     assert completed.id == pending.id
     assert completed.status == "completed"
     assert handled == [pending.id]
+    assert scope.entries == 1 and scope.active == 0
     assert duplicate_confirmation.status == "completed"
     assert "tool.invocation.confirmed" in [event.action for event in audit.events]
+
+
+def test_unauthorized_confirmation_preserves_the_pending_command_for_its_owner() -> None:
+    authorization = RuntimeAuthorization()
+    runtime, state, audit, replies, events, handled = build_runtime(
+        tool=tool_definition(confirmation_mode="user_confirm"),
+        authorization=authorization,
+    )
+    pending = asyncio.run(runtime.create(ToolInvocationRequest(tool_id="quality.test.execute")))
+    snapshot = pending.model_dump(mode="json")
+    audit_snapshot = [event.model_dump(mode="json") for event in audit.events]
+    authorization.allowed = False
+
+    with pytest.raises(PlatformApplicationError) as denied:
+        asyncio.run(runtime.confirm(pending.id))
+
+    assert denied.value.status_code == 403
+    assert denied.value.code == "tool_confirmation_access_denied"
+    assert state.get_invocation(pending.id).model_dump(mode="json") == snapshot
+    assert [event.model_dump(mode="json") for event in audit.events] == audit_snapshot
+    assert handled == [] and replies.messages == [] and events.updates == []
+
+    authorization.allowed = True
+    completed = asyncio.run(runtime.confirm(pending.id))
+    assert completed.status == "completed" and handled == [pending.id]
+    assert sum(event.action == "tool.invocation.confirmed" for event in audit.events) == 1
 
 
 def test_runtime_denies_before_handler_dispatch() -> None:
@@ -289,3 +375,74 @@ def test_runtime_denies_before_handler_dispatch() -> None:
     assert replies.messages == []
     assert events.updates == []
     assert audit.events[-1].action == "tool.invocation.authorization_denied"
+
+
+@pytest.mark.parametrize("method", ["replay", "confirm"])
+def test_revoked_resources_deny_completed_command_replay_without_mutation(method) -> None:
+    resources = RuntimeReadResources()
+    runtime, state, audit, replies, events, handled = build_runtime(
+        tool=tool_definition(), replay_resources=resources)
+    request = ToolInvocationRequest(tool_id="quality.test.execute", idempotency_key="resource-replay")
+    original = asyncio.run(runtime.create(request))
+    snapshot = original.model_dump(mode="json")
+    audit_snapshot = [event.model_dump(mode="json") for event in audit.events]
+    resources.allowed = False
+
+    with pytest.raises(PlatformApplicationError) as denied:
+        asyncio.run(runtime.create(request) if method == "replay" else runtime.confirm(original.id))
+
+    assert denied.value.status_code == 403
+    assert resources.checked == [original.id]
+    assert state.get_invocation(original.id).model_dump(mode="json") == snapshot
+    assert [event.model_dump(mode="json") for event in audit.events] == audit_snapshot
+    assert handled == [original.id] and replies.messages == [] and events.updates == []
+
+    resources.allowed = True
+    restored = asyncio.run(runtime.create(request) if method == "replay" else runtime.confirm(original.id))
+    assert restored.model_dump(mode="json") == snapshot
+    assert handled == [original.id] and len(audit.events) == len(audit_snapshot)
+
+
+def test_revoked_resources_deny_confirmation_before_consuming_the_execution_claim() -> None:
+    resources = RuntimeReadResources()
+    runtime, state, audit, replies, events, handled = build_runtime(
+        tool=tool_definition(confirmation_mode="user_confirm"), replay_resources=resources)
+    pending = asyncio.run(runtime.create(ToolInvocationRequest(
+        tool_id="quality.test.execute", conversation_id="conversation_resource_confirmation")))
+    snapshot = pending.model_dump(mode="json")
+    audit_snapshot = [event.model_dump(mode="json") for event in audit.events]
+    resources.allowed = False
+
+    with pytest.raises(PlatformApplicationError):
+        asyncio.run(runtime.confirm(pending.id))
+
+    assert state.get_invocation(pending.id).model_dump(mode="json") == snapshot
+    assert [event.model_dump(mode="json") for event in audit.events] == audit_snapshot
+    assert handled == [] and len(replies.messages) == 1 and len(events.updates) == 1
+    resources.allowed = True
+    assert asyncio.run(runtime.confirm(pending.id)).status == "completed"
+    assert handled == [pending.id]
+
+
+def test_unique_insert_loser_rechecks_resources_on_the_original_command(monkeypatch) -> None:
+    resources = RuntimeReadResources()
+    runtime, state, audit, _, _, handled = build_runtime(
+        tool=tool_definition(), replay_resources=resources)
+    request = ToolInvocationRequest(tool_id="quality.test.execute", idempotency_key="insert-race")
+    original = asyncio.run(runtime.create(request))
+    snapshot = original.model_dump(mode="json")
+    audit_count = len(audit.events)
+    find = state.find_idempotent_invocation
+    lookups = []
+
+    def first_lookup_misses(**query):
+        lookups.append(query)
+        return None if len(lookups) == 1 else find(**query)
+
+    monkeypatch.setattr(state, "find_idempotent_invocation", first_lookup_misses)
+    resources.allowed = False
+    with pytest.raises(PlatformApplicationError):
+        asyncio.run(runtime.create(request))
+    assert len(lookups) == 2 and resources.checked == [original.id]
+    assert state.get_invocation(original.id).model_dump(mode="json") == snapshot
+    assert len(state.invocations) == 1 and len(audit.events) == audit_count and handled == [original.id]

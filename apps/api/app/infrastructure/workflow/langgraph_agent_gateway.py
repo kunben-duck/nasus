@@ -9,6 +9,7 @@ from ...application.agent.plans import AgentGoalPlanCompiler
 from ...application.agent.ports import AgentGraphStatePort
 from ...domain.agent.runtime_models import AgentGoalProposal, agent_goal_proposal_from_payload
 from ...domain.agent.state_machine import AgentGoalStateMachine
+from ...domain.agent.resume_checkpoint import AgentResumeCheckpoint
 from ..config.agent_runtime_config import LangGraphGatewayConfig, langgraph_gateway_config_from_env
 
 if TYPE_CHECKING:
@@ -24,6 +25,7 @@ class _AgentLoopGraphState(TypedDict, total=False):
     step_index: Optional[int]
     invocation_id: Optional[str]
     observation_summary: str
+    expected_resume: Optional[dict[str, Any]]
 
 
 class LangGraphAgentLoopGateway:
@@ -65,12 +67,14 @@ class LangGraphAgentLoopGateway:
                 "operation": "start",
                 "goal_id": goal_id,
                 "proposal_payload": asdict(proposal),
+                "expected_resume": None,
             },
             goal_id,
         )
 
-    async def resume(self, goal_id: str) -> AgentGoal:
-        await self._invoke({"operation": "resume", "goal_id": goal_id}, goal_id)
+    async def resume(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
+        await self._invoke({"operation": "resume", "goal_id": goal_id,
+            "expected_resume": expected_resume.payload() if expected_resume is not None else None}, goal_id)
         return self._state.get_goal(goal_id)
 
     def steps_for_proposal(self, proposal: AgentGoalProposal) -> list[AgentStep]:
@@ -141,7 +145,9 @@ class LangGraphAgentLoopGateway:
         if operation == "start":
             outcome = await self.delegate_runtime.prepare_start(goal_id)
         elif operation == "resume":
-            outcome = await self.delegate_runtime.prepare_resume(goal_id)
+            expected = state.get("expected_resume")
+            outcome = await self.delegate_runtime.prepare_resume(goal_id,
+                expected_resume=AgentResumeCheckpoint(**expected) if expected is not None else None)
         else:
             raise RuntimeError(f"Unsupported LangGraph Agent Loop operation: {operation!r}.")
         return self._outcome_state(outcome)

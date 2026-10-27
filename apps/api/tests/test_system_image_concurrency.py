@@ -9,8 +9,9 @@ from apps.api.app.application.platform.project_models import ProjectCard
 from apps.api.app.application.system_image.source_ingestion import (
     SystemImageSourceIngestionApplicationService,
 )
-from apps.api.app.application.system_image.source_ports import IngestedSource
+from apps.api.app.application.system_image.source_ports import IngestedSource, SourceSpec
 from apps.api.app.application.system_image.system_image_models import RawAssetRecord
+from apps.api.app.domain.system_image.source_access import SourceAccessSnapshot, SourceBindingAccess
 
 
 class _BlockingSourceIngestion:
@@ -132,6 +133,71 @@ def _store() -> SimpleNamespace:
     )
 
 
+def test_register_same_kind_sources_preserves_previous_bindings_and_context() -> None:
+    store = _store()
+    project_id = "project-concurrency"
+    persistence = _SnapshotPersistence(store)
+    projection = _Projection(store, persistence)
+    service = SystemImageSourceIngestionApplicationService(projection, None, _RawAssetChunks())
+    store.raw_asset_chunks[project_id] = ["old-evidence"]
+    original = deepcopy(store.raw_assets[project_id])
+
+    def must_not_clear_baseline():
+        raise AssertionError("register must not reset existing baseline")
+
+    specs = [
+        SourceSpec("code", "/repo/first"), SourceSpec("code", "/repo/second"),
+        SourceSpec("us_doc", "/docs/first"), SourceSpec("us_doc", "/docs/second"),
+        SourceSpec("code", "/repo/first"),
+    ]
+    for _ in range(2):
+        service.register_sources(
+            project_id, specs, registered_by_actor="user", registered_from_invocation_id="invocation",
+            ensure_draft_state=must_not_clear_baseline,
+        )
+    assert len(store.raw_assets[project_id]) == 7
+    assert store.raw_assets[project_id][:3] == original
+    assert store.raw_asset_chunks[project_id] == ["old-evidence"]
+    assert len({item.id for item in store.raw_assets[project_id]}) == 7
+
+
+def test_repeated_registration_preserves_successful_capture() -> None:
+    store = _store()
+    project_id = "project-concurrency"
+    source = store.raw_assets[project_id][0]
+    source.ingestion_status = "indexed"
+    source.content_hash = "sha256:captured"
+    source.content_ref = "s3://private/captured"
+    source.evidence_refs = ["source-revision:old"]
+    store.projects[project_id].system_image_status = "ready"
+    service = SystemImageSourceIngestionApplicationService(_Projection(store, _SnapshotPersistence(store)), None, _RawAssetChunks())
+    service.register_sources(
+        project_id, [SourceSpec("code", source.source_uri, "Renamed source")],
+        registered_by_actor="user", registered_from_invocation_id="invocation",
+        ensure_draft_state=lambda: None,
+    )
+    updated = store.raw_assets[project_id][0]
+    assert updated.source_label == "Renamed source"
+    assert updated.ingestion_status == "indexed"
+    assert updated.content_ref == "s3://private/captured"
+    assert updated.evidence_refs == ["source-revision:old"]
+    assert store.projects[project_id].system_image_status == "ready"
+
+
+def test_register_same_repository_with_different_refs_preserves_each_binding():
+    store = _store()
+    project_id = "project-concurrency"
+    service = SystemImageSourceIngestionApplicationService(_Projection(store, _SnapshotPersistence(store)), None, _RawAssetChunks())
+    specs = [SourceSpec("code", "https://example.com/repo.git", tracked_ref=ref)
+        for ref in (None, "refs/heads/main", "refs/heads/release", "refs/tags/v1")]
+    for _ in range(2):
+        service.register_sources(project_id, specs, registered_by_actor="user",
+            registered_from_invocation_id="invocation", ensure_draft_state=lambda: None)
+    registered = [item for item in store.raw_assets[project_id] if item.source_uri == specs[0].source_uri]
+    assert len(registered) == 4 and len({item.id for item in registered}) == 4
+    assert {item.tracked_ref for item in registered} == {item.tracked_ref for item in specs}
+
+
 def test_ingestion_prevents_concurrent_refresh_from_replacing_write_projection() -> None:
     store = _store()
     project_id = "project-concurrency"
@@ -139,10 +205,13 @@ def test_ingestion_prevents_concurrent_refresh_from_replacing_write_projection()
     release_ingestion = Event()
     persistence = _SnapshotPersistence(store)
     projection = _Projection(store, persistence)
+    scope = SourceAccessSnapshot(project_id, 0, tuple(
+        SourceBindingAccess(source.id, source.id) for source in store.raw_assets[project_id])).for_actor("actor", "tester")
     service = SystemImageSourceIngestionApplicationService(
         projection,
         _BlockingSourceIngestion(ingestion_started, release_ingestion),
         _RawAssetChunks(),
+        source_authorization=SimpleNamespace(scope=lambda _: scope, require_current=lambda _: None),
     )
 
     writer = Thread(

@@ -12,6 +12,7 @@ export type StudioActionSurface = 'chat' | 'ui' | 'api' | 'agent_loop'
 
 export type StudioSourceBindingValues = {
   code: string
+  codeRef?: string
   usDoc: string
   testAsset: string
 }

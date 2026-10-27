@@ -1,5 +1,7 @@
 # 系统画像构建：基线与分支规则
 
+2026-09-09 细化设计：[知识契约 §4](./knowledge-contracts.md#4-版本解析与一致性)定义不可变 ImageRevision、删除、三方合并、审批 digest 和 CAS 发布；[自主系统画像 §6](./autonomous-system-image-design.md#6-初始化增量与版本演进)定义持续演进流程。以下原则保持有效，具体实现以这些细化契约为下一阶段目标。
+
 ## 1. 文档定位
 
 本文聚焦系统画像构建模块中的基线与分支规则。
@@ -21,7 +23,7 @@
 
 ## 3. 分支原则
 
-- 所有版本都从 `Official Baseline` 派生
+- 所有版本都从 `Official Baseline` 的固定 ImageRevision 派生，不随 Official head 漂移
 - 版本期间只能更新工作基线
 - 不允许直接污染正式基线
 - 版本结束后，经治理和审批才能回写正式基线
@@ -42,12 +44,12 @@
 
 ## 5. 实现约束
 
-- 首发采用 `overlay first, parent fallback`
+- 采用 `overlay first, pinned parent revision fallback`；tombstone 命中时停止回退，对象及关系删除均适用
 - 所有 merge 都必须保留来源、证据和审批记录
 - 冲突必须进入标准治理流，而不是直接覆盖
 - 查询实现必须支持 baseline-aware traversal：
   - 先查当前版本 overlay
-  - overlay 未命中则回退 official baseline
+  - overlay 未命中则回退 fork 时固定的 official revision，而非当前最新 head
   - 对同一对象字段冲突返回 conflict payload
 - 质量指标也必须分层：
   - official baseline metric

@@ -491,6 +491,22 @@ class LegacyQualityRunWorkspace:
             )
             return item.title if item is not None else None
 
+    def commit_run_execution(
+        self, project_id: str, run: RunDetail, evidence: list[ExecutionEvidence],
+    ) -> None:
+        stored_run = run.model_copy(deep=True)
+        stored_evidence = [item.model_copy(deep=True) for item in evidence]
+        with self._adapters.mutation_guard():
+            self._adapters.quality_loop_repository.commit_run_execution(
+                project_id, stored_run, stored_evidence)
+            # Projections change only after the single durable transaction succeeds.
+            self._state.run_details[run.id] = stored_run
+            self._state.runs[project_id] = [RunSummary(**{
+                key: getattr(stored_run, key) for key in RunSummary.model_fields}),
+                *[item for item in self._state.runs.get(project_id, []) if item.id != run.id]]
+            self._state.execution_evidence[project_id] = [*stored_evidence,
+                *[item for item in self._state.execution_evidence.get(project_id, []) if item.run_id != run.id]]
+
     def save_run_detail(self, project_id: str, run: RunDetail) -> None:
         stored_run = run.model_copy(deep=True)
         with self._adapters.mutation_guard():
