@@ -93,6 +93,8 @@ def next_quality_asset_part_revision(parts: Iterable[QualityAssetPartLike], part
 
 def quality_asset_pack_status(parts: Iterable[QualityAssetPartLike]) -> str:
     part_list = list(parts)
+    if any(item.status == "blocked" for item in part_list):
+        return "blocked"
     part_statuses = {item.part_type: item.status for item in part_list}
     if part_statuses.get("release_assessment") == "completed":
         return "completed"

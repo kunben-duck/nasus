@@ -3,9 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from .scoped_s3_client import ScopedS3Client
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,72 @@ class ObjectStorage:
 
     def __init__(self, config: ObjectStorageConfig | None = None) -> None:
         self.config = config or ObjectStorageConfig.from_env()
+        self._read_clients = ContextVar("object_storage_read_client", default=None)
+        self._write_clients = ContextVar("object_storage_write_client", default=None)
+
+    def read_session(self):
+        return self._transport_session(self._read_clients)
+
+    def write_session(self):
+        return self._transport_session(self._write_clients)
+
+    @contextmanager
+    def _transport_session(self, clients):
+        previous = clients.get()
+        if previous is not None and previous.config == self.config and previous.is_open:
+            yield
+            return
+        config = self.config
+        scope = ScopedS3Client(config, lambda: self._create_s3_client(config))
+        token = clients.set(scope)
+        failed = False
+        try:
+            yield
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            try:
+                scope.close(preserve_failure=failed)
+            finally:
+                clients.reset(token)
+
+    @contextmanager
+    def _s3_read_client(self):
+        scope = self._read_clients.get()
+        if scope is None:
+            with self.read_session():
+                with self._s3_read_client() as client:
+                    yield client
+            return
+        if scope.config != self.config:
+            raise RuntimeError("S3 read session configuration changed")
+        with scope.lease() as client:
+            yield client
+
+    @contextmanager
+    def _s3_write_client(self):
+        scope = self._write_clients.get()
+        if scope is None:
+            with self.write_session():
+                with self._s3_write_client() as client:
+                    yield client
+            return
+        if scope.config != self.config:
+            raise RuntimeError("S3 write session configuration changed")
+        with scope.lease() as client:
+            yield client
+
+    @staticmethod
+    def _create_s3_client(config: ObjectStorageConfig):
+        try:
+            import boto3  # type: ignore[import-not-found]
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("S3 object storage is configured but boto3 is not installed") from exc
+        return boto3.session.Session().client(
+            "s3", endpoint_url=config.endpoint, aws_access_key_id=config.access_key,
+            aws_secret_access_key=config.secret_key, region_name=config.region,
+        )
 
     def put_json(self, key: str, payload: dict[str, Any]) -> ObjectStoragePutResult:
         body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -111,49 +181,23 @@ class ObjectStorage:
         content_type: str,
         content_hash: str,
     ) -> None:
-        try:
-            import boto3  # type: ignore[import-not-found]
-        except ModuleNotFoundError as exc:
-            raise RuntimeError("S3 object storage is configured but boto3 is not installed") from exc
-
-        client = boto3.client(
-            "s3",
-            endpoint_url=self.config.endpoint,
-            aws_access_key_id=self.config.access_key,
-            aws_secret_access_key=self.config.secret_key,
-            region_name=self.config.region,
-        )
-        client.put_object(
-            Bucket=self.config.bucket,
-            Key=key,
-            Body=body,
-            ContentType=content_type,
-            Metadata={"nasus-content-hash": content_hash},
-        )
+        with self._s3_write_client() as client:
+            client.put_object(
+                Bucket=self.config.bucket, Key=key, Body=body, ContentType=content_type,
+                Metadata={"nasus-content-hash": content_hash},
+            )
 
     def _get_s3(self, bucket: str, key: str, *, max_bytes: int | None = None) -> bytes:
-        try:
-            import boto3  # type: ignore[import-not-found]
-        except ModuleNotFoundError as exc:
-            raise RuntimeError("S3 object storage is configured but boto3 is not installed") from exc
-
-        client = boto3.client(
-            "s3",
-            endpoint_url=self.config.endpoint,
-            aws_access_key_id=self.config.access_key,
-            aws_secret_access_key=self.config.secret_key,
-            region_name=self.config.region,
-        )
-        response = client.get_object(Bucket=bucket, Key=key)
-        response_body = response["Body"]
-        content_length = int(response.get("ContentLength") or 0)
-        if max_bytes is not None and content_length > max_bytes:
-            response_body.close()
-            raise ValueError(f"object exceeds max bytes {max_bytes}: s3://{bucket}/{key}")
-        try:
-            body = response_body.read() if max_bytes is None else response_body.read(max_bytes + 1)
-        finally:
-            response_body.close()
+        with self._s3_read_client() as client:
+            response = client.get_object(Bucket=bucket, Key=key)
+            response_body = response["Body"]
+            try:
+                content_length = int(response.get("ContentLength") or 0)
+                if max_bytes is not None and content_length > max_bytes:
+                    raise ValueError(f"object exceeds max bytes {max_bytes}: s3://{bucket}/{key}")
+                body = response_body.read() if max_bytes is None else response_body.read(max_bytes + 1)
+            finally:
+                response_body.close()
         if not isinstance(body, bytes):
             raise RuntimeError(f"S3 object body is not bytes: s3://{bucket}/{key}")
         if max_bytes is not None and len(body) > max_bytes:

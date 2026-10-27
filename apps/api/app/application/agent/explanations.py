@@ -6,6 +6,19 @@ from typing import Any
 from .agent_models import AgentGoal, AgentStep
 from .ports import AgentGoalExplanationQueryPort
 from ..platform.tool_models import ToolInvocation
+from ...domain.agent.image_plan_phases import active_phase_start
+
+
+IMAGE_PAUSE_GUIDANCE = {
+    "missing_captured_code": ("source_capture",
+        "Add and capture the required code sources, then continue this same goal. Requirements and tests are optional; confirm the structural budget separately after capture."),
+    "structural_candidate_review": ("candidate_review",
+        "Review the saved structural candidate and its gaps, then continue this goal to prepare evidence investigation. Confirm the investigation budget separately; this does not publish the image."),
+    "build_plan_phase_prepared": ("plan_phase_review",
+        "Review the new plan and its fixed sources, then continue the same goal. Confirm the new phase budget separately; the previous plan's consent does not authorize it."),
+    "build_completion_review": ("completion_review",
+        "Review the saved findings and remaining gaps. Publication requires an independent review and approval; investigation completion does not publish the image."),
+}
 
 
 class AgentGoalExplanationApplicationService:
@@ -56,6 +69,8 @@ class AgentGoalExplanationApplicationService:
                 "thinking_tokens_used": goal.thinking_tokens_used,
                 "no_progress_observations": goal.no_progress_observations,
                 "started_at": goal.started_at,
+                "active_runtime_ms": goal.active_runtime_ms,
+                "active_started_at": goal.active_started_at,
                 "last_progress_at": goal.last_progress_at,
                 "exhausted_reason": goal.budget_exhausted_reason,
             },
@@ -106,10 +121,14 @@ class AgentGoalExplanationApplicationService:
 
     @staticmethod
     def _waiting_on(goal: AgentGoal, blocked_invocation: ToolInvocation | None) -> str:
-        if goal.status == "completed":
+        if goal.status in {"completed", "cancelled"}:
             return "none"
         if goal.status == "failed":
             return "human_review"
+        if goal.status in {"pending", "running"}:
+            return "agent_runtime"
+        if goal.status in {"paused", "blocked"} and goal.pause_reason in IMAGE_PAUSE_GUIDANCE:
+            return IMAGE_PAUSE_GUIDANCE[goal.pause_reason][0]
         if goal.pause_reason == "missing_source_binding":
             return "source_binding"
         if goal.pause_reason == "budget_exhausted":
@@ -120,16 +139,20 @@ class AgentGoalExplanationApplicationService:
             return "user_confirmation"
         if blocked_invocation is not None and blocked_invocation.status == "waiting_approval":
             return "approval"
-        if goal.status in {"pending", "running"}:
-            return "agent_runtime"
         return goal.pause_reason or "none"
 
     @staticmethod
     def _next_action(goal: AgentGoal, blocked_invocation: ToolInvocation | None) -> str:
         if goal.status == "completed":
             return "The AgentGoal is complete. Use the resulting memory, tool trace, or system image status for follow-up work."
+        if goal.status == "cancelled":
+            return "The AgentGoal is cancelled. Review its saved artifacts and history; starting further work requires a new goal."
         if goal.status == "failed":
-            return "Review the blocked step and failure summary before resuming or creating a new goal."
+            return "Review the blocked step and failure summary before creating a new goal."
+        if goal.status in {"pending", "running"}:
+            return AgentGoalExplanationApplicationService._planned_action(goal)
+        if goal.status in {"paused", "blocked"} and goal.pause_reason in IMAGE_PAUSE_GUIDANCE:
+            return IMAGE_PAUSE_GUIDANCE[goal.pause_reason][1]
         if goal.pause_reason == "missing_source_binding":
             return (
                 "Provide code path or Git URL so the Agent can continue source ingestion. You may also upload "
@@ -143,12 +166,19 @@ class AgentGoalExplanationApplicationService:
             return f"Confirm tool invocation {blocked_invocation.id} to let the Agent continue."
         if blocked_invocation is not None and blocked_invocation.status == "waiting_approval":
             return f"Approve tool invocation {blocked_invocation.id} through governance."
-        running_step = next((step for step in goal.steps if step.status == "running"), None)
+        return AgentGoalExplanationApplicationService._planned_action(goal)
+
+    @staticmethod
+    def _planned_action(goal: AgentGoal) -> str:
+        active_steps = goal.steps[active_phase_start(goal):]
+        running_step = next((step for step in active_steps if step.status == "running"), None)
         if running_step is not None:
             return f"The Agent is currently working on: {running_step.title}."
-        pending_step = next((step for step in goal.steps if step.status == "pending"), None)
+        pending_step = next((step for step in active_steps if step.status == "pending"), None)
         if pending_step is not None:
             return f"The next planned step is: {pending_step.title}."
+        if goal.status in {"pending", "running"}:
+            return "The Agent is preparing the next step."
         return "No next action is required."
 
     @staticmethod

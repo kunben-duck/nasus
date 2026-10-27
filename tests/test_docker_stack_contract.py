@@ -1,8 +1,37 @@
 from pathlib import Path
+import json
 import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_browser_gate_uses_disposable_postgres_and_serial_shared_settings():
+    scripts = json.loads((ROOT / "package.json").read_text())["scripts"]
+    assert "source scripts/dev-runtime-env.sh" in scripts["test:e2e"]
+    assert "scripts/test-api-postgres.py --playwright" in scripts["test:e2e"]
+    config = (ROOT / "playwright.config.ts").read_text()
+    assert "sqlite" not in config
+    assert "workers: 1" in config and "'/nasus_test_'" in config
+    runner = (ROOT / "scripts/test-api-postgres.py").read_text()
+    assert 'command = ["npx", "playwright", "test", *args[1:]]' in runner
+    assert 'DROP DATABASE' in runner and 'finally:' in runner
+    assert '"PLAYWRIGHT_OUTPUT_DIR": str(root / "output" / "playwright" / "runs" / database)' in runner
+    assert "outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? 'test-results'" in config
+
+
+def test_smoke_gate_uses_disposable_postgres_without_recursive_npm_entrypoint():
+    scripts = json.loads((ROOT / "package.json").read_text())["scripts"]
+    assert "source scripts/dev-runtime-env.sh" in scripts["test:smoke"]
+    assert "scripts/test-api-postgres.py --smoke" in scripts["test:smoke"]
+    runner = (ROOT / "scripts/test-api-postgres.py").read_text()
+    assert 'command = ["node", "tests/e2e/smoke.js"]' in runner
+    assert '["npm", "run", "test:smoke"]' not in runner
+    assert 'api_port, portal_port = 18082, 14175' in runner
+    assert 'listener.bind(("127.0.0.1", port))' in runner
+    assert '"NASUS_SMOKE_STATE_DIR": directory' in runner
+    assert '"API_URL": f"http://127.0.0.1:{api_port}"' in runner
+    assert '"PORTAL_URL": f"http://127.0.0.1:{portal_port}"' in runner
 
 
 def test_docker_compose_declares_required_external_components():
@@ -150,10 +179,18 @@ def test_v1_release_verifier_composes_required_gates():
     assert '"verify:v1-release": "scripts/verify-v1-release.sh"' in package
     assert '"lint:portal": "npm --prefix apps/portal run lint"' in package
     assert "npm run lint:portal" in script
+    assert "npm run test:portal-contracts" in script
+    assert "npm run test:i18n" in script
     assert "npm run build:portal" in script
     assert "npm run test:runner" in script
     assert "npm run verify:production-compose" in script
-    assert "pytest apps/api/tests tests/test_docker_stack_contract.py tests/test_ddd_boundaries.py -q" in script
+    assert '"$ROOT_DIR/scripts/test-api-postgres.py" --minio apps/api/tests tests/test_docker_stack_contract.py tests/test_ddd_boundaries.py tests/test_isolated_test_storage.py tests/test_release_gate_environment.py -q' in script
+    for key in ("ENDPOINT", "ACCESS_KEY", "SECRET_KEY"):
+        assert f'export NASUS_TEST_S3_{key}="${{NASUS_TEST_S3_{key}:-$NASUS_S3_{key}}}"' in script
+    assert 'source "$ROOT_DIR/scripts/dev-runtime-env.sh"' in script
+    assert 'NASUS_RELEASE_TEST_DATABASE_URL:-${NASUS_TEST_DATABASE_URL:-$NASUS_DATABASE_URL}' in script
+    assert '"Run backend unit and contract tests" run_backend_gate' in script
+    assert 'python -m pytest apps/api/tests' not in script
     assert "PLAYWRIGHT_API_PORT=" in script
     assert "PLAYWRIGHT_PORTAL_PORT=" in script
     assert "NASUS_PORTAL_API_PROXY=" in script

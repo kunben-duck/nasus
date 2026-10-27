@@ -104,6 +104,10 @@
     padding: 64px 14px 142px;
   }
 
+  .agent-workspace.knowledge-workspace {
+    padding-inline: 0;
+  }
+
   .terms-bar {
     justify-content: flex-start;
     overflow: hidden;
@@ -113,6 +117,17 @@
   .terms-bar span {
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .terms-bar > span {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .terms-bar > button,
+  .terms-bar .backend-status-pill {
+    flex-shrink: 0;
     white-space: nowrap;
   }
 

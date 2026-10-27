@@ -4,7 +4,7 @@ import re
 
 
 def extract_project_name(content: str, *, fallback_index: int) -> str:
-    quoted = re.search(r"['\"]([^'\"]+)['\"]", content)
+    quoted = re.search(r"['\"“”]([^'\"“”]+)['\"“”]", content)
     if quoted:
         return quoted.group(1)
     named = re.search(r"project(?: called| named)? ([A-Za-z0-9 _-]+)", content, re.IGNORECASE)

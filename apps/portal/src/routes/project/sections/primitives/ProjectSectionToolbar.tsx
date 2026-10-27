@@ -1,3 +1,5 @@
+import { useI18n } from '../../../../shared/i18n/I18nProvider'
+
 export function ProjectSectionToolbar({
   title,
   sidebarCollapsed,
@@ -7,12 +9,13 @@ export function ProjectSectionToolbar({
   sidebarCollapsed: boolean
   toggleSidebar: () => void
 }) {
+  const { t } = useI18n()
   return (
     <div className="workspace-toolbar">
       <button
         className="collapse-button"
         aria-expanded={!sidebarCollapsed}
-        aria-label={sidebarCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+        aria-label={sidebarCollapsed ? t('Expand navigation') : t('Collapse navigation')}
         onClick={toggleSidebar}
         type="button"
       >
@@ -22,7 +25,7 @@ export function ProjectSectionToolbar({
       </button>
       <strong>{title}</strong>
       <div className="toolbar-actions">
-        <button>Share</button>
+        <button>{t('Share')}</button>
         <button>＋</button>
         <button>⋮</button>
       </div>

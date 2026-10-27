@@ -87,6 +87,10 @@ class ProjectPersistencePort(Protocol):
 
 
 class QualityLoopPersistencePort(Protocol):
+    def commit_run_execution(
+        self, project_id: str, run: RunDetail, evidence: list[ExecutionEvidence],
+    ) -> None: ...
+
     def replace_runs(
         self,
         project_id: str,

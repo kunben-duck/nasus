@@ -1,0 +1,38 @@
+{
+  "repository": "https://github.com/kunben-duck/exweb.git",
+  "revision": "fe5827f6b76f77ef34918d8b452ee823142332dc",
+  "scope": "reviewed_annotation_routes_only_not_all_runtime_endpoints",
+  "limitations": ["Functional WebSocket registration is outside this annotation fixture.", "No application startup, security filter, media-type or runtime reachability claim."],
+  "source_root": "src/main/java/com/huawei/finance/front/one/interfaces/",
+  "controllers": [
+    {"file": "chat/ChatController.java", "controller_line": 20, "class_mapping_line": 21,
+      "routes": [
+        {"method": "POST", "path": "/api/v1/finance/chat/sse", "line": 29},
+        {"method": "POST", "path": "/api/v1/finance/chat/stream", "line": 38}
+      ]},
+    {"file": "chat/ChatSessionController.java", "controller_line": 21, "class_mapping_line": 22,
+      "routes": [
+        {"method": "POST", "path": "/api/v1/finance/chat/sessions", "line": 30},
+        {"method": "GET", "path": "/api/v1/finance/chat/sessions", "line": 39},
+        {"method": "GET", "path": "/api/v1/finance/chat/sessions/{sessionId}", "line": 45},
+        {"method": "POST", "path": "/api/v1/finance/chat/sessions/{sessionId}/close", "line": 52}
+      ]},
+    {"file": "document/DocumentUploadController.java", "controller_line": 20, "class_mapping_line": 21,
+      "routes": [{"method": "POST", "path": "/api/v1/finance/documents", "line": 25}]},
+    {"file": "tool/ToolCatalogController.java", "controller_line": 13, "class_mapping_line": 14,
+      "routes": [
+        {"method": "GET", "path": "/api/v1/finance/tools", "line": 18},
+        {"method": "GET", "path": "/api/v1/finance/tools/{toolCode}", "line": 24}
+      ]},
+    {"file": "tool/ToolInvocationController.java", "controller_line": 23, "class_mapping_line": 24,
+      "routes": [
+        {"method": "POST", "path": "/api/v1/finance/tools/{toolCode}/invoke", "line": 28},
+        {"method": "POST", "path": "/api/v1/finance/tools/{toolCode}/stream", "line": 34}
+      ]},
+    {"file": "internal/InternalToolInvocationController.java", "controller_line": 22, "class_mapping_line": 23,
+      "routes": [
+        {"method": "POST", "path": "/internal/v1/finance/tools/{toolCode}/invoke", "line": 27},
+        {"method": "POST", "path": "/internal/v1/finance/tools/{toolCode}/stream", "line": 34}
+      ]}
+  ]
+}

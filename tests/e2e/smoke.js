@@ -79,7 +79,19 @@ async function createAuthSession() {
   if (!response.ok) {
     throw new Error(`Unable to create smoke auth session: ${response.status} ${await response.text()}`)
   }
-  return response.json()
+  const session = await response.json()
+  const settingsResponse = await fetch(`${apiUrl}/v1/settings`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${session.access_token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ language: 'en' }),
+  })
+  if (!settingsResponse.ok) {
+    throw new Error(`Unable to select smoke language: ${settingsResponse.status} ${await settingsResponse.text()}`)
+  }
+  return session
 }
 
 async function createSourceFixture() {
@@ -167,6 +179,7 @@ async function main() {
     const session = await createAuthSession()
     await page.addInitScript((token) => {
       window.localStorage.setItem('nasus_api_token', token)
+      window.localStorage.setItem('nasus.locale', 'en')
       window.__nasusSmokeSseEvents = []
       window.__nasusSmokeSseOpenUrls = []
       const NativeEventSource = window.EventSource
@@ -219,18 +232,35 @@ async function main() {
     )
 
     await page.getByTestId('agent-card-system-image-builder').click()
+    await expectVisible(page.getByTestId('source-binding-panel'), 'required and optional source inputs visible')
+    await page.getByTestId('source-code-input').fill(fixture.codeDir)
+    await page.getByTestId('source-us-input').fill(fixture.usDir)
+    await page.getByTestId('source-tests-input').fill(fixture.testDir)
+    await page.getByTestId('build-system-image-with-sources').click()
     await expectVisible(page.getByTestId('agent-goal-panel'), 'system image agent goal visible')
     await expectVisible(page.getByTestId('agent-thinking-card'), 'agent thinking card visible')
     await expectVisible(page.getByTestId('agent-memory-context-panel'), 'agent memory context visible')
-    await expectVisible(page.getByTestId('agent-confirmation-gate'), 'source binding gate visible')
-    await page.getByTestId('project-agent-input').fill(
-      [`code path ${fixture.codeDir}`, `US docs path ${fixture.usDir}`, `tests path ${fixture.testDir}`].join(', '),
-    )
-    await page.getByTestId('project-agent-submit').click()
-    await expectVisible(page.getByTestId('agent-confirmation-gate').getByText(/Confirmation required/i).first(), 'baseline confirmation gate visible', 20000)
+    await expectVisible(page.getByTestId('image-build-execution-budget'), 'independent structural budget visible', 20000)
+    const projectId = new URL(page.url()).pathname.split('/')[2]
+    const authorizedRead = async (relative) => {
+      const response = await fetch(`${apiUrl}${relative}`, { headers: { Authorization: `Bearer ${session.access_token}` } })
+      if (!response.ok) throw new Error(`Smoke read failed: ${response.status} ${relative}`)
+      return response.json()
+    }
+    const conversation = await authorizedRead(`/v1/conversations?space_type=project&space_id=${projectId}`)
+    const conversationId = conversation[0].id
+    const before = await authorizedRead(`/v1/conversations/${conversationId}`)
+    if (before.agent_goals.length !== 1) throw new Error('The guided entry must create exactly one fixed goal')
+    const goal = before.agent_goals[0]
+    const planId = goal.target_refs.find((ref) => ref.startsWith('build_plan:')).slice('build_plan:'.length)
+    const planUrl = `/v1/projects/${projectId}/system-image/build-plans/${planId}`
+    const draft = await authorizedRead(planUrl)
+    if (draft.execution_authorizations.length || draft.structural_artifacts.length) {
+      throw new Error('Preparing sources or a plan must not grant execution or build a candidate')
+    }
     await page.getByTestId('confirm-agent-goal').click()
     try {
-      await expectVisible(page.getByTestId('system-image-strip').getByText(/ready/i).first(), 'system image initialized')
+      await expectVisible(page.getByTestId('agent-confirmation-gate').getByText('Structural candidate saved', { exact: true }), 'structural candidate saved')
     } catch (error) {
       const diagnostics = await page.evaluate(() => ({
         strip: document.querySelector('[data-testid="system-image-strip"]')?.textContent ?? null,
@@ -250,6 +280,16 @@ async function main() {
         events: diagnostics.events,
       }, null, 2))
       throw error
+    }
+    const built = await authorizedRead(planUrl)
+    if (built.structural_artifacts.length !== 1 || built.execution_authorizations.length !== 1
+      || built.execution_authorizations[0].goal_id !== goal.id || built.execution_authorizations[0].publication_allowed !== false) {
+      throw new Error('The original goal must own one structure-only grant and candidate, without publication')
+    }
+    const pinned = await authorizedRead(`/v1/conversations/${conversationId}`)
+    if (pinned.agent_goals.length !== 1 || pinned.agent_goals[0].id !== goal.id
+      || pinned.agent_goals[0].pause_reason !== 'structural_candidate_review') {
+      throw new Error('Structural completion must retain the same paused goal')
     }
     await expectVisible(page.getByTestId('system-image-strip').getByText(/Sources indexed\s*3\/3/i).first(), 'source groups indexed')
     const canonicalAgentEvents = await page.evaluate(() => (

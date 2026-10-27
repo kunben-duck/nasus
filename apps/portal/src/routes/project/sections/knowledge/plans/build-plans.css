@@ -1,0 +1,17 @@
+.build-plan-form { display: grid; gap: 16px; margin-top: 20px; }
+.build-plan-form label { display: grid; min-width: 0; gap: 8px; font-size: 12px; color: var(--muted); }
+.build-plan-form input, .build-plan-form textarea, .build-plan-form select {
+  box-sizing: border-box; width: 100%; min-width: 0; padding: 10px; font: inherit;
+  color: var(--text); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px;
+}
+.build-plan-form textarea { min-height: 96px; resize: vertical; }
+.build-plan-budget { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.build-plan-details { margin-top: 20px; overflow-wrap: anywhere; font-size: 13px; }
+.build-plan-details h3 { margin-top: 22px; font-size: 15px; font-weight: 500; }
+.build-plan-details li { line-height: 1.7; }
+.structure-build-action { gap: 12px; padding: 16px; border: 1px solid var(--border-strong); border-radius: 12px; }
+.structure-build-action h3, .structure-build-action p { margin: 0; }
+.structure-build-action > button { justify-self: start; }
+.structure-build-action .structure-stop-consent { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0; }
+.structure-build-action .structure-stop-consent input { width: 16px; height: 16px; flex: 0 0 16px; padding: 0; margin: 1px 0 0; accent-color: var(--blue); }
+@media (max-width: 600px) { .build-plan-budget { grid-template-columns: 1fr; } }

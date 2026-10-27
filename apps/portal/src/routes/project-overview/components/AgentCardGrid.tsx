@@ -1,4 +1,5 @@
 import { agentCards, type AgentCardTitle } from './agentCards'
+import { useI18n } from '../../../shared/i18n/I18nProvider'
 
 export function AgentCardGrid({
   disabled,
@@ -7,6 +8,7 @@ export function AgentCardGrid({
   disabled: boolean
   onCardAction: (title: AgentCardTitle) => void
 }) {
+  const { tx } = useI18n()
   return (
     <div className="agent-card-grid">
       {agentCards.map((card) => (
@@ -18,8 +20,8 @@ export function AgentCardGrid({
           disabled={disabled}
         >
           <span className={`agent-icon ${card.tone}`}>{card.icon}</span>
-          <strong>{card.title}</strong>
-          <p>{card.copy}</p>
+          <strong>{tx(card.title)}</strong>
+          <p>{tx(card.copy)}</p>
         </button>
       ))}
     </div>

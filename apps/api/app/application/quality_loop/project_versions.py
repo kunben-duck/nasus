@@ -315,11 +315,6 @@ class ProjectVersionApplicationService:
             version.id,
             updated_item,
         )
-        if self._workspace.has_indexed_system_image_evidence(project_id):
-            try:
-                await self._system_image.materialize_context(project_id)
-            except RuntimeError:
-                pass
         context = self.context_queries.current_task_context(project_id, item_decision.us_id)
         profile = self.context_queries.current_quality_profile(project_id, item_decision.us_id)
         decision = decide_us_task_start(target, has_task_context=context is not None)

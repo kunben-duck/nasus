@@ -127,7 +127,7 @@ Nasus 是 agent-first 产品，但不是通用聊天系统。Agent 的职责是�
 状态规则：
 
 - `source_required` 表示缺少必需的代码 source，AgentGoal 必须暂停等待补充。
-- `partially_failed` 表示至少一个 source 摄入失败，不能初始化 Official Baseline。
+- `partially_failed` 表示存在 source 摄入失败；必需代码 source 失败阻断 Official Baseline 初始化，可选 US/测试 source 失败只留下 gap 并降低相应用途 readiness，不阻断有效代码基线。
 - `materialized` 表示已生成候选对象、关系和指标，但尚未确认。
 - `pending_review` 表示等待管理员或质量负责人确认。
 - `ready` 表示 Official Baseline 可供版本 fork。
@@ -171,6 +171,8 @@ V1 至少支持三条核心关系路径：
 - 展示对象图谱、证据链、置信度和 freshness。
 
 ### 5.8 验收标准
+
+下一阶段自主构建、持续版本演进与下游质量指导的开发细化见[系统画像主方案](./design/system-image/autonomous-system-image-design.md)和[开发验收方案](./design/system-image/delivery-and-evaluation.md)。这些是目标设计，不是已实现能力声明。
 
 - 无真实代码绑定时，系统只能创建 slots 和追问，不能初始化正式基线。
 - 只有代码 source 时可以初始化低置信 Official Baseline；后续引入历史 US 或测试资产时必须增量生成跨源关系和更新指标，不得重建无关事实。

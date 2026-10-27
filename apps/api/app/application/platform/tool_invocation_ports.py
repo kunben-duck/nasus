@@ -20,6 +20,10 @@ class ToolInvocationApplicationStatePort(Protocol):
 
     def get_invocation(self, invocation_id: str) -> ToolInvocation: ...
 
+    def find_idempotent_invocation(
+        self, *, idempotency_scope: str, tool_id: str, idempotency_key: str,
+    ) -> ToolInvocation | None: ...
+
     def list_invocations(self) -> Sequence[ToolInvocation]: ...
 
     def list_audit_events(self) -> Sequence[AuditEvent]: ...
@@ -49,6 +53,12 @@ class ToolInvocationAccessPort(Protocol):
     def can_access_audit_event(self, event: AuditEvent) -> bool: ...
 
 
+class ToolInvocationReadResourcesPort(Protocol):
+    def require_access(self, invocation: ToolInvocation) -> None: ...
+
+    def require_batch_access(self, invocations: Sequence[ToolInvocation]) -> None: ...
+
+
 class ToolStatusEventPort(Protocol):
     async def emit_tool_status(
         self,
@@ -72,5 +82,6 @@ __all__ = [
     "ToolInvocationAccessPort",
     "ToolInvocationApplicationStatePort",
     "ToolInvocationExecutionPort",
+    "ToolInvocationReadResourcesPort",
     "ToolStatusEventPort",
 ]

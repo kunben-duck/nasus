@@ -64,7 +64,10 @@ def context_confidence(
     sources: Iterable[QualitySourceLike],
     relationships: Iterable[RelationshipLike],
     metrics: Iterable[MetricLike],
-) -> float:
+) -> float | None:
+    metric_list = list(metrics)
+    if _unassessed_inventory(metric_list):
+        return None
     indexed_source_types = {
         source.source_type
         for source in sources
@@ -76,12 +79,14 @@ def context_confidence(
         + (0.2 if "test_asset" in indexed_source_types else 0.0)
     )
     relationship_score = min(1.0, len(list(relationships)) / 6)
-    metric_score = min(1.0, len(list(metrics)) / 3)
+    metric_score = min(1.0, len(metric_list) / 3)
     return round(max(0.0, min(1.0, indexed_source_score * 0.4 + relationship_score * 0.3 + metric_score * 0.3)), 2)
 
 
-def risk_score(metrics: Iterable[MetricLike]) -> int:
+def risk_score(metrics: Iterable[MetricLike]) -> int | None:
     metric_list = list(metrics)
+    if _unassessed_inventory(metric_list):
+        return None
     code = _metric_by_group(metric_list, "code_quality")
     tests = _metric_by_group(metric_list, "test_quality")
     code_risk = int((code.metrics.get("code_risk_score", 50) if code else 50))
@@ -89,22 +94,30 @@ def risk_score(metrics: Iterable[MetricLike]) -> int:
     return min(100, max(0, code_risk + failed_runs * 8))
 
 
-def coverage_score(metrics: Iterable[MetricLike]) -> int:
-    tests = _metric_by_group(list(metrics), "test_quality")
+def coverage_score(metrics: Iterable[MetricLike]) -> int | None:
+    metric_list = list(metrics)
+    if _unassessed_inventory(metric_list):
+        return None
+    tests = _metric_by_group(metric_list, "test_quality")
     scenario = float((tests.metrics.get("scenario_coverage", 0) if tests else 0) or 0)
     automation = float((tests.metrics.get("automation_coverage", 0) if tests else 0) or 0)
     return min(100, max(0, round(((scenario * 0.6) + (automation * 0.4)) * 100)))
 
 
-def automation_feasibility(metrics: Iterable[MetricLike]) -> int:
-    tests = _metric_by_group(list(metrics), "test_quality")
+def automation_feasibility(metrics: Iterable[MetricLike]) -> int | None:
+    metric_list = list(metrics)
+    if _unassessed_inventory(metric_list):
+        return None
+    tests = _metric_by_group(metric_list, "test_quality")
     automation = float((tests.metrics.get("automation_coverage", 0) if tests else 0) or 0)
     test_count = int((tests.metrics.get("test_count", 0) if tests else 0) or 0)
     return min(100, max(0, round(automation * 80 + min(test_count, 5) * 4)))
 
 
-def release_score(metrics: Iterable[MetricLike], *, blocked_items: int, pending_approvals: int) -> int:
+def release_score(metrics: Iterable[MetricLike], *, blocked_items: int, pending_approvals: int) -> int | None:
     metric_list = list(metrics)
+    if _unassessed_inventory(metric_list):
+        return None
     release = _metric_by_group(metric_list, "release_readiness")
     if release and "release_score" in release.metrics:
         return int(release.metrics["release_score"])
@@ -116,6 +129,8 @@ def release_score(metrics: Iterable[MetricLike], *, blocked_items: int, pending_
 
 def risk_drivers(metrics: Iterable[MetricLike], relationships: Iterable[RelationshipLike]) -> list[str]:
     metric_list = list(metrics)
+    if _unassessed_inventory(metric_list):
+        return ["Quality assessment is unknown; source inventory does not establish coverage, risk or release readiness."]
     relationship_list = list(relationships)
     drivers: list[str] = []
     code = _metric_by_group(metric_list, "code_quality")
@@ -134,3 +149,9 @@ def risk_drivers(metrics: Iterable[MetricLike], relationships: Iterable[Relation
 
 def _metric_by_group(metrics: Iterable[MetricLike], group: str) -> MetricLike | None:
     return next((metric for metric in metrics if metric.metric_group == group), None)
+
+
+def _unassessed_inventory(metrics: Iterable[MetricLike]) -> bool:
+    # Counts and legacy metrics mixed into an inventory cannot establish quality.
+    return any(metric.metrics.get("measurement_basis") == "admitted_projection_inventory_not_quality_assessment"
+        or metric.metrics.get("coverage_status") == "unknown" for metric in metrics)

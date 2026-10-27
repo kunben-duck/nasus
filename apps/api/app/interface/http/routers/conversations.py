@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from typing import Any, Optional
+from uuid import uuid4
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Header, Request, status
 from fastapi.responses import StreamingResponse
 
 from ....application.agent.agent_models import (
@@ -11,8 +12,11 @@ from ....application.agent.agent_models import (
     ConversationMergeRequest,
     ConversationMessageRequest,
 )
+from ....application.agent.turns import ConversationTurnConflict
+from ....application.platform.actor_context import current_actor
 from ..dependencies import AgentApp
 from ..errors import error_response
+from ..request_context import resolve_request_id
 from ...sse import SSE_RESPONSE_HEADERS, encode_event, encode_heartbeat
 
 router = APIRouter()
@@ -82,12 +86,47 @@ def merge_conversation(conversation_id: str, payload: ConversationMergeRequest, 
         raise error_response("not_found", "conversation merge target was not found", 404) from exc
 
 
-@router.post("/v1/conversations/{conversation_id}/messages")
-async def post_message(conversation_id: str, payload: ConversationMessageRequest, agent: AgentApp) -> Any:
+@router.post(
+    "/v1/conversations/{conversation_id}/messages",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def post_message(
+    conversation_id: str,
+    payload: ConversationMessageRequest,
+    request: Request,
+    agent: AgentApp,
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
     try:
-        return await agent.post_message(conversation_id, payload)
+        actor = current_actor()
+        return await agent.accept_message(
+            conversation_id,
+            payload,
+            idempotency_key=idempotency_key or f"server-{uuid4().hex}",
+            events_url=f"/v1/conversations/{conversation_id}/events",
+            actor=actor.user if actor is not None else None,
+            request_id=resolve_request_id(request),
+        )
     except KeyError as exc:
         raise error_response("not_found", f"conversation {conversation_id} was not found", 404) from exc
+    except ConversationTurnConflict as exc:
+        raise error_response("conversation_turn_active", str(exc), 409) from exc
+
+
+@router.get("/v1/conversations/{conversation_id}/turns/{turn_id}")
+def get_conversation_turn(conversation_id: str, turn_id: str, agent: AgentApp) -> Any:
+    try:
+        return agent.get_conversation_turn(conversation_id, turn_id)
+    except KeyError as exc:
+        raise error_response("not_found", f"conversation turn {turn_id} was not found", 404) from exc
+
+
+@router.post("/v1/conversations/{conversation_id}/turns/{turn_id}/cancel")
+async def cancel_conversation_turn(conversation_id: str, turn_id: str, agent: AgentApp) -> Any:
+    try:
+        return await agent.cancel_conversation_turn(conversation_id, turn_id)
+    except KeyError as exc:
+        raise error_response("not_found", f"conversation turn {turn_id} was not found", 404) from exc
 
 
 @router.get("/v1/conversations/{conversation_id}/events")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Literal, Protocol
 
 from ...domain.agent.memory import AgentMemoryContext
 from ...domain.platform.llm_call import LLMCallContext
@@ -15,6 +16,22 @@ class AgentReplyGenerationResult(Protocol):
     mode: str
     reason: str
     llm_call_id: str | None
+
+
+@dataclass(frozen=True)
+class AgentReplyGenerationEvent:
+    kind: Literal["started", "delta", "usage", "completed", "failed"]
+    provider: str
+    model_name: str
+    mode: str
+    reason: str
+    delta: str = ""
+    content: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    usage_source: str = "none"
+    llm_call_id: str | None = None
+    error: str | None = None
 
 
 class AgentReplyMemoryPort(Protocol):
@@ -46,6 +63,20 @@ class AgentReplyGenerationPort(Protocol):
     ) -> AgentReplyGenerationResult:
         ...
 
+    def stream_reply(
+        self,
+        *,
+        settings: StudioSettings,
+        system_prompt: str,
+        user_message: str,
+        context_snapshot: str,
+        history_snapshot: str,
+        fallback_text: str,
+        custom_api_key: str | None = None,
+        call_context: LLMCallContext | None = None,
+    ) -> AsyncIterator[AgentReplyGenerationEvent]:
+        ...
+
 
 class AgentReplyModelSettingsPort(Protocol):
     """Resolves the active model route and its secret at call time."""
@@ -75,6 +106,7 @@ class AgentReplyMessageWriterPort(Protocol):
 
 __all__ = [
     "AgentReplyGenerationPort",
+    "AgentReplyGenerationEvent",
     "AgentReplyGenerationResult",
     "AgentReplyMemoryPort",
     "AgentReplyMessageWriterPort",

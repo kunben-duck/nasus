@@ -1,0 +1,42 @@
+.semantic-evaluation-panel { margin-top: 18px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); min-width: 0; }
+.semantic-evaluation-panel header { display: flex; align-items: start; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.semantic-evaluation-panel h4, .semantic-evaluation-panel h5 { margin: 0 0 8px; }
+.semantic-evaluation-panel header > span, .semantic-history time { color: var(--muted); font-size: 11px; }
+.semantic-evaluation-panel p, .semantic-evaluation-panel dd, .semantic-evaluation-panel code { overflow-wrap: anywhere; }
+.semantic-model-choice { display: grid; gap: 6px; margin: 14px 0; }
+.semantic-model-choice select { width: 100%; min-width: 0; padding: 9px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+.semantic-candidate-choice, .semantic-confirm { display: flex; align-items: start; gap: 8px; line-height: 1.5; }
+.semantic-candidate-choice input, .semantic-confirm input { flex-shrink: 0; margin-top: 3px; accent-color: var(--blue); }
+.semantic-consent { border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin: 14px 0; background: var(--surface); }
+.semantic-consent dl { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); gap: 9px 14px; }
+.semantic-consent dt { color: var(--muted); }
+.semantic-consent dd { margin: 0; }
+.semantic-consent dd code { display: block; }
+.semantic-confirm { margin: 18px 0 12px; }
+.semantic-history { margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--border); }
+.semantic-history article { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.semantic-history article > div { display: grid; gap: 4px; min-width: 0; }
+.semantic-result { margin-top: 20px; }
+.semantic-judgment { padding: 14px 0; border-top: 1px solid var(--border); }
+.semantic-judgment p, .semantic-judgment li { white-space: pre-wrap; overflow-wrap: anywhere; }
+.semantic-citation { margin: 12px 0; padding: 12px; border-left: 2px solid var(--border); background: var(--surface); border-radius: 0 8px 8px 0; }
+.semantic-citation pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 monospace; }
+.semantic-evidence-inspection { margin-top: 14px; }
+.semantic-review { margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.semantic-review > header { padding: 0 0 12px; margin-bottom: 12px; }
+.semantic-review h5 { font-size: 13px; line-height: 1.5; }
+.semantic-review-head { padding: 12px; margin: 12px 0; border-left: 2px solid var(--blue); background: var(--surface-2); border-radius: 0 8px 8px 0; }
+.semantic-review small { color: var(--muted); overflow-wrap: anywhere; }
+.semantic-review dl { margin: 10px 0; }
+.semantic-review dd { margin: 4px 0 10px; }
+.semantic-review fieldset { margin: 16px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; min-width: 0; }
+.semantic-review fieldset > label:not(.semantic-confirm) { display: grid; gap: 6px; margin: 10px 0; }
+.semantic-review select, .semantic-review textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: 9px; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+.semantic-review textarea { resize: vertical; }
+.semantic-review summary { cursor: pointer; overflow-wrap: anywhere; }
+.semantic-review-history article { padding: 12px 0; border-bottom: 1px solid var(--border); }
+@media (max-width: 600px) {
+  .semantic-evaluation-panel, .semantic-consent, .semantic-review { padding: 10px; }
+  .semantic-consent dl { grid-template-columns: minmax(0, 1fr); gap: 5px; }
+  .semantic-consent dd { margin-bottom: 8px; }
+}

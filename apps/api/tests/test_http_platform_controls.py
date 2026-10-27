@@ -15,6 +15,7 @@ from apps.api.app.infrastructure.persistence.db_models import ApiRateLimitWindow
 from apps.api.app.infrastructure.platform.request_rate_limiter import (
     SQLAlchemyFixedWindowRateLimiter,
 )
+from apps.api.app.infrastructure.platform.operator_identity import SQLAlchemyOperatorIdentityBootstrap
 from apps.api.app.main import app
 
 
@@ -158,6 +159,7 @@ def test_metrics_endpoint_requires_authentication_in_protected_mode() -> None:
         user_email="metrics@example.com",
         user_role="platform_admin",
     )
+    SQLAlchemyOperatorIdentityBootstrap().ensure(app.state.auth_config.user())
     client = TestClient(app)
     try:
         anonymous = client.get("/metrics")

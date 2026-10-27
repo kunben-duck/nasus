@@ -135,6 +135,17 @@ def test_project_binding_controls_effective_role_without_store_state() -> None:
     assert denied.value.code == "project_access_denied"
 
 
+def test_current_actor_is_identity_not_a_project_authorization() -> None:
+    actor = _user("member-1", "project_admin")
+    service, _bindings, _facts = _service(actor)
+    identity = service.current_actor()
+    assert identity == actor and identity is not actor
+    identity.role = "platform_admin"
+    assert service.current_actor().role == "project_admin"
+    with pytest.raises(PlatformApplicationError):
+        service.effective_user_for_project("project-1", require_existing_project=True)
+
+
 def test_project_administrator_can_manage_members_without_platform_privileges() -> None:
     administrator = _user("admin-1", "qa_lead")
     service, _bindings, _facts = _service(administrator)
@@ -233,6 +244,33 @@ def test_conversation_invocation_and_audit_access_use_durable_scope_facts() -> N
     )
 
 
+@pytest.mark.parametrize("role", ["viewer", "tester", "qa_lead", "project_admin"])
+@pytest.mark.parametrize("initiator_id", ["member-1", "other-user"])
+def test_conversation_listing_rejects_missing_project_with_stale_membership(role, initiator_id) -> None:
+    member = _user("member-1", role)
+    service, _bindings, facts = _service(member)
+    service.grant_role(
+        project_id="project-1", user_id=member.id, role=role, created_by="admin-1",
+    )
+    conversation = ConversationAccessScope("historical-conversation", "project-1", initiator_id)
+    facts.projects.remove("project-1")
+
+    assert service.can_access_conversation(conversation) is False
+    with pytest.raises(KeyError, match="project-1"):
+        service.require_conversation_access(conversation)
+
+
+def test_conversation_listing_does_not_hide_unexpected_authorization_failures(monkeypatch) -> None:
+    service, _bindings, facts = _service(_user("member-1", "tester"))
+
+    def unavailable(_project_id):
+        raise RuntimeError("authorization read unavailable")
+
+    monkeypatch.setattr(facts, "project_exists", unavailable)
+    with pytest.raises(RuntimeError, match="authorization read unavailable"):
+        service.can_access_conversation(facts.conversations["conversation-1"])
+
+
 def test_sqlalchemy_access_read_model_queries_authorization_facts_by_id() -> None:
     init_database()
     suffix = "project_access_adapter"
@@ -288,7 +326,9 @@ def test_sqlalchemy_access_read_model_queries_authorization_facts_by_id() -> Non
                     tool_id="project.get",
                     summary="Read project",
                     input_payload={"version_id": ids["version"]},
-                    result_payload={"object_refs": [f"project:{ids['project']}"]},
+                    status="completed",
+                    result_payload={"invocation_id": ids["invocation"], "status": "completed", "summary": "Read project",
+                                    "object_refs": [f"project:{ids['project']}"]},
                 )
             )
             session.add(
@@ -315,6 +355,11 @@ def test_sqlalchemy_access_read_model_queries_authorization_facts_by_id() -> Non
         assert read_model.invocation_scope(ids["invocation"]).object_refs == (
             f"project:{ids['project']}",
         )
+        invocation_scope = read_model.invocation_scope(ids["invocation"])
+        assert invocation_scope.status == "completed"
+        assert invocation_scope.result.invocation_id == ids["invocation"]
+        assert invocation_scope.result.status == "completed"
+        assert read_model.invocation_scope(ids["invocation"]).tool_id == "project.get"
         assert read_model.invocation_created_by(ids["invocation"], "member-1")
         assert scope_read_model.project_id_for_version(ids["version"]) == ids["project"]
         assert scope_read_model.project_id_for_us(ids["us"]) == ids["project"]

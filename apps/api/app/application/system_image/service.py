@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
+
+from ..platform.errors import PlatformApplicationError
 
 from ...domain.system_image.build_state import resolve_build_state
 from ...domain.system_image.materialization import require_materialized_evidence
+from ...domain.system_image.frozen_projection import require_frozen_projection
+from ...domain.system_image.source_refresh import SourceRefreshSelection
+from ...domain.system_image.source_snapshots import CapturedSourceManifest
 from ...domain.system_image.source_binding import (
     REQUIRED_SOURCE_TYPES,
     default_source_uri,
@@ -13,16 +19,28 @@ from ...domain.system_image.source_binding import (
     source_binding_incomplete,
 )
 from .context_extraction import ContextExtractionService
+from .code_analysis_inventory import CodeAnalysisInventoryPort
+from .document_projections import DocumentProjectionApplicationService
 from .embedding_records import SystemImageEmbeddingRecordApplicationService
 from .materialization_snapshot import SystemImageMaterializationSnapshot
+from .materialization_inputs import MaterializationInputApplicationService
+from .materialization_command_port import MaterializationCommandInputPort
 from .persistence import SystemImagePersistenceApplicationService
 from .ports import SystemImageWorkspacePort
 from .quality_contexts import SystemImageQualityContextApplicationService
 from .raw_asset_chunks import SystemImageRawAssetChunkApplicationService
 from .retrieval_port import SystemImageRetrievalIndexPort
 from .source_ingestion import SystemImageSourceIngestionApplicationService
+from .source_access import SourceScopeAuthorizationPort
+from .source_acquisition_ports import SourceAcquisitionIntentPort
+from .source_snapshot_ports import SourceSnapshotRepositoryPort
+from .code_entity_registry import CodeEntityRegistryPort
+from .image_revision_ports import ImageCandidatePort
+from .image_candidate_preparation import ImageCandidatePreparation, PreparedImageCandidate
+from ...domain.system_image.image_revision import ImageRevisionConflict, ImageRevisionIntegrityError
 from .source_ports import (
     CodeIntelligencePort,
+    SourceCodeIntelligencePort,
     SourceIngestionPort,
     SourceSpec,
     SystemImageIngestionProjectionPort,
@@ -47,15 +65,30 @@ class SystemImageService:
         retrieval_index: SystemImageRetrievalIndexPort,
         ingestion_projection: SystemImageIngestionProjectionPort,
         code_intelligence: CodeIntelligencePort,
+        source_snapshots: SourceSnapshotRepositoryPort | None = None,
+        code_entity_registry: CodeEntityRegistryPort | None = None,
+        code_analysis_inventory: CodeAnalysisInventoryPort | None = None,
+        image_candidates: ImageCandidatePort | None = None,
+        document_projections: DocumentProjectionApplicationService | None = None,
+        source_code_intelligence: Optional[SourceCodeIntelligencePort] = None,
+        source_authorization: Optional[SourceScopeAuthorizationPort] = None,
+        acquisition_intents: Optional[SourceAcquisitionIntentPort] = None,
+        materialization_commands: Optional[MaterializationCommandInputPort] = None,
     ) -> None:
         self.workspace = workspace
         self.source_ingestion = source_ingestion
+        self.source_snapshots = source_snapshots
+        self.image_candidates = image_candidates
+        self.materialization_inputs = MaterializationInputApplicationService(source_snapshots, source_authorization, materialization_commands)
         self.persistence = SystemImagePersistenceApplicationService(workspace)
         self.raw_asset_chunks = SystemImageRawAssetChunkApplicationService(workspace, self.source_ingestion)
         self.source_ingestion_use_cases = SystemImageSourceIngestionApplicationService(
             ingestion_projection,
             self.source_ingestion,
             self.raw_asset_chunks,
+            source_snapshots,
+            source_authorization=source_authorization,
+            acquisition_intents=acquisition_intents,
         )
         self.embedding_records = SystemImageEmbeddingRecordApplicationService(
             workspace,
@@ -71,9 +104,16 @@ class SystemImageService:
         self.context_extraction = ContextExtractionService(
             self.source_ingestion,
             code_intelligence,
+            code_entity_registry=code_entity_registry,
+            code_analysis_inventory=code_analysis_inventory,
+            document_projections=document_projections,
+            source_code_intelligence=source_code_intelligence,
         )
+        self.candidate_preparation = (ImageCandidatePreparation(source_snapshots, self.context_extraction, image_candidates)
+                                      if source_snapshots and image_candidates else None)
 
-    def ensure_state(self, project_id: str, *, ready: bool, version_id: Optional[str] = None) -> None:
+    def ensure_state(self, project_id: str, *, ready: bool, version_id: Optional[str] = None,
+                     source_manifest=None) -> None:
         project = self.workspace.get_project(project_id)
         now = _now_iso()
         baseline_id = f"base_{project_id}_official"
@@ -84,11 +124,8 @@ class SystemImageService:
         metrics = self.workspace.list_quality_metric_snapshots(project_id)
 
         if ready:
-            require_materialized_evidence(
-                objects=objects,
-                relationships=relationships,
-                metrics=metrics,
-            )
+            self._require_materialization(project_id, baseline_id, source_manifest,
+                objects=objects, relationships=relationships, metrics=metrics)
 
         if not sources:
             self.workspace.replace_raw_assets(project_id, [
@@ -163,12 +200,14 @@ class SystemImageService:
         return default_source_uri(project.name, source_type)
 
     def source_binding_incomplete(self, project_id: str) -> bool:
-        project = self.workspace.get_project(project_id)
-        return source_binding_incomplete(self.workspace.list_raw_assets(project_id), project.name)
+        with self.workspace.operation_session():
+            project = self.workspace.get_project(project_id)
+            return source_binding_incomplete(self.workspace.list_raw_assets(project_id), project.name)
 
     def missing_source_types(self, project_id: str) -> list[str]:
-        project = self.workspace.get_project(project_id)
-        return missing_source_types(self.workspace.list_raw_assets(project_id), project.name)
+        with self.workspace.operation_session():
+            project = self.workspace.get_project(project_id)
+            return missing_source_types(self.workspace.list_raw_assets(project_id), project.name)
 
     def register_sources(
         self,
@@ -187,20 +226,47 @@ class SystemImageService:
         )
         return self.get(project_id)
 
-    def ingest_sources(self, project_id: str) -> SystemImageResponse:
+    def ingest_sources(self, project_id: str, *, selection: SourceRefreshSelection | None = None,
+                       invocation_id: str | None = None) -> SystemImageResponse:
         self.source_ingestion_use_cases.ingest_sources(
             project_id,
+            selection=selection,
+            invocation_id=invocation_id,
             ensure_draft_state=lambda: self.ensure_state(project_id, ready=False),
             source_binding_incomplete=lambda: self.source_binding_incomplete(project_id),
             missing_source_types=lambda: self.missing_source_types(project_id),
         )
         return self.get(project_id)
 
-    async def materialize_context(self, project_id: str) -> SystemImageResponse:
-        self.ingest_sources(project_id)
-        self._ensure_sources_ready(project_id, stage="materialize system context")
+    async def materialize_context(self, project_id: str, *, invocation_id=None) -> SystemImageResponse:
+        with self.workspace.operation_session():
+            return await self._materialize_captured_context(project_id, invocation_id=invocation_id)
+
+    async def _materialize_captured_context(self, project_id: str, *, invocation_id=None) -> SystemImageResponse:
+        admitted = self.materialization_inputs.admit(project_id, invocation_id=invocation_id)
+        check_input = lambda: self.materialization_inputs.require_current(admitted)
         versions = self.workspace.list_versions(project_id)
         version_id = versions[0].id if versions else None
+        manifest = admitted.manifest
+        if self.candidate_preparation is None:
+            raise PlatformApplicationError("materialization_inputs_unavailable", "Frozen candidate preparation is unavailable.", 503)
+        baselines = self.workspace.list_baselines(project_id)
+        # Only immutable-input extraction/append-only persistence runs in the
+        # thread. The mutable projection stays on the caller's execution path.
+        try:
+            prepared = await asyncio.to_thread(self.candidate_preparation.prepare, manifest,
+                project_name=self.workspace.get_project(project_id).name,
+                baseline_id=baselines[0].id if baselines else f"base_{project_id}_official",
+                version_id=version_id, invocation_id=invocation_id, recorded_at=_now_iso(), check_phase=check_input)
+        except (PlatformApplicationError, ImageRevisionConflict):
+            raise
+        except (ImageRevisionIntegrityError, ValueError) as exc:
+            raise PlatformApplicationError("materialization_source_integrity_failed",
+                "Frozen candidate integrity could not be verified.", 409) from exc
+        except Exception as exc:
+            raise PlatformApplicationError("materialization_candidate_preparation_failed",
+                "Frozen candidate preparation failed; existing materialized context was not replaced.", 503) from exc
+        check_input()
         snapshot = self._capture_materialization_snapshot(
             project_id,
             version_id=version_id,
@@ -209,9 +275,22 @@ class SystemImageService:
             return await self._materialize_context(
                 project_id,
                 version_id=version_id,
+                manifest=manifest, prepared=prepared, check_input=check_input,
             )
-        except Exception:
-            self._restore_materialization_snapshot(project_id, snapshot)
+        except ImageRevisionConflict:
+            # Candidate validation occurs before replacing the legacy projection.
+            # Do not restore a stale snapshot over a concurrently changed source.
+            raise
+        except Exception as exc:
+            changed = isinstance(exc, PlatformApplicationError) and exc.code == "materialization_sources_changed"
+            try:
+                current = not changed and self.source_snapshots.is_current_materialization_input(manifest)
+            except Exception:
+                current = False
+            # A stale permission scope or provider failure can accompany an
+            # independent capture. Never restore over an unverified source head.
+            if current:
+                self._restore_materialization_snapshot(project_id, snapshot)
             raise
 
     async def _materialize_context(
@@ -219,6 +298,9 @@ class SystemImageService:
         project_id: str,
         *,
         version_id: str | None,
+        manifest: CapturedSourceManifest,
+        prepared: PreparedImageCandidate,
+        check_input: Callable[[], None],
     ) -> SystemImageResponse:
         baselines = self.workspace.list_baselines(project_id)
         baseline_id = (
@@ -227,19 +309,17 @@ class SystemImageService:
             else f"base_{project_id}_official"
         )
         now = _now_iso()
-        extracted = self.context_extraction.extract(
-            project_id=project_id,
-            project_name=self.workspace.get_project(project_id).name,
-            baseline_id=baseline_id,
-            sources=self.workspace.list_raw_assets(project_id),
-            version_id=version_id,
-            captured_at=now,
-        )
-        require_materialized_evidence(
+        check_input()
+        if (not self.source_snapshots.is_current_materialization_input(manifest)
+                or prepared.revision.baseline_id != baseline_id):
+            raise ImageRevisionConflict("Source or baseline inputs changed before applying the candidate.")
+        extracted = prepared.context
+        self._require_materialization(project_id, baseline_id, manifest,
             objects=extracted.objects,
             relationships=extracted.relationships,
             metrics=extracted.metrics,
         )
+        candidate = prepared.revision
         self.workspace.replace_knowledge_objects(project_id, extracted.objects)
         self.workspace.replace_context_relationships(project_id, extracted.relationships)
         self.workspace.replace_quality_metric_snapshots(project_id, extracted.metrics)
@@ -250,7 +330,10 @@ class SystemImageService:
             baseline_id=baseline_id,
             version_id=version_id,
             captured_at=now,
+            sources=list(prepared.sources),
+            check_phase=check_input,
         )
+        check_input()
 
         baselines = self.workspace.list_baselines(project_id)
         if baselines:
@@ -261,6 +344,7 @@ class SystemImageService:
             self.workspace.replace_baselines(project_id, baselines)
 
         project = self.workspace.get_project(project_id)
+        project.system_image_status = "materialized"
         project.progress = max(project.progress, 24)
         self.workspace.save_project(project)
         self.workspace.replace_knowledge_objects(
@@ -270,7 +354,7 @@ class SystemImageService:
         )
         self.persistence.persist(project_id)
         self.workspace.refresh_project_read_model(project_id)
-        return self.get(project_id)
+        return self.get(project_id).model_copy(update={"candidate_revision": candidate})
 
     def _capture_materialization_snapshot(
         self,
@@ -350,10 +434,18 @@ class SystemImageService:
     def _copies(items):
         return [item.model_copy(deep=True) for item in items]
 
-    async def initialize_baseline(self, project_id: str) -> SystemImageResponse:
-        await self.materialize_context(project_id)
+    async def initialize_baseline(self, project_id: str, *, invocation_id=None) -> SystemImageResponse:
+        with self.workspace.operation_session():
+            return await self._initialize_baseline(project_id, invocation_id=invocation_id)
+
+    async def _initialize_baseline(self, project_id: str, *, invocation_id=None) -> SystemImageResponse:
+        materialized = await self.materialize_context(project_id, invocation_id=invocation_id)
         self._ensure_sources_ready(project_id, stage="initialize Official System Image")
-        require_materialized_evidence(
+        manifest = (self.source_snapshots.get_manifest(project_id, materialized.candidate_revision.manifest_id)
+                    if materialized.candidate_revision else None)
+        baseline_id = (materialized.candidate_revision.baseline_id if materialized.candidate_revision
+                       else f"base_{project_id}_official")
+        self._require_materialization(project_id, baseline_id, manifest,
             objects=self.workspace.list_knowledge_objects(project_id),
             relationships=self.workspace.list_context_relationships(project_id),
             metrics=self.workspace.list_quality_metric_snapshots(project_id),
@@ -364,11 +456,23 @@ class SystemImageService:
         self.workspace.save_project(project)
         versions = self.workspace.list_versions(project_id)
         version_id = versions[0].id if versions else None
-        self.ensure_state(project_id, ready=True, version_id=version_id)
+        self.ensure_state(project_id, ready=True, version_id=version_id, source_manifest=manifest)
         self.workspace.refresh_project_read_model(project_id)
-        return self.get(project_id)
+        return self.get(project_id).model_copy(update={"candidate_revision": materialized.candidate_revision})
+
+    @staticmethod
+    def _require_materialization(project_id, baseline_id, source_manifest, **projection):
+        if source_manifest is not None:
+            if source_manifest.project_id != project_id:
+                raise ImageRevisionConflict("Materialization project differs from the frozen manifest.")
+            return require_frozen_projection(source_manifest, baseline_id, **projection)
+        return require_materialized_evidence(**projection)
 
     def get(self, project_id: str) -> SystemImageResponse:
+        with self.workspace.operation_session():
+            return self._get(project_id)
+
+    def _get(self, project_id: str) -> SystemImageResponse:
         self.workspace.refresh_project_read_model(project_id)
         project = self.workspace.get_project(project_id)
         baselines = self.workspace.list_baselines(project_id)
@@ -406,6 +510,7 @@ class SystemImageService:
             rerank_records=self.workspace.list_rerank_records(project_id),
             task_contexts=self.workspace.list_task_contexts(project_id),
             quality_profiles=self.workspace.list_quality_profiles(project_id),
+            source_manifest=self.source_snapshots.latest_manifest(project_id) if self.source_snapshots else None,
         )
 
     def _build_state(self, project_id: str, baseline: BaselineRecord | None) -> SystemImageBuildState:
@@ -419,7 +524,8 @@ class SystemImageService:
             sources=sources,
             missing_source_types=self.missing_source_types(project_id),
             has_context=bool(self.workspace.list_knowledge_objects(project_id))
-            and bool(self.workspace.list_context_relationships(project_id)),
+            and (self.source_snapshots is not None or bool(self.workspace.list_context_relationships(project_id)))
+            and (self.source_snapshots is None or project.system_image_status in {"materialized", "ready"}),
             has_metrics=bool(self.workspace.list_quality_metric_snapshots(project_id)),
             baseline_status=baseline.status if baseline else None,
             project_system_image_status=project.system_image_status,

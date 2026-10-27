@@ -1,0 +1,4 @@
+body { overflow: auto; }
+main { width: min(100% - 32px, 960px); margin: 32px auto; }
+main > h1 { font-size: 24px; }
+main > p { color: var(--muted); margin-bottom: 24px; }

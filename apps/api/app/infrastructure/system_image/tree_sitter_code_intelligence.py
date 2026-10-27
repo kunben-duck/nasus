@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections import Counter, defaultdict
+from dataclasses import dataclass, replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -20,6 +21,17 @@ from ...application.system_image.source_ports import (
     CodeRelationshipCandidate,
     SourceTextUnit,
 )
+from ...domain.system_image.code_identity import CodeSymbolKey
+from ...domain.system_image.code_provider import CodeProjectionGap, CodeProviderCapabilities, CodeProviderObservation
+from .code_symbol_signatures import declaration_key
+from ...domain.system_image.code_analysis import CodeFileAnalysis, CodeStructureFact
+from .java_structure_inventory import java_structure, RULE as JAVA_STRUCTURE_RULE, LOCATOR_RULE
+
+
+class _SyntaxFailure(ValueError):
+    def __init__(self, count: int) -> None:
+        super().__init__("source has syntax errors")
+        self.count = count
 
 
 @dataclass(frozen=True)
@@ -164,8 +176,14 @@ class TreeSitterCodeIntelligenceAdapter:
 
     provider = "tree-sitter"
 
-    def __init__(self) -> None:
+    def __init__(self, *, strict_http_locators=False) -> None:
         self.provider_version = version("tree-sitter")
+        self.strict_http_locators = strict_http_locators
+
+    def capabilities(self) -> CodeProviderCapabilities:
+        return CodeProviderCapabilities(self.provider, self.provider_version,
+            ("capabilities", "analyze", "analyze_controlled"),
+            tuple(sorted({grammar.name for grammar in _GRAMMARS.values()})), "declared")
 
     def diagnostics(self) -> dict[str, str]:
         return {
@@ -176,30 +194,86 @@ class TreeSitterCodeIntelligenceAdapter:
         }
 
     def analyze(self, units: Sequence[SourceTextUnit]) -> CodeIntelligenceResult:
+        return self._analyze(units)
+
+    def analyze_controlled(self, units: Sequence[SourceTextUnit], *, check_current: Callable[[], None]) -> CodeIntelligenceResult:
+        return self._analyze(units, check_current=check_current)
+
+    def _analyze(self, units: Sequence[SourceTextUnit], *, check_current=None) -> CodeIntelligenceResult:
         entities: dict[str, CodeEntityCandidate] = {}
         relationships: dict[tuple[str, str, str], CodeRelationshipCandidate] = {}
         pending_calls: list[_PendingCall] = []
         unsupported_paths: list[str] = []
+        file_analyses: list[CodeFileAnalysis] = []
+        structural_facts: list[CodeStructureFact] = []
         parser_languages: set[str] = set()
         used_lexical_fallback = False
 
-        for unit in units:
+        for unit in sorted(units, key=lambda item: item.relative_path):
+            if check_current is not None:
+                check_current()
             grammar = _GRAMMARS.get(Path(unit.relative_path).suffix.lower())
             if grammar is None:
                 unsupported_paths.append(unit.relative_path)
                 used_lexical_fallback = True
                 self._analyze_lexically(unit, entities, relationships)
+                file_analyses.append(CodeFileAnalysis(
+                    unit.relative_path, Path(unit.relative_path).suffix.lower().lstrip(".") or "unknown",
+                    "unsupported", "grammar_unavailable", f"tree-sitter:{self.provider_version}",
+                    rules=("lexical-fallback",),
+                ))
                 continue
             parser_languages.add(grammar.name)
-            self._analyze_tree_sitter_unit(
-                unit,
-                grammar,
-                entities,
-                relationships,
-                pending_calls,
-            )
+            grammar_package = "tree-sitter-typescript" if grammar.name == "tsx" else f"tree-sitter-{grammar.name}"
+            parser_version = f"tree-sitter:{self.provider_version}/{grammar_package}:{version(grammar_package)}"
+            if not unit.text_is_lossless:
+                file_analyses.append(CodeFileAnalysis(unit.relative_path, grammar.name, "failed", "non_utf8_source",
+                                                       parser_version))
+                continue
+            file_entities: dict[str, CodeEntityCandidate] = {}
+            file_relationships: dict[tuple[str, str, str], CodeRelationshipCandidate] = {}
+            file_calls: list[_PendingCall] = []
+            route_rule = LOCATOR_RULE if self.strict_http_locators else JAVA_STRUCTURE_RULE
+            rules = ("syntax", "module", route_rule) if grammar.name == "java" else ("syntax", "module")
+            try:
+                facts = self._analyze_tree_sitter_unit(unit, grammar, file_entities, file_relationships, file_calls)
+            except _SyntaxFailure as exc:
+                file_analyses.append(CodeFileAnalysis(unit.relative_path, grammar.name, "failed", "syntax_error",
+                                                       parser_version, syntax_errors=exc.count, rules=rules))
+                continue
+            except (ValueError, RuntimeError, RecursionError):
+                file_analyses.append(CodeFileAnalysis(unit.relative_path, grammar.name, "failed", "parser_failed",
+                                                       parser_version, rules=rules))
+                continue
+            for key, entity in file_entities.items():
+                entities.setdefault(key, entity)
+            relationships.update(file_relationships)
+            pending_calls.extend(file_calls)
+            structural_facts.extend(facts)
+            file_analyses.append(CodeFileAnalysis(unit.relative_path, grammar.name, "parsed", "syntax_valid",
+                                                   parser_version, rules=rules))
 
+        if check_current is not None:
+            check_current()
+        # Repeated declarations with the same scope/signature are not one identity.
+        key_counts = Counter(item.symbol_key for item in entities.values() if item.symbol_key is not None)
+        children: dict[str, list[str]] = defaultdict(list)
+        for edge in relationships.values():
+            if edge.relationship_kind == "belongs_to":
+                children[edge.to_provider_node_id].append(edge.from_provider_node_id)
+        ambiguous = [item.provider_node_id for item in entities.values()
+                     if item.symbol_key is not None and key_counts[item.symbol_key] > 1]
+        visited: set[str] = set()
+        while ambiguous:
+            node_id = ambiguous.pop()
+            if node_id in visited:
+                continue
+            visited.add(node_id)
+            entities[node_id] = replace(entities[node_id], symbol_key=None, identity_status="ambiguous")
+            ambiguous.extend(children[node_id])
         self._resolve_calls(entities, relationships, pending_calls)
+        if check_current is not None:
+            check_current()
         evidence_refs = [
             f"parser:tree-sitter:{self.provider_version}",
             *(f"parser-language:{language}" for language in sorted(parser_languages)),
@@ -210,6 +284,15 @@ class TreeSitterCodeIntelligenceAdapter:
                 f"parser-unsupported:{Path(path).suffix.lower() or 'no-extension'}"
                 for path in sorted(set(unsupported_paths))
             )
+        gaps = [CodeProjectionGap("dynamic_dispatch_not_covered")]
+        failed = sum(item.status == "failed" for item in file_analyses)
+        if failed:
+            gaps.append(CodeProjectionGap("failed_source_parsing", failed))
+        if unsupported_paths:
+            gaps.append(CodeProjectionGap("unsupported_source_grammar", len(unsupported_paths)))
+        exact = sum(item.location_precision == "exact" for item in entities.values())
+        observation = CodeProviderObservation(self.capabilities(), len(entities), len(relationships),
+            exact, len(entities) - exact, "partial" if failed or unsupported_paths else "complete", "unknown", tuple(gaps))
         return CodeIntelligenceResult(
             provider=self.provider,
             provider_version=self.provider_version,
@@ -217,6 +300,9 @@ class TreeSitterCodeIntelligenceAdapter:
             relationships=tuple(relationships.values()),
             evidence_refs=tuple(evidence_refs),
             unsupported_paths=tuple(unsupported_paths),
+            file_analyses=tuple(file_analyses),
+            structural_facts=tuple(structural_facts),
+            provider_observations=(observation,),
         )
 
     def _analyze_tree_sitter_unit(
@@ -226,10 +312,18 @@ class TreeSitterCodeIntelligenceAdapter:
         entities: dict[str, CodeEntityCandidate],
         relationships: dict[tuple[str, str, str], CodeRelationshipCandidate],
         pending_calls: list[_PendingCall],
-    ) -> None:
+    ) -> tuple[CodeStructureFact, ...]:
         source = unit.text.encode("utf-8")
         parser = Parser(Language(grammar.language_factory()))
         tree = parser.parse(source)
+        if tree.root_node.has_error:
+            pending, count = [tree.root_node], 0
+            while pending and count < 1000:
+                node = pending.pop()
+                if node.is_error or node.is_missing:
+                    count += 1
+                pending.extend(child for child in node.children if child.has_error or child.is_missing or child.is_error)
+            raise _SyntaxFailure(max(1, count))
         module_id = self._entity_id(unit.relative_path, "module", unit.relative_path, 1)
         module_evidence = self._evidence(unit.relative_path, 1, max(1, unit.text.count("\n") + 1))
         entities[module_id] = CodeEntityCandidate(
@@ -242,6 +336,9 @@ class TreeSitterCodeIntelligenceAdapter:
             start_line=1,
             end_line=max(1, unit.text.count("\n") + 1),
             evidence_refs=(module_evidence, unit.content_hash),
+            symbol_key=CodeSymbolKey(unit.relative_path, grammar.name, "module", (), unit.relative_path),
+            identity_status="exact",
+            location_precision="exact",
         )
         self._walk(
             node=tree.root_node,
@@ -254,7 +351,45 @@ class TreeSitterCodeIntelligenceAdapter:
             relationships=relationships,
             pending_calls=pending_calls,
         )
-        self._extract_routes(unit, grammar.name, module_id, entities, relationships)
+        facts = (CodeStructureFact(unit.relative_path, "module", unit.relative_path, 1,
+                                   max(1, unit.text.count("\n") + 1), "syntax.module.v1"),)
+        if grammar.name == "java":
+            facts += java_structure(tree.root_node, source, unit.relative_path, strict_dispatch=self.strict_http_locators)
+            for fact in facts:
+                if fact.kind != "route" or fact.status != "observed":
+                    continue
+                route_id = self._entity_id(unit.relative_path, "api_route", fact.name, fact.start_line)
+                evidence = self._evidence(unit.relative_path, fact.start_line, fact.end_line)
+                supporting = tuple(self._evidence(unit.relative_path, span.start_line, span.end_line)
+                                   for span in fact.supporting_spans)
+                owner = self._route_owner(fact, entities.values())
+                symbol_key = CodeSymbolKey(unit.relative_path, grammar.name, "api_route",
+                    (*owner.symbol_key.scope, owner.symbol_key.scope_segment), fact.name) if owner else None
+                entities[route_id] = CodeEntityCandidate(
+                    route_id, fact.name, f"{unit.relative_path}::{fact.name}", "api_route", unit.relative_path,
+                    grammar.name, fact.start_line, fact.end_line, (evidence, *supporting, unit.content_hash, fact.rule),
+                    symbol_key=symbol_key, identity_status="exact" if symbol_key else "unresolved",
+                    location_precision="exact", supporting_spans=fact.supporting_spans,
+                )
+                self._put_relationship(relationships, CodeRelationshipCandidate(
+                    route_id, "belongs_to", owner.provider_node_id if owner else module_id, 0.92, (evidence, *supporting),
+                ))
+        else:
+            self._extract_routes(unit, grammar.name, module_id, entities, relationships)
+        return facts
+
+    @staticmethod
+    def _route_owner(fact: CodeStructureFact, entities: Iterable[CodeEntityCandidate]) -> CodeEntityCandidate | None:
+        owners = [item for item in entities if item.entity_kind == "method"
+                  and item.relative_path == fact.relative_path
+                  and item.start_line <= fact.start_line <= fact.end_line <= item.end_line]
+        if not owners:
+            return None
+        width = min(item.end_line - item.start_line for item in owners)
+        owners = [item for item in owners if item.end_line - item.start_line == width]
+        if len(owners) != 1 or owners[0].symbol_key is None or owners[0].identity_status != "exact":
+            return None
+        return owners[0]
 
     def _walk(
         self,
@@ -295,9 +430,14 @@ class TreeSitterCodeIntelligenceAdapter:
                 )
                 start_line = node.start_point.row + 1
                 end_line = node.end_point.row + 1
-                entity_id = self._entity_id(unit.relative_path, entity_kind, name, start_line)
+                entity_id = self._entity_id(unit.relative_path, entity_kind, name, start_line) + f":{node.start_byte}"
                 evidence_ref = self._evidence(unit.relative_path, start_line, end_line)
                 qualified_name = f"{unit.relative_path}::{name}"
+                symbol_key = declaration_key(
+                    node=node, source=source, relative_path=unit.relative_path,
+                    language=grammar.name, kind=entity_kind, name=name,
+                    parent=entities[parent_entity_id].symbol_key,
+                )
                 entities[entity_id] = CodeEntityCandidate(
                     provider_node_id=entity_id,
                     name=name,
@@ -308,6 +448,9 @@ class TreeSitterCodeIntelligenceAdapter:
                     start_line=start_line,
                     end_line=end_line,
                     evidence_refs=(evidence_ref, unit.content_hash),
+                    symbol_key=symbol_key,
+                    identity_status="exact" if symbol_key else "unresolved",
+                    location_precision="exact",
                 )
                 self._put_relationship(
                     relationships,
@@ -342,6 +485,8 @@ class TreeSitterCodeIntelligenceAdapter:
                         start_line=node.start_point.row + 1,
                         end_line=node.end_point.row + 1,
                         evidence_refs=(evidence_ref,),
+                        symbol_key=CodeSymbolKey(unit.relative_path, grammar.name, "dependency", (), dependency),
+                        identity_status="exact", location_precision="exact",
                     ),
                 )
                 self._put_relationship(
@@ -401,6 +546,10 @@ class TreeSitterCodeIntelligenceAdapter:
             start_line=1,
             end_line=max(1, unit.text.count("\n") + 1),
             evidence_refs=(f"file:{unit.relative_path}", unit.content_hash, "parser:lexical-fallback"),
+            symbol_key=CodeSymbolKey(unit.relative_path, language, "module", (), unit.relative_path)
+                       if unit.text_is_lossless else None,
+            identity_status="exact" if unit.text_is_lossless else "unresolved",
+            location_precision="exact" if unit.text_is_lossless else "approximate",
         )
         patterns: tuple[tuple[CodeEntityKind, re.Pattern[str]], ...] = (
             ("class", re.compile(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)")),
@@ -465,11 +614,6 @@ class TreeSitterCodeIntelligenceAdapter:
                 r"\s*\(\s*['\"](?P<path>[^'\"]+)['\"]",
                 re.IGNORECASE,
             ),
-            "java": re.compile(
-                r"@(GetMapping|PostMapping|PutMapping|PatchMapping|DeleteMapping|RequestMapping)"
-                r"\s*\(\s*(?:value\s*=\s*)?['\"]([^'\"]+)['\"]",
-                re.IGNORECASE,
-            ),
             "go": re.compile(
                 r"\.(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s*\(\s*['\"]([^'\"]+)['\"]",
                 re.IGNORECASE,
@@ -522,9 +666,11 @@ class TreeSitterCodeIntelligenceAdapter:
                 by_name.setdefault(entity.name, []).append(entity.provider_node_id)
         for call in pending_calls:
             target_ids = by_name.get(call.target_name, [])
-            target_id = next((item for item in target_ids if item != call.source_id), None)
-            if target_id is None:
+            # Name-only resolution cannot choose among overloads or shadowed names.
+            # Leave these edges unresolved for the richer provider / investigation.
+            if len(target_ids) != 1 or target_ids[0] == call.source_id:
                 continue
+            target_id = target_ids[0]
             self._put_relationship(
                 relationships,
                 CodeRelationshipCandidate(
@@ -553,7 +699,7 @@ class TreeSitterCodeIntelligenceAdapter:
             matches = re.findall(r"(?:from\s+|require\s*\()\s*['\"]([^'\"]+)['\"]", raw)
             matches.extend(re.findall(r"import\s*['\"]([^'\"]+)['\"]", raw))
         elif language == "java":
-            matches = re.findall(r"import\s+(?:static\s+)?([A-Za-z0-9_.]+)", raw)
+            matches = re.findall(r"import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\.\*)?)", raw)
         else:
             matches = re.findall(r"['\"]([^'\"]+)['\"]", raw)
         return list(dict.fromkeys(item.strip() for item in matches if item.strip()))

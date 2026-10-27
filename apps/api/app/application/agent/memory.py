@@ -18,10 +18,11 @@ from .ports import AgentMemoryStatePort
 from .tool_context import compact_tool_catalog_json
 from ...domain.agent.memory import AgentMemoryContext, memory_context_hash, memory_context_summary
 from ..system_image.memory_context import SystemImageMemoryContextApplicationService
-from ..system_image.ports import SystemImageWorkspacePort
+from ...domain.system_image.source_access import SourceAccessScope
 from ..platform.tool_models import ToolDefinition
 from ..platform.prompts import PromptRegistryPort
 from ..system_image.retrieval import SystemImageMemoryHit, SystemImageRetriever
+from ...domain.system_image.publication import PublicationChanged
 from ...domain.platform.prompt_registry import builtin_prompt
 
 
@@ -32,7 +33,7 @@ class AgentMemoryManager:
         self,
         state: AgentMemoryStatePort,
         system_image_retriever: SystemImageRetriever,
-        system_image_workspace: SystemImageWorkspacePort,
+        system_image_memory_context: SystemImageMemoryContextApplicationService,
         conversation_summaries: ConversationSummaryCheckpointService | None = None,
         prompt_registry: PromptRegistryPort | None = None,
     ) -> None:
@@ -40,9 +41,7 @@ class AgentMemoryManager:
         self.conversation_summaries = (
             conversation_summaries or ConversationSummaryCheckpointService()
         )
-        self.system_image_memory_context = SystemImageMemoryContextApplicationService(
-            system_image_workspace
-        )
+        self.system_image_memory_context = system_image_memory_context
         self.system_image_retriever = system_image_retriever
         self._prompt_registry = prompt_registry
 
@@ -60,6 +59,8 @@ class AgentMemoryManager:
             agent_goal_id=agent_goal_id,
             space_ref=space_ref,
         )
+        scope = self._source_scope(conversation)
+        restricted = bool(scope and scope.requires_provenance)
         goal = (
             self._state.get_goal(agent_goal_id)
             if agent_goal_id
@@ -69,33 +70,40 @@ class AgentMemoryManager:
         memory_context = await self.build_context(conversation, tools=tools)
         latest_checkpoint = self._latest_checkpoint(conversation.id)
         project_id = conversation.project_id
+        project_memory = self._project_long_term_memory_view(project_id, version_id=conversation.version_id)
+        if memory_context.image_read_state is not None and project_memory.get("image_read_state") != memory_context.image_read_state:
+            raise PublicationChanged("Published image changed while assembling the memory response")
 
-        return {
+        result = {
             "conversation_id": conversation.id,
             "agent_goal_id": goal.id if goal else None,
             "context_hash": memory_context_hash(memory_context),
             "context_summary": memory_context_summary(memory_context),
             "recent_turn_count": memory_context.recent_turn_count,
             "checkpoint_count": memory_context.checkpoint_count,
-            "working_memory": self._working_memory_view(goal),
+            "working_memory": self._working_memory_view(None if restricted else goal),
             "conversation_memory": {
-                "latest_summary_checkpoint_id": latest_checkpoint.id if latest_checkpoint else None,
-                "recent_message_refs": [message.id for message in conversation.messages[-6:]],
+                "latest_summary_checkpoint_id": latest_checkpoint.id if latest_checkpoint and not restricted else None,
+                "recent_message_refs": [] if restricted else [message.id for message in conversation.messages[-6:]],
                 "checkpoint_count": memory_context.checkpoint_count,
                 "recent_turn_count": memory_context.recent_turn_count,
             },
             "retrieved_context": {
                 "query": memory_context.retrieval_query,
+                "strategy": memory_context.retrieval_strategy,
+                "image_read_state": memory_context.image_read_state,
                 "refs": memory_context.retrieved_context_refs,
                 "summary": memory_context.retrieved_context_summary,
             },
-            "project_long_term_memory": self._project_long_term_memory_view(project_id),
-            "candidate_memory": self._candidate_memory_view(conversation, project_id),
+            "project_long_term_memory": project_memory,
+            "candidate_memory": {"session_only_refs": [], "candidate_overlay_refs": []} if restricted else self._candidate_memory_view(conversation, project_id),
             "tool_catalog": {
                 "tool_count": len(tools),
                 "tool_ids": [tool.tool_id for tool in tools],
             },
         }
+        self.system_image_memory_context.require_current(scope)
+        return result
 
     async def create_summary_checkpoint(
         self,
@@ -210,9 +218,11 @@ class AgentMemoryManager:
         tools: list[ToolDefinition] | None = None,
         trace_retrieval: bool = False,
     ) -> AgentMemoryContext:
+        scope = self._source_scope(conversation)
+        restricted = bool(scope and scope.requires_provenance)
         history_snapshot = self.history_snapshot(conversation)
-        recent_turn_count = len(self._recent_text_messages(conversation)[-6:])
-        checkpoint_count = sum(
+        recent_turn_count = 0 if restricted else len(self._recent_text_messages(conversation)[-6:])
+        checkpoint_count = 0 if restricted else sum(
             1
             for checkpoint in self._state.list_summary_checkpoints()
             if checkpoint.conversation_id == conversation.id
@@ -222,11 +232,13 @@ class AgentMemoryManager:
             conversation,
             retrieval_query,
             trace=trace_retrieval,
+            expected_scope=scope,
         )
         memory_hits = list(memory_search.hits)
-        return AgentMemoryContext(
+        result = AgentMemoryContext(
             system_prompt=self.system_prompt(conversation),
-            context_snapshot=self.context_snapshot(conversation, tools=tools, memory_hits=memory_hits),
+            context_snapshot=self.context_snapshot(conversation, tools=tools, memory_hits=memory_hits,
+                image_read_state=memory_search.image_read_state, retrieval_strategy=memory_search.strategy),
             history_snapshot=history_snapshot,
             recent_turn_count=recent_turn_count,
             checkpoint_count=checkpoint_count,
@@ -234,7 +246,14 @@ class AgentMemoryManager:
             retrieved_context_refs=[hit.ref for hit in memory_hits],
             retrieved_context_summary=self._retrieved_context_summary(memory_hits),
             retrieval_run_refs=list(memory_search.retrieval_run_refs),
+            retrieval_strategy=memory_search.strategy,
+            image_read_state=memory_search.image_read_state.model_dump(mode="json") if memory_search.image_read_state else None,
         )
+        self.system_image_memory_context.require_current(scope)
+        return result
+
+    def _source_scope(self, conversation: ConversationSession) -> SourceAccessScope | None:
+        return self.system_image_memory_context.scope(conversation.project_id) if conversation.project_id else None
 
     def _latest_checkpoint(self, conversation_id: str) -> ConversationSummaryCheckpoint | None:
         return self.conversation_summaries.latest_checkpoint(
@@ -266,6 +285,9 @@ class AgentMemoryManager:
         return prompt.system_template.replace("{scope}", scope)
 
     def history_snapshot(self, conversation: ConversationSession) -> str:
+        scope = self._source_scope(conversation)
+        if scope and scope.requires_provenance:
+            return "Prior conversation memory is withheld until its complete source provenance is verified."
         segments: list[str] = []
         latest_checkpoint = self._latest_checkpoint(conversation.id)
         if latest_checkpoint:
@@ -287,6 +309,7 @@ class AgentMemoryManager:
         if bindings:
             segments.append("Session-only candidate knowledge:\n" + "\n".join(f"- {ref}" for ref in bindings))
 
+        self.system_image_memory_context.require_current(scope)
         return "\n\n".join(segments) if segments else "No prior conversation memory."
 
     def context_snapshot(
@@ -295,22 +318,38 @@ class AgentMemoryManager:
         *,
         tools: list[ToolDefinition] | None = None,
         memory_hits: list[SystemImageMemoryHit] | None = None,
+        image_read_state=None,
+        retrieval_strategy="legacy_hybrid",
     ) -> str:
+        scope = self._source_scope(conversation)
+        restricted = bool(scope and scope.requires_provenance)
+        image_sections = self.system_image_memory_context.context_sections(conversation.project_id,
+            version_id=conversation.version_id, expected_state=image_read_state)
+        published = any(line.startswith("image_read_state=") for line in image_sections)
         sections: list[str] = [
             "[space]",
             f"space_type={conversation.space_type}",
             f"space_id={conversation.space_id}",
         ]
-        sections.extend(self._project_context(conversation))
-        sections.extend(self._version_context(conversation))
-        sections.extend(self._us_context(conversation))
-        sections.extend(self._operational_context(conversation))
-        sections.extend(self._system_image_context(conversation))
-        sections.extend(self._project_long_term_memory_context(conversation))
+        if restricted:
+            sections.append("[context_visibility]\nOnly authorized source-local facts are available. Derived context without complete provenance is withheld.")
+        else:
+            if published:
+                sections.append("[operational_state]\nThe following project/workflow summaries are live operational data, not facts approved by the published image.")
+            sections.extend(self._project_context(conversation))
+            sections.extend(self._version_context(conversation))
+            sections.extend(self._us_context(conversation))
+            sections.extend(self._operational_context(conversation))
+        sections.extend(image_sections)
+        if published:
+            sections.append(f"image_retrieval_strategy={retrieval_strategy}")
+        if not published:
+            sections.extend(self._project_long_term_memory_context(conversation))
         sections.extend(self._retrieved_system_image_context(memory_hits or []))
         if tools is not None:
             sections.append("[tool_catalog]")
             sections.append(compact_tool_catalog_json(tools, conversation))
+        self.system_image_memory_context.require_current(scope)
         return "\n".join(sections)
 
     def _project_context(self, conversation: ConversationSession) -> list[str]:
@@ -370,19 +409,11 @@ class AgentMemoryManager:
             sections.append(f"approval={approval.id}; title={approval.title}; status={approval.status}; summary={approval.summary}")
         return sections if len(sections) > 1 else []
 
-    def _system_image_context(self, conversation: ConversationSession) -> list[str]:
-        return self.system_image_memory_context.context_sections(conversation.project_id)
-
     def _project_long_term_memory_context(self, conversation: ConversationSession) -> list[str]:
         project_id = conversation.project_id
         if not project_id:
             return []
-        owner_ref = f"project:{project_id}"
-        memory_items = [
-            item
-            for item in self._state.list_memory_items()
-            if item.owner_ref == owner_ref and item.memory_scope == "project_long_term" and item.status == "active"
-        ]
+        memory_items = self._project_memory_items(project_id)
         if not memory_items:
             return []
         sections = ["[project_long_term_memory]"]
@@ -441,9 +472,9 @@ class AgentMemoryManager:
             "max_steps": goal.max_steps,
         }
 
-    def _project_long_term_memory_view(self, project_id: str | None) -> dict[str, Any]:
-        view = self.system_image_memory_context.long_term_project_refs(project_id)
-        memory_items = self._project_memory_items(project_id) if project_id else []
+    def _project_long_term_memory_view(self, project_id: str | None, *, version_id=None) -> dict[str, Any]:
+        view = self.system_image_memory_context.long_term_project_refs(project_id, version_id=version_id)
+        memory_items = self._project_memory_items(project_id) if project_id and view["image_read_state"]["mode"] == "legacy_draft" else []
         return {
             **view,
             "memory_item_refs": [f"agent_memory:{item.id}:{item.status}" for item in memory_items],
@@ -462,12 +493,16 @@ class AgentMemoryManager:
         }
 
     def _project_memory_items(self, project_id: str) -> list[AgentMemoryItem]:
+        scope = self.system_image_memory_context.scope(project_id)
+        if scope.requires_provenance:
+            return []
         owner_ref = f"project:{project_id}"
         items = [
             item
             for item in self._state.list_memory_items()
             if item.owner_ref == owner_ref and item.memory_scope == "project_long_term" and item.status == "active"
         ]
+        self.system_image_memory_context.require_current(scope)
         return sorted(items, key=lambda item: item.created_at)
 
     def _candidate_memory_view(self, conversation: ConversationSession, project_id: str | None) -> dict[str, Any]:
@@ -489,13 +524,20 @@ class AgentMemoryManager:
         *,
         limit: int = 8,
         trace: bool = False,
+        expected_scope: SourceAccessScope | None = None,
     ):
-        return await self.system_image_retriever.search_project_memory(
+        scope = expected_scope or self._source_scope(conversation)
+        retrieval_query = query or self._retrieval_query(conversation)
+        self.system_image_memory_context.require_current(scope)
+        result = await self.system_image_retriever.search_project_memory(
             conversation,
-            query or self._retrieval_query(conversation),
+            retrieval_query,
             limit=limit,
             trace=trace,
+            expected_scope=scope,
         )
+        self.system_image_memory_context.require_current(scope)
+        return result
 
     def _retrieved_system_image_context(self, memory_hits: list[SystemImageMemoryHit]) -> list[str]:
         if not memory_hits:
@@ -521,6 +563,11 @@ class AgentMemoryManager:
         return re.sub(r"\s+", " ", text)
 
     def _retrieval_query(self, conversation: ConversationSession) -> str:
+        scope = self._source_scope(conversation)
+        if scope and scope.requires_provenance:
+            # Old assistant replies/checkpoints are not authorized query text.
+            # Explicit tool queries are supplied separately by the caller.
+            return "system image"
         recent_messages = self._recent_text_messages(conversation)[-4:]
         query_parts = [self._message_text(message) for message in recent_messages]
         if conversation.us_id:
@@ -529,6 +576,7 @@ class AgentMemoryManager:
             project = self._state.project_snapshot(conversation.project_id)
             if project is not None:
                 query_parts.append(project.name)
+        self.system_image_memory_context.require_current(scope)
         return " ".join(part for part in query_parts if part).strip()
 
     @staticmethod

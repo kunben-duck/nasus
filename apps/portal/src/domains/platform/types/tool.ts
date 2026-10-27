@@ -22,6 +22,28 @@ export interface ToolResult {
   followup_reason?: string | null
   followup_prompt?: string | null
   next_recommended_tools: string[]
+  semantic_preview?: unknown
+  index_preview?: unknown
+  test_design_execution_preview?: unknown
+  test_design_job?: unknown
+  automation_execution_preview?: unknown
+  automation_script_history?: unknown
+  automation_script_review?: unknown
+  run_plan_preview?: unknown
+  run_plan_build_preview?: unknown
+  run_plan_build?: unknown
+  run_plan_environment?: unknown
+  run_plan_environment_record?: unknown
+  run_plan_health_record?: unknown
+  run_plan_locator_record?: unknown
+  http_fixture_recipe?: unknown
+  http_fixture_grant?: unknown
+  http_fixture_job?: unknown
+  run_plan_case_job?: unknown
+  native_build_preview?: unknown
+  native_build_job?: unknown
+  code_index?: unknown
+  structure_cancel?: unknown
 }
 
 export interface ToolInvocation {

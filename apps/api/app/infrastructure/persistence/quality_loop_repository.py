@@ -592,26 +592,9 @@ class QualityLoopRepository:
         with session_scope() as session:
             session.execute(delete(RunRecord).where(RunRecord.project_id == project_id))
             for sort_order, run in enumerate(runs):
-                session.add(
-                    RunRecord(
-                        id=run.id,
-                        project_id=project_id,
-                        status=run.status,
-                        channel=run.channel,
-                        title=run.title,
-                        summary=run.summary,
-                        started_at=run.started_at,
-                        task_context_id=run.task_context_id,
-                        runner_job_id=run.runner_job_id,
-                        timeline=run.timeline,
-                        evidence=run.evidence,
-                        failure_summary=run.failure_summary,
-                        healing_status=run.healing_status,
-                        healing_depth=run.healing_depth,
-                        last_failure_fingerprint=run.last_failure_fingerprint,
-                        sort_order=sort_order,
-                    )
-                )
+                row = RunRecord(id=run.id, project_id=project_id, sort_order=sort_order)
+                self._assign_run(row, project_id, run)
+                session.add(row)
 
     def upsert_run_detail(self, project_id: str, run: RunDetail) -> None:
         with session_scope() as session:
@@ -633,10 +616,53 @@ class QualityLoopRepository:
                 )
                 session.add(row)
             self._assign_run(row, project_id, run)
-    def replace_approvals(self, project_id: str, approvals: list[ApprovalDetail]) -> None:
+
+    def commit_run_execution(
+        self, project_id: str, run: RunDetail, evidence: list[ExecutionEvidence],
+    ) -> None:
+        """Commit only the submitted run, preserving peer facts and failed history."""
+        if (not evidence or any(item.project_id != project_id or item.run_id != run.id
+                or item.us_id != run.us_id for item in evidence)
+                or len({item.id for item in evidence}) != len(evidence)
+                or run.evidence != [item.storage_ref for item in evidence]):
+            raise ValueError("Execution evidence must match the complete run scope and references")
         with session_scope() as session:
-            session.execute(delete(ApprovalRecord).where(ApprovalRecord.project_id == project_id))
+            row = session.get(RunRecord, run.id)
+            stored_evidence = session.scalars(select(ExecutionEvidenceRecord).where(
+                ExecutionEvidenceRecord.run_id == run.id).order_by(ExecutionEvidenceRecord.sort_order)).all()
+            if row is not None:
+                if (row.project_id != project_id or self._to_run_detail(row).model_dump() != run.model_dump()
+                        or [self._to_execution_evidence(item).model_dump() for item in stored_evidence]
+                        != [item.model_dump() for item in evidence]):
+                    raise ValueError("Execution already exists with different facts")
+                return
+            if stored_evidence:
+                raise ValueError("Existing orphan evidence cannot be repaired by a new execution")
+            minimum_order = session.scalar(select(func.min(RunRecord.sort_order)).where(
+                RunRecord.project_id == project_id))
+            row = RunRecord(id=run.id, project_id=project_id,
+                sort_order=(minimum_order - 1) if minimum_order is not None else 0)
+            self._assign_run(row, project_id, run)
+            session.add(row)
+            session.flush()
+            for sort_order, item in enumerate(evidence):
+                session.add(self._execution_evidence_record(item, sort_order))
+            session.flush()
+
+    def replace_approvals(self, project_id: str, approvals: list[ApprovalDetail]) -> None:
+        from .image_publication_models import ImagePublicationReviewRecord
+        from .source_snapshot_repository import SourceSnapshotRepository
+
+        with session_scope() as session:
+            SourceSnapshotRepository._lock(session, project_id)
+            # Legacy projection refreshes do not own exact-image review mirrors.
+            publication_ids = set(session.scalars(select(ImagePublicationReviewRecord.review_id).where(
+                ImagePublicationReviewRecord.project_id == project_id)).all())
+            session.execute(delete(ApprovalRecord).where(ApprovalRecord.project_id == project_id,
+                ApprovalRecord.id.not_in(publication_ids)))
             for sort_order, approval in enumerate(approvals):
+                if approval.id in publication_ids:
+                    continue
                 session.add(
                     ApprovalRecord(
                         id=approval.id,
@@ -744,26 +770,9 @@ class QualityLoopRepository:
         with session_scope() as session:
             session.execute(delete(RunRecord).where(RunRecord.project_id == project_id))
             for sort_order, run in enumerate(runs):
-                session.add(
-                    RunRecord(
-                        id=run.id,
-                        project_id=project_id,
-                        status=run.status,
-                        channel=run.channel,
-                        title=run.title,
-                        summary=run.summary,
-                        started_at=run.started_at,
-                        task_context_id=run.task_context_id,
-                        runner_job_id=run.runner_job_id,
-                        timeline=run.timeline,
-                        evidence=run.evidence,
-                        failure_summary=run.failure_summary,
-                        healing_status=run.healing_status,
-                        healing_depth=run.healing_depth,
-                        last_failure_fingerprint=run.last_failure_fingerprint,
-                        sort_order=sort_order,
-                    )
-                )
+                row = RunRecord(id=run.id, project_id=project_id, sort_order=sort_order)
+                self._assign_run(row, project_id, run)
+                session.add(row)
             session.execute(
                 delete(FailureReportRecord).where(
                     FailureReportRecord.project_id == project_id

@@ -97,7 +97,15 @@
 - `Agent Memory Manager` 解决“本次思考应该带入哪些短期、会话和长期记忆”
 - `Tool Invocation Runtime` 解决“如何统一执行这个动作”
 - `Agent Loop Runtime` 解决“如何围绕一个高层目标持续推进”
-- `LangGraph` 解决“单个工具或单次 goal step 内部如何思考和路由 Skill”
+- `LangGraph` 解决“单次 Conversation Turn、单个工具或单次 goal step 内部如何规划和路由”
+- `Temporal` 是 Turn 和 AgentGoal 进程生命周期、重试、取消的唯一权威
+- `ToolInvocationRuntime` 仍是所有正式动作的唯一命令面，LangGraph 节点不得绕过它
+
+Temporal 将 `ConversationTurn` 与 `AgentGoal` 投递到独立 Task Queue。Turn Activity
+可以委派并等待 AgentGoal，而不会占满 AgentGoal 的 Activity 并发槽。默认队列分别为
+`{NASUS_TEMPORAL_TASK_QUEUE}-conversation-turns` 与
+`NASUS_TEMPORAL_TASK_QUEUE`，前者可通过
+`NASUS_TEMPORAL_CONVERSATION_TURN_TASK_QUEUE` 显式覆盖。
 
 ### 5.4 结构化 Planner 的治理边界
 
@@ -159,7 +167,24 @@ Orchestrator 必须返回 `ClarificationRequest`。高风险工具允许进入�
 - `sequence_max` 可空
 - `created_at`
 
-### 6.3 ConversationSummaryCheckpoint
+### 6.3 ConversationTurn
+
+最小字段：
+
+- `turn_id`
+- `conversation_id`
+- `user_message_id`
+- `assistant_message_id` 可空
+- `workflow_id` 可空
+- `idempotency_key`
+- `status=accepted|planning|streaming|delegated|completed|interrupted|failed`
+- `result`
+- `error` 可空
+- `created_at / updated_at / completed_at`
+
+同一会话最多存在一个非终态 Turn；数据库通过活动状态部分唯一索引兜底。
+
+### 6.4 ConversationSummaryCheckpoint
 
 - `checkpoint_id`
 - `conversation_id`
@@ -177,7 +202,7 @@ Orchestrator 必须返回 `ClarificationRequest`。高风险工具允许进入�
 - Agent Service 组装上下文窗口时，必须优先通过 `Agent Memory Manager` 读取 checkpoint 和最近消息。
 - checkpoint 只代表会话级记忆，不自动晋级为项目长期记忆。
 
-### 6.4 ConversationLink
+### 6.5 ConversationLink
 
 - `link_id`
 - `left_conversation_id`
@@ -187,7 +212,7 @@ Orchestrator 必须返回 `ClarificationRequest`。高风险工具允许进入�
 - `confidence`
 - `created_at`
 
-### 6.5 SessionKnowledgeBinding
+### 6.6 SessionKnowledgeBinding
 
 - `binding_id`
 - `conversation_id`
@@ -229,6 +254,7 @@ Orchestrator 必须返回 `ClarificationRequest`。高风险工具允许进入�
 
 - `conversation_sessions`
 - `conversation_messages`
+- `conversation_turns`
 - `conversation_summary_checkpoints`
 - `conversation_links`
 - `session_knowledge_bindings`
@@ -253,13 +279,24 @@ Orchestrator 必须返回 `ClarificationRequest`。高风险工具允许进入�
 
 ### 9.2 消息读写
 
-- `POST /v1/conversations/{id}/messages`
+- `POST /v1/conversations/{id}/messages`：保存用户消息和 Turn 后立即返回 `202 Accepted`
 - `GET /v1/conversations/{id}/messages`
 - `GET /v1/conversations/{id}/events`
+- `GET /v1/conversations/{id}/turns/{turn_id}`
+- `POST /v1/conversations/{id}/turns/{turn_id}/cancel`
+
+消息 POST 必须接收 `Idempotency-Key`；重复请求返回同一个 Turn，不重复执行。
 
 ### 9.3 关键事件
 
 - `conversation.message.created`
+- `conversation.turn.accepted`
+- `conversation.message.started`
+- `conversation.message.delta`
+- `conversation.message.completed`
+- `conversation.message.interrupted`
+- `conversation.message.failed`
+- `conversation.turn.completed|interrupted|failed`
 - `conversation.plan.updated`
 - `conversation.agent_goal.proposed`
 - `conversation.archived`
@@ -339,3 +376,8 @@ Orchestrator 必须返回 `ClarificationRequest`。高风险工具允许进入�
 - `assistant` 流式输出首发固定走 SSE
 - 搜索首发基于 PostgreSQL 全文检索
 - 主会话优先走 `Conversation Orchestrator -> ToolInvocationPlan / AgentGoalProposal` 主线
+- Turn 图固定为 `load_context -> plan -> route -> clarify|invoke_tool|start_goal|generate_reply -> finalize`
+- 只有 `generate_reply` 节点输出 token delta；Planner、Embedding、Rerank 和结构化生成保持非流式
+- Provider 事件通过基础设施防腐适配器转成 Nasus 事件，再进入 PostgreSQL Outbox
+- 流式消息的 `started/delta/completed/interrupted/failed` 状态变更与对应 Outbox 事件由同一 SQLAlchemy Unit of Work 提交，事务成功后才唤醒进程内 SSE 队列
+- Python 3.11+ 通过节点参数显式注入 LangGraph 原生 `StreamWriter` 并消费 `stream_mode="custom"`；Python 3.9 本地开发因 LangGraph 0.6 的异步 `ContextVar` 限制，在基础设施适配器内部使用兼容事件队列，公开事件契约与图节点保持一致

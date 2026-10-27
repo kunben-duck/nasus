@@ -102,7 +102,7 @@ class ModelConfigUpdateRequest(ModelConfigCreateRequest):
 
 
 class StudioSettings(BaseModel):
-    language: Literal["en", "zh"] = "en"
+    language: Literal["en", "zh"] = "zh"
     theme: Literal["dark", "light", "system"] = "dark"
     model_preset: ModelPreset = "system_default"
     notification_mode: Literal["important", "all", "muted"] = "important"

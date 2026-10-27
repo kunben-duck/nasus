@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Protocol, Union
 
+from .release_readiness import meets_release_review_threshold
+
 
 MetricValue = Union[str, int, float, bool, None]
 SUPPORTED_DETERMINISTIC_QUALITY_STEPS = (
@@ -25,12 +27,14 @@ class AutomationRunLike(Protocol):
 
 class ReleaseReadinessLike(Protocol):
     version_id: str
+    status: str
     score: int
     blockers: int
     approvals_open: int
     pending_merge: int
     execution_health: str
     summary: str
+    evidence_summary: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,16 @@ def deterministic_quality_step_plan(step: str, *, us_id: str) -> QualityStepPlan
     return None
 
 
+def _generation_inventory_metrics(*fields: tuple[str, MetricValue]) -> tuple[tuple[str, MetricValue], ...]:
+    # Actual counts are supplied by the validated generation output, not a template.
+    return (
+        ("measurement_basis", "generated_draft_inventory_not_quality_assessment"),
+        ("coverage_status", "unknown"),
+        ("asset_lane_status", "ready_for_review"),
+        *fields,
+    )
+
+
 def scope_quality_step_plan(*, us_id: str) -> QualityStepPlan:
     return QualityStepPlan(
         step="scope",
@@ -106,8 +120,8 @@ def scope_quality_step_plan(*, us_id: str) -> QualityStepPlan:
                 lane_key="scenarios",
                 status="ready_for_review",
                 summary=(
-                    "Test scope is ready: core path, regression, integration, failure, and observability "
-                    "coverage are identified."
+                    "Draft scope proposes core path, regression, integration, failure, and observability "
+                    "targets for independent review. Coverage has not been measured."
                 ),
             ),
         ),
@@ -118,12 +132,7 @@ def scope_quality_step_plan(*, us_id: str) -> QualityStepPlan:
         ),
         metric_update=QualityStepMetricUpdate(
             step="scope",
-            metrics=(
-                ("scope_items", 5),
-                ("regression_focus", 0.76),
-                ("quality_context_required", True),
-                ("asset_lane_status", "ready_for_review"),
-            ),
+            metrics=_generation_inventory_metrics(("quality_context_required", True)),
             evidence_refs=("scope_pack:current", f"us:{us_id}"),
         ),
         asset_part_update=QualityStepAssetPartUpdate(
@@ -131,8 +140,7 @@ def scope_quality_step_plan(*, us_id: str) -> QualityStepPlan:
             status="ready_for_review",
             title="Test scope pack",
             summary=(
-                "Core path, regression, integration, failure, and observability coverage are identified "
-                "from system image context."
+                "Draft scope targets are proposed from system image context and require independent review."
             ),
             object_refs=("scope_pack:current",),
             evidence_refs=("scope_pack:current", f"us:{us_id}"),
@@ -149,16 +157,16 @@ def scenario_quality_step_plan(*, us_id: str) -> QualityStepPlan:
         lane_updates=(
             QualityStepLaneUpdate(
                 lane_key="scenarios",
-                status="approved",
+                status="ready_for_review",
                 summary=(
-                    "8 scenario groups cover happy path, fallback, risk edge, data validation, "
-                    "and observability checks."
+                    "Generated scenario groups propose happy path, fallback, risk edge, data validation, "
+                    "and observability checks; independent review and coverage assessment remain required."
                 ),
             ),
             QualityStepLaneUpdate(
                 lane_key="verification",
                 status="ready_for_review",
-                summary="Verification planning is ready from the approved scenario structure.",
+                summary="A verification plan can be drafted from the generated scenarios; they are not yet approved.",
             ),
         ),
         us_update=QualityStepUSUpdate(
@@ -168,19 +176,14 @@ def scenario_quality_step_plan(*, us_id: str) -> QualityStepPlan:
         ),
         metric_update=QualityStepMetricUpdate(
             step="scenarios",
-            metrics=(
-                ("scenario_groups", 8),
-                ("scenario_coverage", 0.82),
-                ("risk_edge_groups", 2),
-                ("asset_lane_status", "approved"),
-            ),
+            metrics=_generation_inventory_metrics(),
             evidence_refs=("scenario_set:current", f"us:{us_id}"),
         ),
         asset_part_update=QualityStepAssetPartUpdate(
             part_type="scenario_set",
-            status="approved",
+            status="ready_for_review",
             title="Scenario coverage pack",
-            summary="8 scenario groups cover happy path, fallback, risk edge, data validation, and observability checks.",
+            summary="Generated scenario groups remain drafts; independent review does not follow from generation.",
             object_refs=("scenario_set:current",),
             evidence_refs=("scenario_set:current", f"us:{us_id}"),
         ),
@@ -196,16 +199,16 @@ def verification_plan_quality_step_plan(*, us_id: str) -> QualityStepPlan:
         lane_updates=(
             QualityStepLaneUpdate(
                 lane_key="verification",
-                status="approved",
+                status="ready_for_review",
                 summary=(
                     "Verification priorities, environment and data requirements, execution allocation, "
-                    "performance checks, and approval points are defined."
+                    "performance checks, and approval points are proposed for independent review."
                 ),
             ),
             QualityStepLaneUpdate(
                 lane_key="cases",
                 status="ready_for_review",
-                summary="Case generation is ready from the approved verification plan.",
+                summary="Cases can be drafted from the generated verification plan; the plan is not yet approved.",
             ),
         ),
         us_update=QualityStepUSUpdate(
@@ -215,21 +218,16 @@ def verification_plan_quality_step_plan(*, us_id: str) -> QualityStepPlan:
         ),
         metric_update=QualityStepMetricUpdate(
             step="verification_plan",
-            metrics=(
-                ("verification_priorities", 2),
-                ("execution_allocations", 2),
-                ("approval_points", 1),
-                ("asset_lane_status", "approved"),
-            ),
+            metrics=_generation_inventory_metrics(),
             evidence_refs=("verification_plan:current", "scenario_set:current", f"us:{us_id}"),
         ),
         asset_part_update=QualityStepAssetPartUpdate(
             part_type="verification_plan",
-            status="approved",
+            status="ready_for_review",
             title="Verification plan",
             summary=(
                 "Priorities, environments, data, manual/automation allocation, performance, and approval "
-                "requirements are traceable to approved scenarios."
+                "requirements are draft proposals, not independently approved verification authority."
             ),
             object_refs=("verification_plan:current", "scenario_set:current"),
             evidence_refs=("verification_plan:current", "scenario_set:current", f"us:{us_id}"),
@@ -246,13 +244,13 @@ def case_quality_step_plan(*, us_id: str) -> QualityStepPlan:
         lane_updates=(
             QualityStepLaneUpdate(
                 lane_key="cases",
-                status="approved",
-                summary="14 structured cases with preconditions, assertions, data hints, and regression tags are approved.",
+                status="ready_for_review",
+                summary="Generated cases include proposed steps and expectations; independent oracle and assertion review remain required.",
             ),
             QualityStepLaneUpdate(
                 lane_key="automation",
                 status="ready_for_review",
-                summary="Automation script generation is ready from the approved cases.",
+                summary="Automation blueprints can be drafted from generated cases; the cases are not yet approved.",
             ),
         ),
         us_update=QualityStepUSUpdate(
@@ -262,12 +260,7 @@ def case_quality_step_plan(*, us_id: str) -> QualityStepPlan:
         ),
         metric_update=QualityStepMetricUpdate(
             step="cases",
-            metrics=(
-                ("test_cases", 14),
-                ("assertion_coverage", 0.8),
-                ("regression_tags", 5),
-                ("asset_lane_status", "approved"),
-            ),
+            metrics=_generation_inventory_metrics(),
             evidence_refs=(
                 "case_set:current",
                 "verification_plan:current",
@@ -277,9 +270,9 @@ def case_quality_step_plan(*, us_id: str) -> QualityStepPlan:
         ),
         asset_part_update=QualityStepAssetPartUpdate(
             part_type="case_set",
-            status="approved",
+            status="ready_for_review",
             title="Structured test case pack",
-            summary="14 structured cases include preconditions, assertions, test data hints, and regression tags.",
+            summary="Generated case drafts include preconditions, proposed assertions, test data hints, and regression tags.",
             object_refs=("case_set:current", "verification_plan:current", "scenario_set:current"),
             evidence_refs=(
                 "case_set:current",
@@ -302,8 +295,8 @@ def automation_generation_quality_step_plan(*, us_id: str) -> QualityStepPlan:
                 lane_key="automation",
                 status="ready_for_review",
                 summary=(
-                    "Versioned Playwright scripts were generated from approved cases and are ready "
-                    "for target configuration and execution."
+                    "Versioned Playwright blueprint drafts require independent review, fixed target "
+                    "configuration and separate execution authorization."
                 ),
             ),
         ),
@@ -314,11 +307,7 @@ def automation_generation_quality_step_plan(*, us_id: str) -> QualityStepPlan:
         ),
         metric_update=QualityStepMetricUpdate(
             step="automation",
-            metrics=(
-                ("automation_scripts", 1),
-                ("asset_lane_status", "ready_for_review"),
-                ("execution_started", False),
-            ),
+            metrics=_generation_inventory_metrics(("execution_started", False)),
             evidence_refs=("automation_asset:current", "case_set:current", f"us:{us_id}"),
         ),
         asset_part_update=QualityStepAssetPartUpdate(
@@ -344,16 +333,16 @@ def change_document_quality_step_plan(*, us_id: str) -> QualityStepPlan:
         lane_updates=(
             QualityStepLaneUpdate(
                 lane_key="change_document",
-                status="completed",
+                status="ready_for_review",
                 summary=(
                     "The requirement, code, system-image, quality-asset, risk, and evidence deltas are "
-                    "consolidated in a traceable change document."
+                    "proposed in a draft change document for independent review."
                 ),
             ),
             QualityStepLaneUpdate(
                 lane_key="release",
                 status="ready_for_review",
-                summary="The change record and execution evidence are ready for release readiness scoring.",
+                summary="Release assessment must verify independent quality and execution evidence; a generated document is not sufficient.",
             ),
         ),
         us_update=QualityStepUSUpdate(
@@ -363,20 +352,16 @@ def change_document_quality_step_plan(*, us_id: str) -> QualityStepPlan:
         ),
         metric_update=QualityStepMetricUpdate(
             step="change_document",
-            metrics=(
-                ("change_deltas", 2),
-                ("change_risks", 1),
-                ("asset_lane_status", "completed"),
-            ),
+            metrics=_generation_inventory_metrics(),
             evidence_refs=("change_document:current", "quality_asset_pack:current", f"us:{us_id}"),
         ),
         asset_part_update=QualityStepAssetPartUpdate(
             part_type="change_document",
-            status="completed",
+            status="ready_for_review",
             title="Quality change document",
             summary=(
-                "A release-facing change record links requirement, system-image, generated quality assets, "
-                "risks, and execution evidence."
+                "A draft change record proposes links between requirement, system-image, generated quality "
+                "assets, risks, and available evidence; independent review remains required."
             ),
             object_refs=("change_document:current", "quality_asset_pack:current"),
             evidence_refs=("change_document:current", "quality_asset_pack:current", f"us:{us_id}"),
@@ -448,7 +433,8 @@ def automation_quality_step_plan(
         metric_update=QualityStepMetricUpdate(
             step="automation",
             metrics=(
-                ("automation_coverage", 0.74),
+                ("measurement_basis", "runner_observation_not_quality_assessment"),
+                ("coverage_status", "unknown"),
                 ("latest_run_status", run.status),
                 ("runner_mode", runner_mode),
                 ("runner_job_id", run.runner_job_id),
@@ -478,6 +464,7 @@ def release_quality_step_plan(
     release_evidence_refs: tuple[str, ...],
 ) -> QualityStepPlan:
     readiness_ref = f"release_readiness:{release.version_id}"
+    blocked = not meets_release_review_threshold(release)
     return QualityStepPlan(
         step="release",
         summary="Assessed release readiness",
@@ -485,14 +472,14 @@ def release_quality_step_plan(
         lane_updates=(
             QualityStepLaneUpdate(
                 lane_key="release",
-                status="completed" if not release.blockers else "blocked",
-                summary="Release readiness score is complete. Formal ReleaseDecision still requires approval.",
+                status="blocked" if blocked else "completed",
+                summary=release.summary if blocked else "Release readiness score is complete. Formal ReleaseDecision still requires approval.",
             ),
         ),
         us_update=QualityStepUSUpdate(
-            progress=92,
-            status="release_ready",
-            next_action="Request release approval",
+            progress=70 if blocked else 92,
+            status="blocked" if blocked else "release_ready",
+            next_action="Resolve release evidence gaps" if blocked else "Request release approval",
         ),
         metric_update=QualityStepMetricUpdate(
             step="release",
@@ -507,11 +494,12 @@ def release_quality_step_plan(
         ),
         asset_part_update=QualityStepAssetPartUpdate(
             part_type="release_assessment",
-            status="completed",
+            status="blocked" if blocked else "completed",
             title="Release readiness assessment",
             summary=release.summary,
             object_refs=(readiness_ref,),
             evidence_refs=release_evidence_refs,
         ),
-        next_tools=("approval.request", "query.version.status", "query.governance.status"),
+        next_tools=(("query.version.status", "query.governance.status") if blocked else
+            ("approval.request", "query.version.status", "query.governance.status")),
     )

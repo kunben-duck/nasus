@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer, model_validator
 
 from ..platform.tool_models import ToolInvocation
+from ...domain.agent.active_runtime import MAX_RUNTIME_MS, validate_active_clock
 
 
 SpaceType = Literal[
@@ -74,11 +75,27 @@ class AgentGoal(BaseModel):
     thinking_tokens_used: int = Field(default=0, ge=0)
     no_progress_observations: int = Field(default=0, ge=0)
     started_at: Optional[str] = None
+    active_runtime_ms: Optional[int] = Field(default=None, strict=True, ge=0, le=MAX_RUNTIME_MS)
+    active_started_at: Optional[str] = None
     last_progress_at: Optional[str] = None
     last_progress_fingerprint: Optional[str] = None
     budget_exhausted_reason: Optional[str] = None
     pause_reason: Optional[str] = None
     workflow_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_runtime_clock(self):
+        validate_active_clock(self.active_runtime_ms, self.active_started_at)
+        return self
+
+    @model_serializer(mode="wrap")
+    def serialize_runtime_clock(self, handler):
+        payload = handler(self)
+        # Keep old goal JSON and v1 checkpoint digests byte-for-byte compatible.
+        if self.active_runtime_ms is None:
+            payload.pop("active_runtime_ms", None)
+            payload.pop("active_started_at", None)
+        return payload
 
 
 class AgentMemoryItem(BaseModel):
@@ -176,6 +193,37 @@ class ConversationMessage(BaseModel):
     sequence_max: Optional[int] = None
 
 
+class ConversationTurn(BaseModel):
+    id: str
+    conversation_id: str
+    user_message_id: str
+    assistant_message_id: Optional[str] = None
+    workflow_id: Optional[str] = None
+    idempotency_key: str
+    status: Literal[
+        "accepted",
+        "planning",
+        "streaming",
+        "delegated",
+        "completed",
+        "interrupted",
+        "failed",
+    ] = "accepted"
+    result: Dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = None
+    created_at: str
+    updated_at: str
+    completed_at: Optional[str] = None
+
+
+class ConversationTurnAccepted(BaseModel):
+    turn_id: str
+    conversation_id: str
+    user_message_id: str
+    status: Literal["accepted"] = "accepted"
+    events_url: str
+
+
 class ConversationSummaryCheckpoint(BaseModel):
     id: str
     conversation_id: str
@@ -223,6 +271,7 @@ class ConversationSession(BaseModel):
     merged_into_conversation_id: Optional[str] = None
     archived_at: Optional[str] = None
     messages: List[ConversationMessage] = Field(default_factory=list)
+    active_turn: Optional[ConversationTurn] = None
     agent_goals: List[AgentGoal] = Field(default_factory=list)
     tool_invocations: List[ToolInvocation] = Field(default_factory=list)
     related_conversation_ids: List[str] = Field(default_factory=list)
@@ -327,6 +376,8 @@ __all__ = [
     "ConversationMessage",
     "ConversationMessageRequest",
     "ConversationSession",
+    "ConversationTurn",
+    "ConversationTurnAccepted",
     "ConversationSummaryCheckpoint",
     "MessageBlock",
     "SessionKnowledgeBinding",

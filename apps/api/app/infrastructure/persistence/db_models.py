@@ -4,11 +4,101 @@ from typing import Optional
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, JSON, Text, UniqueConstraint
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, Integer, JSON, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 
 from .database import Base
+from .agent_resume_models import AgentResumeConsumptionRecord  # noqa: F401
+from .agent_start_models import AgentGoalStartReceiptRecord  # noqa: F401
+from .source_snapshot_models import (  # noqa: F401
+    SourceBindingRecord, SourceRevisionRecord, SourceManifestRecord, SourceManifestMemberRecord,
+)
+from .code_entity_models import (  # noqa: F401
+    CodeEntityIdentityRecord, CodeEntityRevisionRecord, CodeEntityProviderBindingRecord,
+)
+from .code_alias_models import CodeObjectAliasRecord  # noqa: F401
+from .object_provenance_models import ObjectProvenanceNodeRecord, ObjectProvenanceEdgeRecord, ImageObjectProvenanceRecord  # noqa: F401
+from .source_evidence_models import SourceEvidenceRecord, CodeEntityEvidenceRecord  # noqa: F401
+from .source_inventory_models import SourceInventoryRecord  # noqa: F401
+from .source_acquisition_models import SourceAcquisitionIntentRecord  # noqa: F401
+from .materialization_command_models import MaterializationCommandInputRecord, MaterializationLegacyCommandRecord  # noqa: F401
+from .source_acquisition_result_models import SourceAcquisitionProgressRecord, SourceAcquisitionResultRecord, SourceAcquisitionManifestRecord  # noqa: F401
+from .code_analysis_models import CodeAnalysisRecord  # noqa: F401
+from .code_index_generation_models import CodeIndexGenerationRecord, CodeIndexWorkerLeaseRecord, CodeIndexWorkerAttemptRecord, CodeIndexProjectionRecord, CodeIndexProtocolRecord  # noqa: F401
+from .image_revision_models import ImageRevisionRecord, ImageObjectMemberRecord, ImageRevisionInvocationRecord, ImageAssertionMemberRecord  # noqa: F401
+from .build_plan_models import BuildPlanRecord, BuildPlanInvocationRecord  # noqa: F401
+from .reference_link_models import ReferenceProposalRecord, ReferenceAssertionRecord, ReferenceProposalInvocationRecord  # noqa: F401
+from .link_decision_models import LinkDecisionRecord  # noqa: F401
+from .structure_build_models import StructureBuildArtifactRecord  # noqa: F401
+from .build_lineage_models import StructureBuildLineageRecord  # noqa: F401
+from .gap_ownership_models import BuildGapOwnershipRecord  # noqa: F401
+from .structure_cancel_models import StructureCancellationRecord  # noqa: F401
+from .investigation_models import InvestigationRevisionRecord  # noqa: F401
+from .structure_job_models import StructureJobRecord, StructureWorkLeaseRecord  # noqa: F401
+from .build_authorization_models import BuildAuthorizationRecord, BuildWorkReservationRecord  # noqa: F401
+from .build_tool_budget_models import BuildToolBudgetRecord, BuildToolConsumptionRecord  # noqa: F401
+from .semantic_evaluation_models import SemanticCallReservationRecord, SemanticEvaluationRecord  # noqa: F401
+from .semantic_review_models import SemanticAssertionRecord, SemanticDecisionRecord  # noqa: F401
+from .semantic_membership_models import ImageSemanticMemberRecord  # noqa: F401
+from .acceptance_specification_models import AcceptanceRevisionRecord  # noqa: F401
+from .business_rule_models import BusinessRuleRevisionRecord  # noqa: F401
+from .authority_provenance_models import AuthorityProvenanceRecord  # noqa: F401
+from .context_pack_models import ContextPackRecord  # noqa: F401
+from .context_authority_models import ContextAuthorityRootRecord, ContextAuthorityDependencyRecord, ContextAuthorityBackfillTargetRecord  # noqa: F401
+from .context_provenance_models import ContextProvenanceAnchorRecord  # noqa: F401
+from .publication_provenance_models import (  # noqa: F401
+    PublicationProvenanceRecord, PublicationProvenanceDependencyRecord, ContextPublicationDependencyRecord,
+)
+from .relation_provenance_models import (  # noqa: F401
+    RelationProvenanceNodeRecord, RelationProvenanceEdgeRecord,
+    ImageRelationProvenanceRecord, ContextRelationProvenanceRecord,
+)
+from .context_invalidation_models import ContextInvalidationRecord, ContextInvalidationNodeRecord, ContextInvalidationEdgeRecord  # noqa: F401
+from .derivation_registry_models import DerivationRegistryRecord, DerivationRegistryEdgeRecord, ContextQueryScopeRecord, ContextQuerySourceRecord  # noqa: F401
+from .test_design_scope_models import TestDesignScopeRecord  # noqa: F401
+from .test_design_result_models import TestDesignResultRecord, TestDesignCaseRecord, TestDesignCoverageRecord, TestDesignResultBatchCallRecord  # noqa: F401
+from .test_design_mapping_models import TestDesignMappingRecord  # noqa: F401
+from .case_approval_models import CaseApprovalRevisionRecord, CaseApprovalMemberRecord  # noqa: F401
+from .mapping_part_models import MappingPartRevisionRecord  # noqa: F401
+from .generation_execution_models import GenerationCallReservationRecord, GenerationNativeReplyRecord  # noqa: F401
+from .automation_script_models import AutomationCallReservationRecord, AutomationNativeReplyRecord, AutomationScriptRevisionRecord  # noqa: F401
+from .automation_script_review_models import AutomationScriptReviewRecord  # noqa: F401
+from .run_plan_models import RunPlanRecord  # noqa: F401
+from .run_plan_build_models import RunPlanBuildRecord, RunPlanBuildMemberRecord  # noqa: F401
+from .run_plan_observation_models import RunPlanObservationRecord, RunPlanCaseObservationRecord  # noqa: F401
+from .environment_observation_models import EnvironmentObservationRecord  # noqa: F401
+from .environment_health_models import EnvironmentHealthRecord  # noqa: F401
+from .http_locator_models import HttpLocatorRecord  # noqa: F401
+from .http_fixture_recipe_models import HttpFixtureRecipeRecord  # noqa: F401
+from .http_fixture_grant_models import HttpFixtureGrantRecord  # noqa: F401
+from .http_fixture_native_grant_models import HttpFixtureNativeGrantRecord  # noqa: F401
+from .http_fixture_command_models import HttpFixtureCommandRecord, HttpFixtureDispatchCommandRecord  # noqa: F401
+from .http_fixture_job_models import HttpFixtureCancellationRecord, HttpFixtureCancellationDeliveryRecord  # noqa: F401
+from .http_fixture_preparation_models import HttpFixturePreparationRecord, HttpFixturePreparationBindingRecord  # noqa: F401
+from .http_fixture_preparation_cancel_models import HttpFixturePreparationCancellationRecord, HttpFixturePreparationCancellationDeliveryRecord  # noqa: F401
+from .http_fixture_dispatch_consent_models import HttpFixtureDispatchConsentRecord  # noqa: F401
+from .http_fixture_journal_models import HttpFixtureDispatchRecord, HttpFixtureResultRecord  # noqa: F401
+from .http_fixture_work_models import HttpFixtureWorkLeaseRecord, HttpFixtureDispatchOwnershipRecord  # noqa: F401
+from .run_plan_case_execution_models import (  # noqa: F401
+    RunPlanCaseWorkRecord, RunPlanCaseLeaseRecord, RunPlanCaseClaimRecord,
+    RunPlanCaseOutcomeRecord, RunPlanCaseCancellationRecord,
+)
+from .run_plan_case_preparation_models import RunPlanCasePreparationRecord, RunPlanCasePreparationBindingRecord  # noqa: F401
+from .run_plan_case_job_models import RunPlanCaseJobCancellationRecord, RunPlanCaseJobCancellationDeliveryRecord  # noqa: F401
+from .native_build_models import NativeBuildReservationRecord, NativeBuildResultRecord, NativeBuildWorkLeaseRecord, NativeBuildCancellationRecord  # noqa: F401
+from .automation_provenance_models import AutomationProvenanceRecord, AutomationProvenanceEdgeRecord  # noqa: F401
+from .generation_job_models import GenerationJobCancellationRecord, GenerationWorkLeaseRecord  # noqa: F401
+from .generation_batch_models import GenerationBatchReservationRecord, GenerationBatchCallRecord, GenerationBatchReplyRecord  # noqa: F401
+from .generation_batch_recovery_models import GenerationBatchRecoveryResultRecord  # noqa: F401
+from .image_publication_models import ImagePublicationReviewRecord, ImagePublicationRecord, ImagePublicationHeadRecord  # noqa: F401
+from .frozen_index_models import FrozenIndexReservationRecord, FrozenIndexGenerationRecord, FrozenIndexDocumentRecord, FrozenRetrievalRecord  # noqa: F401
+from .retrieval_provenance_models import RetrievalProvenanceRecord, IndexDocumentDependencyRecord, ContextRetrievalDependencyRecord  # noqa: F401
+from .context_retrieval_models import ContextRetrievalPlanRecord, ContextRetrievalCallRecord, ContextRetrievalBatchRecord, ContextRetrievalResultRecord  # noqa: F401
+from .context_retrieval_models import ContextRetrievalCancellationRecord  # noqa: F401
+from .document_projection_models import (  # noqa: F401
+    SourceDocumentIdentityRecord, SourceDocumentRevisionRecord, SourceDocumentEvidenceRecord, SourceDocumentExtractionRecord,
+)
 
 
 class UserIdentityRecord(Base):
@@ -162,6 +252,41 @@ class ConversationMessageRecord(Base):
     sequence_max: Mapped[Optional[int]] = mapped_column(nullable=True)
 
 
+class ConversationTurnRecord(Base):
+    __tablename__ = "conversation_turns"
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id",
+            "idempotency_key",
+            name="uq_conversation_turn_idempotency",
+        ),
+        Index(
+            "uq_conversation_turn_active",
+            "conversation_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('accepted', 'planning', 'streaming', 'delegated')"
+            ),
+            sqlite_where=text(
+                "status IN ('accepted', 'planning', 'streaming', 'delegated')"
+            ),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(index=True)
+    user_message_id: Mapped[str] = mapped_column(index=True)
+    assistant_message_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    workflow_id: Mapped[Optional[str]] = mapped_column(nullable=True, unique=True, index=True)
+    idempotency_key: Mapped[str] = mapped_column(index=True)
+    status: Mapped[str] = mapped_column(default="accepted", index=True)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(index=True)
+    updated_at: Mapped[str] = mapped_column(index=True)
+    completed_at: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+
+
 class ConversationSummaryCheckpointRecord(Base):
     __tablename__ = "conversation_summary_checkpoints"
 
@@ -188,6 +313,11 @@ class SessionKnowledgeBindingRecord(Base):
 
 class AgentGoalRecord(Base):
     __tablename__ = "agent_goals"
+    __table_args__ = (
+        UniqueConstraint("id", "conversation_id", "workflow_id", name="uq_agent_goal_start_owner"),
+        CheckConstraint("active_runtime_ms IS NULL OR active_runtime_ms >= 0", name="ck_agent_goal_active_runtime_nonnegative"),
+        CheckConstraint("active_started_at IS NULL OR active_runtime_ms IS NOT NULL", name="ck_agent_goal_active_runtime_interval"),
+    )
 
     id: Mapped[str] = mapped_column(primary_key=True)
     conversation_id: Mapped[str] = mapped_column(index=True)
@@ -216,6 +346,9 @@ class AgentGoalRecord(Base):
     thinking_tokens_used: Mapped[int] = mapped_column(default=0)
     no_progress_observations: Mapped[int] = mapped_column(default=0)
     started_at: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
+    active_runtime_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    active_started_at: Mapped[Optional[str]] = mapped_column(nullable=True)
+    tool_budget_hash: Mapped[Optional[str]] = mapped_column(nullable=True)
     last_progress_at: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
     last_progress_fingerprint: Mapped[Optional[str]] = mapped_column(nullable=True)
     budget_exhausted_reason: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
@@ -309,6 +442,7 @@ class ToolInvocationRecord(Base):
     idempotency_scope: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
     idempotency_key: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
     idempotency_fingerprint: Mapped[Optional[str]] = mapped_column(nullable=True)
+    materialization_input_hash: Mapped[Optional[str]] = mapped_column(nullable=True)
     revision: Mapped[int] = mapped_column(Integer, default=0)
 
 
@@ -571,6 +705,8 @@ class KnowledgeObjectRecord(Base):
     relations: Mapped[list] = mapped_column(JSON, default=list)
     evidence: Mapped[list] = mapped_column(JSON, default=list)
     freshness: Mapped[str]
+    code_reference: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    document_reference: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     sort_order: Mapped[int] = mapped_column(default=0)
 
 
@@ -582,6 +718,7 @@ class RawAssetRecord(Base):
     version_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
     source_type: Mapped[str] = mapped_column(index=True)
     source_uri: Mapped[str]
+    tracked_ref: Mapped[Optional[str]] = mapped_column(nullable=True)
     source_label: Mapped[Optional[str]] = mapped_column(nullable=True)
     ingestion_status: Mapped[str] = mapped_column(default="pending", index=True)
     content_hash: Mapped[str] = mapped_column(default="")
@@ -621,6 +758,7 @@ class RawAssetChunkRecord(Base):
 
 class BaselineRecord(Base):
     __tablename__ = "baselines"
+    __table_args__ = (UniqueConstraint("project_id", "id", name="uq_baseline_project_id"),)
 
     id: Mapped[str] = mapped_column(primary_key=True)
     project_id: Mapped[str] = mapped_column(index=True)
@@ -760,7 +898,7 @@ class TaskContextRecord(Base):
     metric_refs: Mapped[list] = mapped_column(JSON, default=list)
     evidence_refs: Mapped[list] = mapped_column(JSON, default=list)
     missing_context: Mapped[list] = mapped_column(JSON, default=list)
-    confidence: Mapped[float] = mapped_column(default=0)
+    confidence: Mapped[Optional[float]] = mapped_column(nullable=True)
     freshness_at: Mapped[str] = mapped_column(index=True)
     context_hash: Mapped[str] = mapped_column(index=True)
     sort_order: Mapped[int] = mapped_column(default=0)
@@ -775,14 +913,14 @@ class QualityProfileRecord(Base):
     version_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
     us_id: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
     task_context_id: Mapped[str] = mapped_column(index=True)
-    risk_score: Mapped[int] = mapped_column(default=0)
-    coverage_score: Mapped[int] = mapped_column(default=0)
-    release_score: Mapped[int] = mapped_column(default=0)
-    automation_feasibility: Mapped[int] = mapped_column(default=0)
+    risk_score: Mapped[Optional[int]] = mapped_column(nullable=True)
+    coverage_score: Mapped[Optional[int]] = mapped_column(nullable=True)
+    release_score: Mapped[Optional[int]] = mapped_column(nullable=True)
+    automation_feasibility: Mapped[Optional[int]] = mapped_column(nullable=True)
     risk_drivers: Mapped[list] = mapped_column(JSON, default=list)
     regression_scope_refs: Mapped[list] = mapped_column(JSON, default=list)
     evidence_refs: Mapped[list] = mapped_column(JSON, default=list)
-    confidence: Mapped[float] = mapped_column(default=0)
+    confidence: Mapped[Optional[float]] = mapped_column(nullable=True)
     freshness_at: Mapped[str] = mapped_column(index=True)
     sort_order: Mapped[int] = mapped_column(default=0)
 

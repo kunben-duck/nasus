@@ -22,6 +22,8 @@ from ...application.quality_loop.runner_port import (
 from ...application.quality_loop.quality_models import ExecutionEvidence, RunDetail
 from ...application.system_image.system_image_models import TaskContext
 from .adapters import build_automation_runner_from_env
+from .request_wire import runner_request_body, runner_request_hash
+from ...domain.quality_loop.runner_observations import verify_runner_observations
 
 
 SUPPORTED_EVIDENCE_TYPES = {
@@ -72,15 +74,24 @@ class RunOrchestrator:
             test_result_payload=self._protocol_stub_result(invocation_input)
         )
         runner_result = runner.execute(command)
+        if runner_result.runner_mode == "http_playwright" and runner_result.status == "passed" and runner_result.execution_receipt is None:
+            raise ValueError("passing HTTP execution requires verified step observations")
+        if runner_result.execution_receipt is not None:
+            if runner_result.runner_mode != "http_playwright":
+                raise ValueError("only the trusted HTTP runner can supply execution observations")
+            verify_runner_observations(runner_result.execution_receipt, job_id=command.job_id,
+                project_id=project_id, us_id=us_id, request_hash=runner_request_hash(command),
+                step_actions=tuple(step.get("action") for step in command.steps), status=runner_result.status)
         run = self._build_run(project_id, us_id, runner_result, command)
-        evidence = self._upsert_execution_evidence(
+        evidence = self._archive_execution_evidence(
             project_id,
             us_id,
             run,
             runner_result=runner_result,
+            command=command,
         )
         run.evidence = [item.storage_ref for item in evidence]
-        self._persist_run_detail(project_id, run)
+        self.workspace.commit_run_execution(project_id, run, evidence)
         return RunExecutionOutcome(
             run=run,
             evidence=evidence,
@@ -93,7 +104,9 @@ class RunOrchestrator:
         us_id: str,
         run: RunDetail,
     ) -> list[ExecutionEvidence]:
-        return self._upsert_execution_evidence(project_id, us_id, run)
+        evidence = self._archive_execution_evidence(project_id, us_id, run)
+        self.workspace.replace_run_evidence(project_id, run.id, evidence)
+        return evidence
 
     @staticmethod
     def _protocol_stub_result(invocation_input: dict[str, Any]) -> dict[str, Any] | None:
@@ -149,7 +162,7 @@ class RunOrchestrator:
         us_title = self.workspace.us_title(project_id, us_id) or us_id
         run_id = f"run_{uuid4().hex}"
         status = "passed" if runner_result.status == "passed" else "failed"
-        task_context_id = self._task_context_id(project_id, us_id) or ""
+        task_context_id = command.metadata.get("task_context_id")
         failure_summary = runner_result.failure_summary
         if status == "failed" and not failure_summary:
             failure_summary = f"Runner completed with non-passing status {runner_result.status}."
@@ -191,21 +204,19 @@ class RunOrchestrator:
         context = self.task_context_provider.current_task_context(project_id, us_id)
         return context.id if context is not None else None
 
-    def _persist_run_detail(self, project_id: str, run: RunDetail) -> None:
-        self.workspace.save_run_detail(project_id, run)
-
-    def _upsert_execution_evidence(
+    def _archive_execution_evidence(
         self,
         project_id: str,
         us_id: str,
         run: RunDetail,
         *,
         runner_result: AutomationRunnerResult | None = None,
+        command: AutomationRunnerCommand | None = None,
     ) -> list[ExecutionEvidence]:
         captured_at = self._now()
         evidence: list[ExecutionEvidence] = []
         artifacts = list(runner_result.artifacts) if runner_result is not None else []
-        artifacts.append(self._result_report_artifact(run, runner_result))
+        artifacts.append(self._result_report_artifact(run, runner_result, command))
         if run.status == "failed" and not any(item.artifact_type == "failure_artifact" for item in artifacts):
             artifacts.append(self._failure_artifact(run))
 
@@ -226,7 +237,7 @@ class RunOrchestrator:
                     project_id=project_id,
                     run_id=run.id,
                     us_id=us_id,
-                    case_ref="case_set:current",
+                    case_ref=None,
                     evidence_type=evidence_type,  # type: ignore[arg-type]
                     storage_ref=object_result.storage_ref,
                     content_hash=object_result.content_hash,
@@ -234,24 +245,19 @@ class RunOrchestrator:
                     captured_at=captured_at,
                 )
             )
-        self.workspace.replace_run_evidence(
-            project_id,
-            run.id,
-            evidence,
-        )
         return evidence
 
     @staticmethod
     def _default_timeline(status: str) -> list[str]:
         if status == "failed":
             return [
-                "Generated browser automation from approved cases.",
-                "The isolated runner returned a non-passing result.",
+                "Created a run record from the runner response.",
+                "The runner returned a non-passing result.",
                 "Captured available runner artifacts for failure analysis.",
             ]
         return [
-            "Generated browser automation from approved cases.",
-            "The isolated runner completed browser validation.",
+            "Created a run record from the runner response.",
+            "The runner returned a passing result; business coverage remains unverified.",
             "Captured runner artifacts for review.",
         ]
 
@@ -271,6 +277,7 @@ class RunOrchestrator:
     def _result_report_artifact(
         run: RunDetail,
         runner_result: AutomationRunnerResult | None,
+        command: AutomationRunnerCommand | None = None,
     ) -> RunnerArtifact:
         payload = {
             "run_id": run.id,
@@ -284,6 +291,12 @@ class RunOrchestrator:
             "runner_status": runner_result.status if runner_result else run.status,
             "started_at": runner_result.started_at if runner_result else run.started_at,
             "completed_at": runner_result.completed_at if runner_result else None,
+            "execution_receipt": runner_result.execution_receipt if runner_result else None,
+            "execution_receipt_verified": bool(runner_result and runner_result.execution_receipt is not None),
+            "execution_request": json.loads(runner_request_body(command)) if command else None,
+            "execution_request_hash": runner_request_hash(command) if command else None,
+            "target_build_verified": False,
+            "business_coverage_verified": False,
         }
         return RunnerArtifact(
             artifact_type="report",

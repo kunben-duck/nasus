@@ -9,6 +9,7 @@ import type {
 import { ModelConfigurationBody } from './ModelConfigurationBody'
 import { ModelRouteTabs } from './ModelRouteTabs'
 import { useModelConfigurationDraft } from '../../../domains/platform/settings/useModelConfigurationDraft'
+import { useI18n } from '../../../shared/i18n/I18nProvider'
 
 export function ModelConfigurationPanel({
   settings,
@@ -35,24 +36,25 @@ export function ModelConfigurationPanel({
   onActivateModel: (configId: string) => Promise<StudioSettings>
   onUseSystemDefaultModel: (route: ModelRoute) => Promise<StudioSettings>
 }) {
+  const { t, tx } = useI18n()
   const { activeProfile } = useModelConfigurationDraft(settings, activeRoute)
   const status = activeProfile.active_provider_status
 
   return (
     <div className="settings-submenu settings-model-submenu">
-      <div className="settings-submenu-title">Model configuration</div>
+      <div className="settings-submenu-title">{t('Model configuration')}</div>
       <div className={`settings-provider-banner compact ${disabled ? 'readonly' : ''}`}>
         <span className={`settings-provider-pill ${disabled ? 'fallback' : 'live'}`}>
-          {disabled ? 'read only' : 'connected'}
+          {disabled ? t('read only') : t('connected')}
         </span>
         <span className="settings-provider-copy">{statusMessage}</span>
       </div>
       <ModelRouteTabs activeRoute={activeRoute} onActiveRouteChange={onActiveRouteChange} />
       <div className="settings-provider-banner compact">
         <span className={`settings-provider-pill ${activeProfile.runtime_mode === 'live' ? 'live' : 'fallback'}`}>
-          {activeProfile.runtime_mode}
+          {tx(activeProfile.runtime_mode)}
         </span>
-        <span className="settings-provider-copy">{status.reason}</span>
+        <span className="settings-provider-copy">{tx(status.reason)}</span>
       </div>
       <ModelConfigurationBody
         key={activeRoute}

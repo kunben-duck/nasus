@@ -726,11 +726,24 @@ def test_agent_tool_catalog_context_is_bounded_in_application_layer() -> None:
     ).read_text()
     memory_source = (app_root / "application" / "agent" / "memory.py").read_text()
     domain_memory_source = (app_root / "domain" / "agent" / "memory.py").read_text()
+    encoding_source = (app_root / "application" / "agent" / "tool_catalog_encoding.py").read_text()
 
     assert "def compact_tool_catalog_json(" in tool_context_source
-    assert '"available_tool_ids"' in tool_context_source
+    assert "from .tool_catalog_encoding import planner_registry_fields" in tool_context_source
+    assert "planner_registry_fields([tool.tool_id for tool in catalog])" in tool_context_source
+    assert '"available_tool_ids"' in encoding_source
+    assert "def planner_catalog_tool_ids(" in encoding_source
+    assert '"nasus.agent-tool-catalog.v2"' in encoding_source
+    assert '"nasus.agent-tool-catalog.v3"' in encoding_source
+    tree = ast.parse(encoding_source)
+    imports = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+    imports += [alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names]
+    assert not any(any(part in module.split(".") for part in
+        ("infrastructure", "store", "sqlalchemy", "fastapi", "httpx", "boto3", "subprocess", "temporalio", "langgraph"))
+        for module in imports)
     assert '"relevant_tools"' in tool_context_source
     assert "relevant_limit: int = 12" in tool_context_source
+    assert "max_bytes: int = 6_999" in tool_context_source
     assert "compact_tool_catalog_json(tools, conversation)" in memory_source
     assert "tool.tool_id" not in memory_source.split(
         'sections.append("[tool_catalog]")', 1
@@ -805,15 +818,18 @@ def test_agent_memory_manager_lives_in_application_layer() -> None:
         "def _project_long_term_memory_view",
         "def _candidate_memory_view",
         "SystemImageMemoryContextApplicationService",
-        "self.system_image_memory_context = SystemImageMemoryContextApplicationService(",
-        "return self.system_image_memory_context.context_sections(conversation.project_id)",
-        "view = self.system_image_memory_context.long_term_project_refs(project_id)",
+        "self.system_image_memory_context = system_image_memory_context",
+        "image_sections = self.system_image_memory_context.context_sections(conversation.project_id,",
+        "version_id=conversation.version_id, expected_state=image_read_state)",
+        "view = self.system_image_memory_context.long_term_project_refs(project_id, version_id=version_id)",
         "self._state.persist_summary_checkpoint(conversation, checkpoint)",
         "await self._state.publish_memory_checkpointed(conversation, checkpoint)",
         "self._state.get_goal(agent_goal_id)",
     ]:
         assert implementation_fragment in application_memory
     assert "def _persist_system_image" not in application_memory
+    assert "SystemImageWorkspacePort" not in application_memory
+    assert "SQLAlchemySystemImageContextReader(" in store_source
     for dependency_fragment in [
         "from .agent_models import (",
         "AgentGoal,",
@@ -893,8 +909,8 @@ def test_agent_memory_manager_lives_in_application_layer() -> None:
     assert "self.store._build_summary_checkpoint" not in application_memory
     assert "self.conversation_summaries.latest_checkpoint(" in application_memory
     assert "self.conversation_summaries.build_checkpoint(" in application_memory
-    system_image_context_block = application_memory.split("def _system_image_context", 1)[1].split(
-        "\n    def _project_long_term_memory_context",
+    system_image_context_block = application_memory.split("def context_snapshot", 1)[1].split(
+        "\n    def _project_context",
         1,
     )[0]
     project_long_term_view_block = application_memory.split("def _project_long_term_memory_view", 1)[1].split(
@@ -2255,7 +2271,8 @@ def test_runner_and_workflow_adapters_live_under_infrastructure_layer() -> None:
     assert "ApplicationStore" not in infra_run
     assert "self.store" not in infra_run
     assert "self.workspace.us_title(project_id, us_id)" in infra_run
-    assert "self.workspace.save_run_detail(project_id, run)" in infra_run
+    assert "self.workspace.commit_run_execution(project_id, run, evidence)" in infra_run
+    assert "self.workspace.save_run_detail(" not in infra_run
     assert "self.workspace.replace_run_evidence(" in infra_run
     assert "self.task_context_provider.current_task_context(project_id, us_id)" in infra_run
     assert "self.store._current_task_context" not in infra_run
@@ -3112,15 +3129,15 @@ def test_system_image_read_models_live_in_system_image_application_service() -> 
     for fragment in [
         "class SystemImageApplicationService",
         "SystemImageKnowledgeQueryApplicationService",
-        "self.knowledge_queries = SystemImageKnowledgeQueryApplicationService(workspace)",
+        "self.knowledge_queries = SystemImageKnowledgeQueryApplicationService(self.snapshots)",
         "SystemImageSnapshotQueryApplicationService",
-        "self.snapshots = SystemImageSnapshotQueryApplicationService(operations)",
+        "self.snapshots = SystemImageSnapshotQueryApplicationService(reader)",
         "def list_knowledge_objects",
         "return self.knowledge_queries.list_knowledge_objects(project_id)",
         "def get_knowledge_object",
         "return self.knowledge_queries.get_knowledge_object(project_id, object_id)",
         "def get_system_image",
-        "return self.snapshots.get_system_image(project_id)",
+        "return self.snapshots.get_system_image(project_id, working=working)",
     ]:
         assert fragment in system_image_source
     for leaked_rule in [
@@ -3133,10 +3150,9 @@ def test_system_image_read_models_live_in_system_image_application_service() -> 
         assert leaked_rule not in system_image_source
     for fragment in [
         "class SystemImageKnowledgeQueryApplicationService",
-        "SystemImageWorkspacePort",
-        "self._workspace.refresh_project_read_model(project_id)",
-        "return self._workspace.list_knowledge_objects(project_id)",
-        "for item in self._workspace.list_knowledge_objects(project_id)",
+        "SystemImageSnapshotQueryApplicationService",
+        "return self._snapshots.get_system_image(project_id).objects",
+        "for item in self.list_knowledge_objects(project_id)",
     ]:
         assert fragment in knowledge_queries_source
     assert "SystemImageKnowledgeQueryApplicationService" in system_image_init
@@ -3151,20 +3167,30 @@ def test_system_image_read_models_live_in_system_image_application_service() -> 
     for fragment in [
         "class SystemImageSnapshotQueryApplicationService",
         "def get_system_image",
-        "return self._operations.get(project_id)",
+        "SystemImageReadPort",
+        "view = self._reader.read(project_id, working=True) if working else self._reader.read(project_id)",
+        "self._reader.require_current(view.scope)",
     ]:
         assert fragment in snapshots_source
+    assert "_workspace" not in knowledge_queries_source
+    assert "SystemImageOperationsPort" not in snapshots_source
+    assert "SQLAlchemySystemImageSnapshotReader(" in store_source
     for fragment in [
         "class SystemImageMemoryContextApplicationService",
         "def context_sections",
         "def long_term_project_refs",
-        "self._workspace.list_baselines(project_id)",
-        "self._workspace.list_raw_assets(project_id)",
-        "self._workspace.list_knowledge_objects(project_id)",
-        "self._workspace.list_context_relationships(project_id)",
-        "self._workspace.list_quality_metric_snapshots(project_id)",
+        "class SystemImageContextReadPort(Protocol)",
+        "class SystemImageContextFacts",
+        "self._reader.read(project_id)",
+        "self.require_current(facts.scope)",
+        "facts.sources",
+        "facts.objects",
+        "facts.baselines",
+        "facts.relationships",
+        "facts.metrics",
     ]:
         assert fragment in memory_context_source
+    assert "_workspace" not in memory_context_source
     for fragment in [
         "class SystemImageRetrievalTraceApplicationService",
         "def record_agent_memory_retrieval",
@@ -3236,7 +3262,7 @@ def test_system_image_source_binding_use_cases_live_in_source_application_servic
         "return self.source_bindings.source_binding_incomplete(project_id)",
         "return self.source_bindings.missing_source_types(project_id)",
         "return self.source_bindings.register_sources(",
-        "return self.source_bindings.ingest_sources(project_id)",
+        "return self.source_bindings.ingest_sources(project_id, selection=selection)",
     ]:
         assert fragment in use_case_source
 
@@ -3264,16 +3290,16 @@ def test_system_image_lifecycle_use_cases_live_in_lifecycle_application_service(
         "class SystemImageLifecycleApplicationService",
         "async def materialize_context",
         "async def initialize_baseline",
-        "await self._operations.materialize_context(project_id)",
-        "await self._operations.initialize_baseline(project_id)",
+        'await self._operations.materialize_context(project_id, **({"invocation_id": invocation_id} if invocation_id else {}))',
+        'await self._operations.initialize_baseline(project_id, **({"invocation_id": invocation_id} if invocation_id else {}))',
     ]:
         assert fragment in lifecycle_source
 
     for fragment in [
         "SystemImageLifecycleApplicationService",
         "self.lifecycle = SystemImageLifecycleApplicationService(operations)",
-        "return await self.lifecycle.materialize_context(project_id)",
-        "return await self.lifecycle.initialize_baseline(project_id)",
+        "return await self.lifecycle.materialize_context(project_id, invocation_id=invocation_id)",
+        "return await self.lifecycle.initialize_baseline(project_id, invocation_id=invocation_id)",
     ]:
         assert fragment in use_case_source
 
@@ -3579,7 +3605,6 @@ def test_project_version_use_cases_depend_on_ports_not_compatibility_store() -> 
         "self._workspace.save_us_item(",
         "self._workspace.save_release_readiness(",
         "self._workspace.conversation_project_id(",
-        "self._workspace.has_indexed_system_image_evidence(project_id)",
     ]:
         assert fragment in application_source
     for leaked_dependency in [
@@ -4296,7 +4321,12 @@ def test_system_image_contract_models_live_in_system_image_application_layer() -
     assert "from .application.system_image.system_image_models import (" in models_source
     assert "from .application.platform.project_models import ProjectCard, VersionSummary" in models_source
     assert "from .system_image_models import (" in service_source
-    assert "from .system_image_models import ContextRelationship, KnowledgeObject, QualityMetricSnapshot, RawAssetRecord" in extraction_source
+    extraction_imports = {
+        alias.name for node in ast.walk(ast.parse(extraction_source))
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module == "system_image_models"
+        for alias in node.names
+    }
+    assert {"ContextRelationship", "KnowledgeObject", "KnowledgeCodeReference", "QualityMetricSnapshot", "RawAssetRecord"} <= extraction_imports
     assert "from ...application.system_image.system_image_models import RawAssetRecord" in ingestion_source
     assert "from ...application.system_image.system_image_models import (" in system_image_repository_source
     assert "from .application.system_image.system_image_models import (" in store_source
@@ -7110,7 +7140,9 @@ def test_conversation_message_orchestration_lives_in_agent_application_service()
         "self._runtime.plan_message",
         "ToolInvocationRequest(",
         "self._runtime.start_goal_from_proposal",
-        "self._runtime.is_paused_goal(goal_id)",
+        "self._runtime.get_goal(goal_id)",
+        "AgentResumeCheckpoint.capture(current.model_dump(mode=\"json\"))",
+        "expected_resume=checkpoint",
         "self._runtime.get_tool_invocation(invocation.id)",
         "self._runtime.list_tool_invocations(",
         "self._runtime.project_goal(active_goal)",
@@ -7443,7 +7475,7 @@ def test_agent_goal_lifecycle_lives_in_agent_application_layer() -> None:
         "def active_goal_for_conversation",
         "AgentGoal(",
         "AgentStep(id=\"step_context\"",
-        "workflow_id=f\"wf_",
+        "workflow_id=start_identity.workflow_id if start_identity else f\"wf_",
         "AgentGoalLifecycleStatePort",
         "self._state.create_goal(goal)",
         "self._state.record_goal_audit(",
@@ -7561,7 +7593,10 @@ def test_agent_goal_conversation_projection_lives_in_agent_application_layer() -
     assert "AgentWorkflowStatePort" in workflow_factory_source
     assert "workflow_state.accept_remote_goal" in workflow_factory_source
     assert "AgentGoalProjectionApplicationService" not in workflow_worker_source
-    assert "self._goal_projector.upsert_in_conversation(goal)" in workflow_activity_source
+    assert "self._goal_projector.upsert_in_conversation(goal)" not in workflow_activity_source
+    assert "goal.workflow_id = workflow_id" not in workflow_activity_source
+    assert "proposal, workflow_id=workflow_id" in workflow_activity_source
+    assert '"agent_start_scope_changed"' in workflow_activity_source
     assert "_upsert_goal_in_conversation" not in workflow_worker_source
     assert "self._state.persist_goal(goal)" in lifecycle_source
     assert "AgentGoalProjectionApplicationService" not in lifecycle_source
@@ -8071,6 +8106,7 @@ def test_portal_feature_skeleton_and_provider_are_present() -> None:
         portal_root / "routes" / "project-overview" / "components" / "ProjectTaskComposer.tsx",
         portal_root / "routes" / "project-overview" / "components" / "QualityAssetPanel.tsx",
         portal_root / "routes" / "project-overview" / "components" / "quality-asset" / "LatestRunRow.tsx",
+        portal_root / "routes" / "project-overview" / "components" / "quality-asset" / "QualityDraftNotice.tsx",
         portal_root / "routes" / "project-overview" / "components" / "quality-asset" / "QualityLaneGrid.tsx",
         portal_root / "routes" / "project-overview" / "components" / "quality-asset" / "QualityLoopStateCard.tsx",
         portal_root / "routes" / "project-overview" / "components" / "quality-asset" / "QualityPanelHeader.tsx",
@@ -8132,6 +8168,9 @@ def test_portal_feature_skeleton_and_provider_are_present() -> None:
         portal_root / "domains" / "agent" / "agentGoalCommands.ts",
         portal_root / "domains" / "agent" / "useAgentGoalExplanation.ts",
         portal_root / "domains" / "agent" / "useConversation.ts",
+        portal_root / "domains" / "agent" / "useConversationTurn.ts",
+        portal_root / "domains" / "agent" / "conversationStreamingEventReducer.ts",
+        portal_root / "domains" / "agent" / "conversationTurns.ts",
         portal_root / "domains" / "agent" / "useConversationEvents.ts",
         portal_root / "domains" / "quality-loop",
         portal_root / "domains" / "quality-loop" / "api.ts",
@@ -8283,11 +8322,15 @@ def test_portal_feature_skeleton_and_provider_are_present() -> None:
     assert "toolIdForAction" not in tool_actions_source
     assert "source_specs" not in tool_actions_source
     assert "Build the official system image" not in tool_actions_source
-    assert "Build the official system image" in studio_action_command_source
+    assert "Build the system image for this project." in studio_action_command_source
+    assert "Build the official system image" not in studio_action_command_source
     assert "quality-loop.continue-goal" in studio_action_command_source
     assert "toolIdForAction" in studio_action_command_source
     assert "source_specs" in source_action_plan_source
     assert "system-image.register-sources" in source_action_plan_source
+    assert "system-image.ingest-sources" in source_action_plan_source
+    assert "system-image.materialize-context" not in source_action_plan_source
+    assert "system-image.initialize-baseline" not in source_action_plan_source
     assert "system_image.sources.register" in tool_action_map_source
     assert "release.assess" in tool_action_map_source
     assert len(project_workspace_view_source.splitlines()) <= 105
@@ -8325,6 +8368,7 @@ def test_portal_feature_skeleton_and_provider_are_present() -> None:
     assert "QualityLoopStateCard" in quality_asset_panel_source
     assert "QualityLaneGrid" in quality_asset_panel_source
     assert "LatestRunRow" in quality_asset_panel_source
+    assert "QualityDraftNotice" in quality_asset_panel_source
     for fragment in ["quality-stage-bar", "quality-lane-card", "quality-run-row", "quality-empty-state"]:
         assert fragment not in quality_asset_panel_source
     assert "quality-lane-card" in quality_lane_grid_source
@@ -8464,14 +8508,25 @@ def test_portal_feature_skeleton_and_provider_are_present() -> None:
     conversation_hook_source = (portal_root / "domains" / "agent" / "useConversation.ts").read_text()
     conversation_events_source = (portal_root / "domains" / "agent" / "useConversationEvents.ts").read_text()
     event_reducer_source = (portal_root / "domains" / "agent" / "conversationEventReducer.ts").read_text()
+    goal_event_reducer_source = (portal_root / "domains" / "agent" / "conversationGoalEventReducer.ts").read_text()
     event_payload_readers_source = (portal_root / "domains" / "agent" / "eventPayloadReaders.ts").read_text()
     tool_invocation_event_source = (portal_root / "domains" / "agent" / "toolInvocationEvent.ts").read_text()
     shared_event_upsert_source = (portal_root / "shared" / "event-reducer" / "eventUpsert.ts").read_text()
     production_sources = [path.read_text() for path in portal_root.rglob("*.ts*")]
     assert all("features/" not in source for source in production_sources)
     assert len(conversation_hook_source.splitlines()) < 55
+    conversation_sender_source = (portal_root / "domains" / "agent" / "conversationMessageSender.ts").read_text()
+    assert "createConversationMessageSender" in conversation_hook_source
+    for fragment in ("requireActiveQueryScope(canReadWorkspace)", "!enabled || existingOnly || isError || !conversationId",
+            "idempotencyKey: crypto.randomUUID()", "return send({ conversationId, content"):
+        assert fragment in conversation_sender_source
+    assert "agentApi" not in conversation_sender_source
     assert len(event_reducer_source.splitlines()) < 80
-    assert "agentApi.ensureConversation" in conversation_hook_source
+    conversation_scope_source = (portal_root / "domains" / "agent" / "conversationScopeQuery.ts").read_text()
+    assert "readConversationScope" in conversation_hook_source
+    assert "agentApi.ensureConversation" in conversation_scope_source
+    assert "agentApi.readProjectConversation(spaceId, signal)" in conversation_scope_source
+    assert "spaceType !== 'project'" in conversation_scope_source
     assert "useConversationEvents" in conversation_hook_source
     assert "EventSource" not in conversation_hook_source
     assert "reduceConversationEvent" not in conversation_hook_source
@@ -8481,7 +8536,10 @@ def test_portal_feature_skeleton_and_provider_are_present() -> None:
     assert "./conversationEventReducer" in conversation_events_source
     assert "reduceConversationEvent" in event_reducer_source
     assert "asConversationMessage" in event_reducer_source
-    assert "asAgentStep" in event_reducer_source
+    assert "./conversationGoalEventReducer" in event_reducer_source
+    assert "reduceAgentStepEvent" in event_reducer_source
+    assert "asAgentStep" in goal_event_reducer_source
+    assert len(goal_event_reducer_source.splitlines()) < 55
     assert "asAgentSwarm" in event_reducer_source
     assert "upsertById" in event_reducer_source
     assert "toolInvocationFromEvent" in event_reducer_source
@@ -8521,6 +8579,7 @@ def test_portal_styles_are_split_by_frontend_boundary() -> None:
         "studio-shell.css",
         "build.css",
         "project-workspace.css",
+        "markdown.css",
         "settings.css",
         "theme-overrides.css",
         "responsive.css",
@@ -8529,7 +8588,7 @@ def test_portal_styles_are_split_by_frontend_boundary() -> None:
     assert missing == []
 
     app_css_lines = [line for line in app_css.splitlines() if line.strip()]
-    assert len(app_css_lines) == 9
+    assert len(app_css_lines) == 10
     assert all(line.startswith("@import ") for line in app_css_lines)
     for filename in required_style_files:
         assert f"@import './{filename}';" in app_css
@@ -8679,7 +8738,9 @@ def test_top_level_routes_are_not_backed_by_nasus_studio_singleton() -> None:
     assert "BuildComposerSkill" in build_composer_types_source
     assert "selectedSkills={model.selectedSkills}" in build_route_source
     assert "selectedSkills={selectedSkills}" in build_hero_source
-    assert "buildSkillCards.filter" in build_route_model_source
+    assert "buildSkillCards.filter" in build_skill_selection_source
+    assert "buildSkillCards.filter" not in build_route_model_source
+    assert "selectedSkills: buildSkillSelection.selectedSkills" in build_route_model_source
     assert "selected-skill-card" not in build_composer_source
     assert "composer-action-button" not in build_composer_source
     assert "textarea" not in build_composer_source
@@ -9237,3 +9298,81 @@ def test_production_governance_uses_sql_workspace_and_atomic_entity_writes() -> 
     assert "self._workspace.save_approval(project_id, approval)" in application_source
     assert "self._workspace.replace_approvals(" not in application_source
     assert "self._workspace.replace_versions(" not in application_source
+
+
+def test_fixed_materialization_has_no_mutable_source_or_preparation_bypass() -> None:
+    app_root = ROOT / "apps/api/app"
+    service_source = (app_root / "application/system_image/service.py").read_text()
+    service = next(node for node in ast.parse(service_source).body
+        if isinstance(node, ast.ClassDef) and node.name == "SystemImageService")
+    methods = {node.name: node for node in service.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for name in ("materialize_context", "_materialize_captured_context", "_materialize_context"):
+        assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "ingest_sources" for node in ast.walk(methods[name]))
+    apply_method = methods["_materialize_context"]
+    required = dict(zip((arg.arg for arg in apply_method.args.kwonlyargs), apply_method.args.kw_defaults))
+    assert all(required[name] is None for name in ("manifest", "prepared", "check_input"))
+    assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "extract" for node in ast.walk(apply_method))
+    assert "sources=list(prepared.sources)" in ast.get_source_segment(service_source, apply_method)
+    assert "with self.workspace.operation_session():" in ast.get_source_segment(service_source, methods["materialize_context"])
+    assert "with self.workspace.operation_session():" in ast.get_source_segment(service_source, methods["get"])
+
+
+def test_canonical_tool_dispatch_uses_injected_application_operation_scope() -> None:
+    app_root = ROOT / "apps/api/app"
+    runtime = (app_root / "application/platform/runtime.py").read_text()
+    ports = (app_root / "application/platform/runtime_ports.py").read_text()
+    composition = (app_root / "store.py").read_text()
+    assert "class ToolOperationScopePort(Protocol)" in ports
+    assert "operation_scope: ToolOperationScopePort," in runtime
+    assert "with self._operation_scope.operation_session():" in runtime
+    assert "operation_scope=self.system_image_workspace," in composition
+    assert "SQLAlchemySystemImageWorkspace" not in runtime
+    assert "ContextVar" not in runtime and "sqlalchemy" not in runtime
+
+
+def test_new_frozen_extraction_keeps_semantic_assertions_separate_from_structural_inventory() -> None:
+    source = (ROOT / "apps/api/app/application/system_image/context_extraction.py").read_text()
+    tree = ast.parse(source)
+    resolver = [node for node in ast.walk(tree) if isinstance(node, ast.IfExp)
+        and "self._entity_resolver.resolve" in (ast.get_source_segment(source, node.body) or "")]
+    assert len(resolver) == 1
+    assert ast.unparse(resolver[0].test) == "source_manifest is None"
+    assert isinstance(resolver[0].orelse, ast.List) and not resolver[0].orelse.elts
+    inventory = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "_inventory_metrics")
+    keys = {node.value for node in ast.walk(inventory) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+    assert {"coverage_status", "unknown", "admitted_projection_inventory_not_quality_assessment"} <= keys
+    assert not {"scenario_coverage", "automation_coverage", "traceability_coverage", "code_risk_score", "failed_runs"} & keys
+
+
+def test_materialization_command_pins_are_an_injected_port_and_us_start_has_no_hidden_build() -> None:
+    app_root = ROOT / "apps/api/app"
+    inputs = (app_root / "application/system_image/materialization_inputs.py").read_text()
+    port = (app_root / "application/system_image/materialization_command_port.py").read_text()
+    composition = (app_root / "store.py").read_text()
+    assert "class MaterializationCommandInputPort(Protocol)" in port
+    assert "self.commands.admit(" in inputs and "self.commands.require_current(" in inputs
+    assert "self.snapshots.get_manifest(project_id, original.manifest_id)" in inputs
+    assert "materialization_commands=MaterializationCommandInputRepository()," in composition
+    assert not any(value in inputs for value in ("sqlalchemy", "FastAPI", "session_scope", "SSEEventOutboxRecord"))
+    task_source = (app_root / "application/quality_loop/project_versions.py").read_text()
+    task = next(node for node in ast.walk(ast.parse(task_source))
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "start_us_task")
+    assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "materialize_context" for node in ast.walk(task))
+
+
+def test_automation_input_uses_verified_application_ports_not_legacy_workspace() -> None:
+    app_root = ROOT / "apps/api/app"
+    source = (app_root / "application/quality_loop/automation_inputs.py").read_text()
+    for name in ("AutomationMappingPort", "AutomationCaseResultPort", "AutomationGenerationInputPort"):
+        assert f"class {name}(Protocol)" in source
+    imports = "\n".join(ast.unparse(node) for node in ast.walk(ast.parse(source))
+        if isinstance(node, (ast.Import, ast.ImportFrom)))
+    assert not any(value in imports for value in ("infrastructure", "sqlalchemy", "fastapi", "store", "workspace"))
+    assert "self.authorization.require_current(access)" in source
+    assert "self.mappings.resolve(" in source and "self.results.read(" in source and "self.generation.prepare(" in source
+    domain = (app_root / "domain/quality_loop/automation_input.py").read_text()
+    assert not any(value in domain for value in ("TaskContext", "QualityProfile", "sqlalchemy", "FastAPI", "ObjectStorage"))
+    assert '"generation_authorized": False' in domain and '"execution_authorized": False' in domain

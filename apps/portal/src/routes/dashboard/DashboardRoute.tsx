@@ -1,9 +1,11 @@
 import { TopLevelStudioShell } from '../../app/shells/TopLevelStudioShell'
 import { DashboardContent } from './DashboardContent'
 import { useDashboardRouteModel } from './useDashboardRouteModel'
+import { useI18n } from '../../shared/i18n/I18nProvider'
 
 export function DashboardRoute() {
   const model = useDashboardRouteModel()
+  const { t } = useI18n()
 
   return (
     <TopLevelStudioShell active="dashboard" statusDependencies={model.statusDependencies}>
@@ -13,7 +15,7 @@ export function DashboardRoute() {
           <button
             className="collapse-button dashboard-collapse-button"
             aria-expanded={!sidebarCollapsed}
-            aria-label={sidebarCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+            aria-label={sidebarCollapsed ? t('Expand navigation') : t('Collapse navigation')}
             onClick={toggleSidebar}
             type="button"
           >

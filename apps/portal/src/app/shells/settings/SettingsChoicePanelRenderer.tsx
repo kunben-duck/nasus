@@ -2,6 +2,7 @@ import type { StudioSettings } from '../../../domains/platform/types'
 import { SettingsChoicePanel } from './SettingsChoicePanel'
 import { languageChoices, notificationChoices, themeChoices } from './settingsChoiceConfigs'
 import type { SettingsChoicePanelId } from './settingsChoicePanelIds'
+import { useI18n } from '../../../shared/i18n/I18nProvider'
 
 export function SettingsChoicePanelRenderer({
   activePanel,
@@ -18,13 +19,14 @@ export function SettingsChoicePanelRenderer({
   onLanguage: (language: StudioSettings['language']) => void
   onNotification: (notificationMode: StudioSettings['notification_mode']) => void
 }) {
+  const { t } = useI18n()
   if (activePanel === 'theme') {
-    return <SettingsChoicePanel value={settings?.theme} disabled={disabled} choices={themeChoices} onChange={onTheme} />
+    return <SettingsChoicePanel value={settings?.theme} disabled={disabled} choices={themeChoices(t)} onChange={onTheme} />
   }
 
   if (activePanel === 'language') {
     return (
-      <SettingsChoicePanel value={settings?.language} disabled={disabled} choices={languageChoices} onChange={onLanguage} />
+      <SettingsChoicePanel value={settings?.language} disabled={disabled} choices={languageChoices(t)} onChange={onLanguage} />
     )
   }
 
@@ -32,7 +34,7 @@ export function SettingsChoicePanelRenderer({
     <SettingsChoicePanel
       value={settings?.notification_mode}
       disabled={disabled}
-      choices={notificationChoices}
+      choices={notificationChoices(t)}
       onChange={onNotification}
     />
   )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from time import monotonic
+from typing import Callable, Optional
 
 from .event_ports import EventOutboxPort, EventStreamBufferPort, EventStreamKind
 from .tool_models import EventPayload
@@ -17,11 +18,13 @@ class PlatformEventStreamApplicationService:
         *,
         poll_seconds: float,
         heartbeat_seconds: float,
+        authorize_event: Optional[Callable[[EventPayload], bool]] = None,
     ) -> None:
         self._outbox = outbox
         self._buffer = buffer
         self._poll_seconds = max(0.05, poll_seconds)
         self._heartbeat_seconds = max(1.0, heartbeat_seconds)
+        self._authorize_event = authorize_event
 
     def conversation_queue(self, conversation_id: str) -> asyncio.Queue[EventPayload]:
         return self._buffer.conversation_queue(conversation_id)
@@ -34,6 +37,13 @@ class PlatformEventStreamApplicationService:
 
     async def publish_conversation_event(self, conversation_id: str, event: EventPayload) -> None:
         await asyncio.to_thread(self._outbox.append, event)
+        await self.fan_out_persisted_conversation_event(conversation_id, event)
+
+    async def fan_out_persisted_conversation_event(
+        self,
+        conversation_id: str,
+        event: EventPayload,
+    ) -> None:
         self._buffer.remember_entity_version(event)
         await self.conversation_queue(conversation_id).put(event)
         if event.agent_goal_id:
@@ -104,6 +114,8 @@ class PlatformEventStreamApplicationService:
                 for event in events:
                     cursor = event.event_id
                     last_activity = monotonic()
+                    if self._authorize_event is not None and not await asyncio.to_thread(self._authorize_event, event):
+                        continue
                     yield event
                 continue
 

@@ -2,6 +2,8 @@ import crypto from 'node:crypto'
 import http from 'node:http'
 
 import { executeJob, runnerBrowserAvailable } from './executor.mjs'
+import { strictJson } from './strict-json.mjs'
+import { HTTP_FIXTURE_RECEIPT_SCHEMA } from './execution-receipt.mjs'
 
 const port = Number.parseInt(process.env.NASUS_RUNNER_PORT ?? '8090', 10)
 const host = process.env.NASUS_RUNNER_HOST ?? '0.0.0.0'
@@ -62,16 +64,16 @@ function metricLabel(value) {
 
 function renderMetrics(browserReady) {
   const lines = [
-    '# HELP nasus_runner_active_jobs Playwright jobs currently executing.',
+    '# HELP nasus_runner_active_jobs Browser and HTTP jobs currently executing.',
     '# TYPE nasus_runner_active_jobs gauge',
     `nasus_runner_active_jobs ${activeJobs}`,
-    '# HELP nasus_runner_max_concurrency Configured Playwright job concurrency.',
+    '# HELP nasus_runner_max_concurrency Configured runner job concurrency.',
     '# TYPE nasus_runner_max_concurrency gauge',
     `nasus_runner_max_concurrency ${maxConcurrency}`,
     '# HELP nasus_runner_browser_ready Whether Chromium can be launched by the runner.',
     '# TYPE nasus_runner_browser_ready gauge',
     `nasus_runner_browser_ready ${browserReady ? 1 : 0}`,
-    '# HELP nasus_runner_jobs_total Completed Playwright jobs by result status.',
+    '# HELP nasus_runner_jobs_total Completed browser and HTTP jobs by result status.',
     '# TYPE nasus_runner_jobs_total counter',
   ]
   for (const [status, count] of [...jobCounts.entries()].sort()) {
@@ -85,7 +87,7 @@ function renderMetrics(browserReady) {
     lines.push(`nasus_runner_rejections_total{reason="${metricLabel(reason)}"} ${count}`)
   }
   lines.push(
-    '# HELP nasus_runner_job_duration_seconds Playwright job execution duration.',
+    '# HELP nasus_runner_job_duration_seconds Browser and HTTP job execution duration.',
     '# TYPE nasus_runner_job_duration_seconds histogram',
   )
   for (const bucket of durationBuckets) {
@@ -121,8 +123,15 @@ async function readJson(request) {
     }
     chunks.push(chunk)
   }
-  const raw = Buffer.concat(chunks).toString('utf8')
-  return JSON.parse(raw)
+  const body = Buffer.concat(chunks)
+  let text, job
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(body)
+    job = JSON.parse(text)
+  } catch {
+    throw new Error('Runner request must contain valid UTF-8 JSON.')
+  }
+  return { job: job?.execution_kind === 'http' ? strictJson(text) : job, body }
 }
 
 const server = http.createServer(async (request, response) => {
@@ -176,9 +185,13 @@ const server = http.createServer(async (request, response) => {
 
   activeJobs += 1
   const startedAt = performance.now()
+  const disconnected = new AbortController()
+  request.on('aborted', () => disconnected.abort())
+  response.on('close', () => { if (!response.writableEnded) disconnected.abort() })
   try {
-    const job = await readJson(request)
-    const result = await executeJob(job)
+    const { job, body } = await readJson(request)
+    if (job?.receipt_protocol === HTTP_FIXTURE_RECEIPT_SCHEMA) throw new Error('Fixture imports require the private owned-target worker.')
+    const result = await executeJob(job, { wireBody: body, signal: disconnected.signal })
     increment(jobCounts, String(result.status ?? 'error'))
     logEvent('runner.job.completed', {
       request_id: correlationId,
@@ -205,7 +218,7 @@ const server = http.createServer(async (request, response) => {
 })
 
 server.listen(port, host, () => {
-  process.stdout.write(`Nasus Playwright runner listening on http://${host}:${port}\n`)
+  process.stdout.write(`Nasus browser/HTTP runner listening on http://${host}:${port}\n`)
 })
 
 function shutdown() {

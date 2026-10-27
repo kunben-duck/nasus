@@ -447,8 +447,8 @@ def test_conversation_runtime_adapter_delegates_main_agent_command_surface() -> 
         calls.append(("start_goal", (conversation_id, proposal)))
         return goal
 
-    async def resume_goal(goal_id):
-        calls.append(("resume", goal_id))
+    async def resume_goal(goal_id, **kwargs):
+        calls.append(("resume", (goal_id, kwargs)))
         return goal
 
     async def confirm_tool(invocation_id):
@@ -466,6 +466,7 @@ def test_conversation_runtime_adapter_delegates_main_agent_command_surface() -> 
             is_confirmation_message=lambda content: content == "confirm",
             list_tool_invocations=lambda **kwargs: [invocation],
             is_paused_goal=lambda goal_id: goal_id == goal.id,
+            get_goal=lambda goal_id: goal,
             resume_goal=resume_goal,
             get_tool_invocation=lambda invocation_id: invocation,
             confirm_tool_invocation=confirm_tool,
@@ -500,7 +501,12 @@ def test_conversation_runtime_adapter_delegates_main_agent_command_surface() -> 
         status="waiting_confirmation",
     ) == [invocation]
     assert adapter.is_paused_goal(goal.id) is True
+    assert adapter.get_goal(goal.id) is goal
     assert asyncio.run(adapter.resume_goal(goal.id)) is goal
+    expected = object()
+    assert asyncio.run(adapter.resume_goal(goal.id, expected_resume=expected)) is goal
+    assert ("resume", (goal.id, {})) in calls
+    assert ("resume", (goal.id, {"expected_resume": expected})) in calls
     assert adapter.get_tool_invocation(invocation.id) is invocation
     assert asyncio.run(adapter.confirm_tool_invocation(invocation.id)) is invocation
     assert adapter.active_goal_for_conversation(conversation.id) is goal
@@ -522,6 +528,9 @@ def test_conversation_state_adapters_use_explicit_projection_and_persistence() -
     persistence = AgentConversationPersistenceAdapters(
         append_message=lambda conversation_id, current: calls.append(
             ("append", (conversation_id, current.id))
+        ),
+        update_message=lambda conversation_id, current: calls.append(
+            ("update", (conversation_id, current.id))
         ),
         upsert_conversation=lambda current: calls.append(
             ("conversation", current.id)
@@ -546,6 +555,7 @@ def test_conversation_state_adapters_use_explicit_projection_and_persistence() -
 
     assert message_state.get_conversation(conversation.id) is conversation
     message_state.persist_message(conversation, message)
+    message_state.update_message(conversation, message)
     assert asyncio.run(
         message_state.maybe_create_summary_checkpoint(conversation)
     ) is checkpoint
@@ -554,6 +564,8 @@ def test_conversation_state_adapters_use_explicit_projection_and_persistence() -
     assert summary_state.list_summary_checkpoints() == (checkpoint,)
     assert calls == [
         ("append", (conversation.id, message.id)),
+        ("conversation", conversation.id),
+        ("update", (conversation.id, message.id)),
         ("conversation", conversation.id),
         ("maybe_summary", conversation.id),
         ("checkpoint", checkpoint.id),

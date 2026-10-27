@@ -20,10 +20,10 @@ class ReleaseReadinessSnapshot:
     evidence_types: tuple[str, ...] = ()
     asset_part_statuses: tuple[tuple[str, str], ...] = ()
     task_context_readiness: str | None = None
-    task_context_confidence: float = 0
+    task_context_confidence: float | None = 0
     missing_context_count: int = 0
-    quality_profile_coverage: int = 0
-    quality_profile_confidence: float = 0
+    quality_profile_coverage: int | None = 0
+    quality_profile_confidence: float | None = 0
     fallback_generated_parts: int = 0
     open_failures: tuple[ReleaseFailureFact, ...] = ()
     approvals_open: int = 0

@@ -40,6 +40,7 @@ class AgentApplicationPersistenceAdapters:
     upsert_conversation: RuntimeCallable
     upsert_conversation_link: RuntimeCallable
     append_message: RuntimeCallable
+    update_message: RuntimeCallable
     upsert_summary_checkpoint: RuntimeCallable
     upsert_memory_item: RuntimeCallable
     upsert_memory_link: RuntimeCallable

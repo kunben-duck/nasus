@@ -4,6 +4,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+
 from apps.api.app.application.platform.project_models import (
     ProjectCard,
     ProjectCreateRequest,
@@ -15,7 +17,7 @@ from apps.api.app.application.platform.project_workspace import (
 from apps.api.app.application.platform.project_workspace_ports import (
     ProjectWorkspaceSnapshot,
 )
-from apps.api.app.application.quality_loop.quality_models import AssetLane, USItem
+from apps.api.app.application.quality_loop.quality_models import AssetLane, ReleaseReadiness, USItem
 from apps.api.app.infrastructure.platform.project_workspace_read_model import (
     SQLAlchemyProjectWorkspaceReadModel,
 )
@@ -197,3 +199,48 @@ def test_sqlalchemy_workspace_adapter_does_not_query_child_contexts_for_missing_
     assert adapter.load_workspace("missing") is None
     quality_loop_repository.list_us_items.assert_not_called()
     system_image_repository.list_task_contexts.assert_not_called()
+
+
+@pytest.mark.parametrize("assessment", [
+    None,
+    {"score": 79, "status": "Needs additional release evidence"},
+    {"score": 79},
+    {"status": "Needs additional release evidence"},
+    {"approvals_open": 1},
+    {"pending_merge": 1},
+    {"evidence_summary": {"quality_assessment_unknown": 1}},
+    {"blockers": 1},
+    {"version_id": "another-version"},
+    {"blocker_items": ["System image quality assessment is unknown."]},
+    {},
+])
+def test_completed_lanes_do_not_replace_a_current_passing_release_assessment(assessment) -> None:
+    us_id = "us_checkout"
+    lanes = [AssetLane(id=f"lane_{index}", label=label, status="completed", summary="Asset created",
+        updated_at="2026-10-11T00:00:00Z") for index, label in enumerate([
+            "Scenarios", "Verification Plan", "Cases", "Automation", "Change Document", "Release Assessment",
+        ])]
+    readiness = None if assessment is None else ReleaseReadiness(**{
+        "version_id": "version_q3", "status": "Ready for release review", "score": 80,
+        "blockers": 0, "approvals_open": 0, "pending_merge": 0, "execution_health": "passed",
+        "summary": "A review-ready assessment; not a release decision.", **assessment,
+    })
+    snapshot = ProjectWorkspaceSnapshot(project=_project(), versions=[_version()],
+        asset_lanes={us_id: lanes}, release_readiness={} if readiness is None else {"version_q3": readiness})
+    state = ProjectWorkspaceApplicationService._quality_loop_state(snapshot, us_id)
+    assert state.stage_index == state.stage_total == 6
+    assert state.release_score == (readiness.score if readiness else 0)
+    assert state.status == ("ready_for_release" if assessment == {} else "blocked")
+    assert bool(state.blockers) == (assessment != {})
+    assert snapshot.release_readiness == ({} if readiness is None else {"version_q3": readiness})
+
+
+def test_unassessed_partial_loop_stays_in_progress_not_release_ready() -> None:
+    lane = AssetLane(id="scenarios", label="Scenarios", status="completed", summary="Created",
+        updated_at="2026-10-11T00:00:00Z")
+    snapshot = ProjectWorkspaceSnapshot(project=_project(), versions=[_version()],
+        asset_lanes={"us_checkout": [lane]})
+    state = ProjectWorkspaceApplicationService._quality_loop_state(snapshot, "us_checkout")
+    assert state.status == "in_progress" and state.stage_index == 1
+    assert state.next_recommended_tools == ["quality.plan.generate"]
+    assert not state.blockers

@@ -2,27 +2,41 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
-import subprocess
-from dataclasses import dataclass
+import stat
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
-from typing import Any, Sequence
+import time
+from typing import Any, Callable, Sequence
 
 from ...application.system_image.source_ports import (
     CodeEntityCandidate,
     CodeEntityKind,
     CodeIntelligenceResult,
+    CodeIntelligenceUnavailable,
     CodeRelationshipCandidate,
     CodeRelationshipKind,
     SourceTextUnit,
 )
 from ..config.code_graph_config import CodeGraphConfig
+from ...domain.system_image.code_provider import (
+    CodeProjectionGap, CodeProviderCapabilities, CodeProviderLimits, CodeProviderObservation,
+)
+from ...domain.system_image.code_native_observation import native_query_object
+from .codebase_memory_locations import load_exact_locations
+from .code_graph_process import CodeGraphProcessError, CodeGraphProcessRunner
+from .code_graph_executable import code_graph_executable_digest
+from .code_graph_dependencies import projection_dependency_manifest
+from .code_native_query_observations import NativeQueryObservations
 
 
-class CodebaseMemoryError(RuntimeError):
+class CodebaseMemoryError(CodeIntelligenceUnavailable):
     """Raised when the external graph cannot provide a trustworthy projection."""
 
 
@@ -38,6 +52,13 @@ class _ExternalNode:
 class _MappedEntity:
     candidate: CodeEntityCandidate
     provider_qualified_name: str
+
+
+@dataclass(frozen=True)
+class _RelationshipEnumeration:
+    complete: bool
+    unresolved_endpoints: int = 0
+    gaps: tuple[str, ...] = ()
 
 
 _LABEL_KIND: dict[str, CodeEntityKind] = {
@@ -103,63 +124,188 @@ class CodebaseMemoryCodeIntelligenceAdapter:
 
     provider = "codebase-memory"
 
-    def __init__(self, config: CodeGraphConfig) -> None:
+    def __init__(self, config: CodeGraphConfig, *, process_runner: CodeGraphProcessRunner | None = None) -> None:
         self.config = config
         self._lock = RLock()
         self._version: str | None = None
+        self._process_runner = process_runner or CodeGraphProcessRunner()
+        self._execution_check = ContextVar("code_graph_execution_check", default=None)
+        self._execution_root = ContextVar("code_graph_execution_root", default=None)
+        self._execution_cache = ContextVar("code_graph_execution_cache", default=None)
+        self._execution_binary = ContextVar("code_graph_execution_binary", default=None)
+        self._snapshot_check_after = ContextVar("code_graph_snapshot_check_after", default=0.0)
 
     def analyze(self, units: Sequence[SourceTextUnit]) -> CodeIntelligenceResult:
-        root = self._repository_root(units)
-        allowed_paths = {self._safe_relative_path(unit.relative_path) for unit in units}
-        self._assert_source_snapshot(root, units)
-        project_namespace = self._project_name(root)
+        return self._analyze(units)
 
-        with self._lock:
-            version = self._probe_version()
-            index_result = self._call(
-                "index_repository",
-                {
-                    "repo_path": str(root),
-                    "name": project_namespace,
-                    "mode": self.config.index_mode,
-                    "persistence": False,
-                },
-                allowed_root=root,
-            )
-            status = self._required_string(index_result, "status")
-            if status not in {"indexed", "degraded"}:
-                raise CodebaseMemoryError("code graph indexing did not complete")
-            provider_project = self._provider_project_id(index_result)
+    def capabilities(self) -> CodeProviderCapabilities:
+        # Language marketing and native CLI operations are not Nasus port capabilities.
+        return CodeProviderCapabilities(self.provider, self._version or "unprobed",
+            ("capabilities", "analyze", "analyze_controlled"), limits=CodeProviderLimits(
+                self.config.max_entities, self.config.max_relationships, self.config.page_size,
+                self.config.max_relationship_queries, self.config.timeout_seconds))
 
-            entities, nodes = self._load_entities(
-                project=provider_project,
+    def analyze_controlled(self, units: Sequence[SourceTextUnit], *, check_current: Callable[[], None]) -> CodeIntelligenceResult:
+        token = self._execution_check.set(check_current)
+        polling_token = self._snapshot_check_after.set(0.0)
+        try:
+            check_current()
+            return self._analyze(units)
+        finally:
+            self._snapshot_check_after.reset(polling_token)
+            self._execution_check.reset(token)
+
+    def _check_snapshot_current(self, *, force=False):
+        check = self._execution_check.get()
+        now = time.monotonic()
+        if check is not None and (force or now >= self._snapshot_check_after.get()):
+            check()
+            self._snapshot_check_after.set(time.monotonic() + .25)
+
+    @contextmanager
+    def _execution_lock(self):
+        while not self._lock.acquire(timeout=.1):
+            check = self._execution_check.get()
+            if check is not None:
+                check()
+        try:
+            check = self._execution_check.get()
+            if check is not None:
+                check()
+            yield
+        finally:
+            self._lock.release()
+
+    def _analyze(self, units: Sequence[SourceTextUnit]) -> CodeIntelligenceResult:
+        with self.open_index(units, check_current=self._execution_check.get() or (lambda: None)) as index:
+            return index.read_projection()
+
+    def open_index(self, units: Sequence[SourceTextUnit], *, check_current: Callable[[], None], namespace=None,
+                   provider_fingerprint=None):
+        from .codebase_memory_index_session import CodebaseMemoryIndexSession
+        return CodebaseMemoryIndexSession(self, units, check_current=check_current, namespace=namespace,
+                                          provider_fingerprint=provider_fingerprint)
+
+    def projection_fingerprint(self, *, executable=None, check_current=None):
+        from ...domain.system_image.source_snapshots import snapshot_digest
+        executable = Path(executable if executable is not None else self.prepared_executable()).resolve()
+        check = check_current if check_current is not None else self._execution_check.get()
+        try:
+            digest = code_graph_executable_digest(executable, check_current=check)
+            dependencies = projection_dependency_manifest(check_current=check)
+        except CodeGraphProcessError as error:
+            raise CodebaseMemoryError("code graph executable or dependency fingerprint is unavailable") from error
+        return snapshot_digest({"provider": self.provider, "binary_sha256": digest,
+            "dependencies": dependencies, "index_mode": self.config.index_mode,
+            "max_entities": self.config.max_entities, "max_relationships": self.config.max_relationships,
+            "max_relationship_queries": self.config.max_relationship_queries, "page_size": self.config.page_size,
+            "schema": "nasus.code-index-generation.v2"})
+
+    def prepared_executable(self):
+        resolved = shutil.which(self.config.binary)
+        if resolved is None:
+            raise CodebaseMemoryError("code graph executable is not available")
+        with Path(resolved).open("rb") as handle:
+            header = handle.read(4096)
+        if b"from codebase_memory_mcp import main" not in header:
+            return resolved
+        # The installed launcher can download on first execution. Durable work
+        # uses only its already-installed native binary, with no bootstrap IO.
+        from codebase_memory_mcp import _cli
+        path = _cli._bin_path(_cli._version())
+        if not path.is_file() or not os.access(path, os.X_OK):
+            raise CodebaseMemoryError("durable code graph requires a preinstalled native executable")
+        return str(path)
+
+    def _stage_snapshot(self, root, staged_root, units):
+        self._check_snapshot_current(force=True)
+        if len({self._safe_relative_path(unit.relative_path) for unit in units}) != len(units):
+            raise CodebaseMemoryError("code graph snapshot contains duplicate paths")
+        for unit in units:
+            relative = self._safe_relative_path(unit.relative_path)
+            data = self._read_snapshot_file(root, unit)
+            target = staged_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            target.chmod(0o400)
+        self._check_snapshot_current(force=True)
+
+    def _read_prepared_projection(self, root, units, allowed_paths, project_namespace, *, version, project, index_status):
+        native_queries = NativeQueryObservations(self.provider, version)
+
+        def observed_call(tool, request):
+            response = self._call(tool, request)
+            try:
+                native_queries.record(tool, request, response)
+            except ValueError as error:
+                raise CodebaseMemoryError("native query observations cannot be retained") from error
+            return response
+
+        with self._execution_lock():
+            entities, nodes, unverified_routes, ambiguous_nodes = self._load_entities(
+                project=project,
                 provider_namespace=project_namespace,
                 root=root,
                 allowed_paths=allowed_paths,
+                call=observed_call,
             )
-            relationships = self._load_relationships(
-                project=provider_project,
+            relationships, unverified_calls, scan_refs, enumeration = self._load_relationships(
+                project=project,
                 nodes=nodes,
                 allowed_paths=allowed_paths,
+                root=root,
+                call=observed_call,
             )
+            self._assert_source_snapshot(root, units)
 
         evidence = [
             "code-graph:codebase-memory",
             f"code-graph-project:{project_namespace}",
-            f"code-graph-index:{status}",
+            f"code-graph-index:{index_status}",
             f"code-graph-entities:{len(entities)}",
             f"code-graph-relationships:{len(relationships)}",
+            *scan_refs,
         ]
+        if unverified_routes:
+            evidence.extend(("code-graph-routes:unverified-synthetic", f"code-graph-routes:excluded:{unverified_routes}"))
+        if unverified_calls:
+            evidence.extend(("code-graph-calls:unverified-resolution", f"code-graph-calls:excluded:{unverified_calls}"))
+        if ambiguous_nodes:
+            evidence.append(f"code-graph-entities:ambiguous-endpoints:{ambiguous_nodes}")
         if len(entities) >= self.config.max_entities:
             evidence.append("code-graph-entities:truncated")
         if len(relationships) >= self.config.max_relationships:
             evidence.append("code-graph-relationships:truncated")
+        gaps = [CodeProjectionGap("provider_language_coverage_unverified"),
+                CodeProjectionGap("provider_scores_uncalibrated")]
+        if index_status == "degraded":
+            gaps.append(CodeProjectionGap("native_index_degraded"))
+        if ambiguous_nodes:
+            gaps.append(CodeProjectionGap("ambiguous_native_entity_mapping", ambiguous_nodes))
+        entity_limit = len(entities) >= self.config.max_entities
+        gaps.append(CodeProjectionGap("entity_limit_reached" if entity_limit else "entity_pagination_completeness_unverified"))
+        gaps.extend(CodeProjectionGap(reason) for reason in enumeration.gaps)
+        relationship_limit = len(relationships) >= self.config.max_relationships
+        if relationship_limit and "relationship_limit_reached" not in enumeration.gaps:
+            gaps.append(CodeProjectionGap("relationship_limit_reached"))
+        for reason, count in (("unverified_synthetic_routes", unverified_routes),
+                              ("unverified_call_resolution", unverified_calls),
+                              ("unresolved_relationship_endpoints", enumeration.unresolved_endpoints)):
+            if count:
+                gaps.append(CodeProjectionGap(reason, count))
+        exact = sum(item.location_precision == "exact" for item in entities)
+        observation = CodeProviderObservation(replace(self.capabilities(), provider_version=version),
+            len(entities), len(relationships), exact, len(entities) - exact,
+            "partial" if entity_limit else "unknown",
+            "complete" if enumeration.complete and not relationship_limit else "partial", tuple(gaps))
         return CodeIntelligenceResult(
             provider=self.provider,
             provider_version=version,
             entities=tuple(entities),
             relationships=tuple(relationships),
-            evidence_refs=tuple(evidence),
+            evidence_refs=tuple(dict.fromkeys(evidence)),
+            provider_observations=(observation,),
+            native_query_observations=native_queries.items,
         )
 
     def diagnostics(self) -> dict[str, str]:
@@ -186,12 +332,17 @@ class CodebaseMemoryCodeIntelligenceAdapter:
         provider_namespace: str,
         root: Path,
         allowed_paths: set[str],
-    ) -> tuple[list[CodeEntityCandidate], dict[tuple[str, str], _ExternalNode]]:
+        call=None,
+    ) -> tuple[list[CodeEntityCandidate], dict[tuple[str, str], _ExternalNode], int, int]:
+        call = call or self._call
         entities: list[CodeEntityCandidate] = []
         nodes: dict[tuple[str, str], _ExternalNode] = {}
+        ambiguous_keys = set()
+        ambiguous_ids = set()
+        unverified_routes = 0
         offset = 0
         while len(entities) < self.config.max_entities:
-            payload = self._call(
+            payload = call(
                 "search_graph",
                 {
                     "project": project,
@@ -212,6 +363,12 @@ class CodebaseMemoryCodeIntelligenceAdapter:
                 if len(entities) >= self.config.max_entities:
                     break
                 entity = mapped.candidate
+                # CBM 0.8 synthetic route keys are global HTTP/path keys. They
+                # can collapse distinct controller handlers and return an
+                # arbitrary source file. Do not promote those as source facts.
+                if entity.entity_kind == "api_route" and entity.qualified_name.startswith("__route__"):
+                    unverified_routes += 1
+                    continue
                 entities.append(entity)
                 node = _ExternalNode(
                     entity.provider_node_id,
@@ -219,11 +376,52 @@ class CodebaseMemoryCodeIntelligenceAdapter:
                     entity.qualified_name,
                     entity.relative_path,
                 )
-                nodes[(mapped.provider_qualified_name, entity.relative_path)] = node
+                key = (mapped.provider_qualified_name, entity.relative_path)
+                previous = nodes.get(key)
+                if key in ambiguous_keys or (previous is not None and previous.provider_id != node.provider_id):
+                    ambiguous_keys.add(key)
+                    ambiguous_ids.add(node.provider_id)
+                    if previous is not None:
+                        ambiguous_ids.add(previous.provider_id)
+                    nodes.pop(key, None)
+                else:
+                    nodes[key] = node
             offset += count
             if count == 0 or not bool(payload.get("has_more")):
                 break
-        return entities, nodes
+        approximate = {
+            entity.provider_node_id: entity for entity in entities
+            if "code-graph-location:approximate" in entity.evidence_refs
+        }
+        if approximate:
+            try:
+                locations = load_exact_locations(
+                    call, project=project, root=root,
+                    identities=[key for key, node in nodes.items() if node.provider_id in approximate],
+                )
+            except ValueError as exc:
+                raise CodebaseMemoryError(str(exc)) from exc
+            exact_by_id = {
+                node.provider_id: locations[key] for key, node in nodes.items() if key in locations
+            }
+            entities = [
+                replace(
+                    entity, start_line=exact_by_id[entity.provider_node_id][0],
+                    end_line=exact_by_id[entity.provider_node_id][1],
+                    location_precision="exact",
+                    evidence_refs=(
+                        f"code-graph:codebase-memory:{entity.relative_path}:"
+                        f"{exact_by_id[entity.provider_node_id][0]}-{exact_by_id[entity.provider_node_id][1]}",
+                        "code-graph-location:exact",
+                    ),
+                ) if entity.provider_node_id in exact_by_id else entity
+                for entity in entities
+            ]
+        # Provider search order is not a contract. Ambiguous native keys must
+        # never select whichever overloaded/class endpoint happened to be last.
+        entities = [replace(entity, identity_status="ambiguous") if entity.provider_node_id in ambiguous_ids else entity
+                    for entity in entities]
+        return sorted(entities, key=lambda item: item.provider_node_id), nodes, unverified_routes, len(ambiguous_keys)
 
     def _entity_page(
         self,
@@ -365,6 +563,7 @@ class CodebaseMemoryCodeIntelligenceAdapter:
             name=name,
             qualified_name=qualified_name,
             entity_kind=kind,
+            location_precision="approximate" if approximate_location else "exact",
             relative_path=path,
             language=_LANGUAGE_BY_SUFFIX.get(Path(path).suffix.lower(), "unknown"),
             start_line=start_line,
@@ -378,93 +577,99 @@ class CodebaseMemoryCodeIntelligenceAdapter:
         project: str,
         nodes: dict[tuple[str, str], _ExternalNode],
         allowed_paths: set[str],
-    ) -> list[CodeRelationshipCandidate]:
+        root: Path,
+        call=None,
+    ) -> tuple[list[CodeRelationshipCandidate], int, tuple[str, ...], _RelationshipEnumeration]:
+        from .code_graph_relationship_scan import CodeGraphRelationshipScanner, CodeGraphScanError
         if not nodes:
-            return []
-        expected = [
-            "a.qualified_name",
-            "a.file_path",
-            "type(r)",
-            "b.qualified_name",
-            "b.file_path",
-        ]
+            return [], 0, (), _RelationshipEnumeration(False, gaps=("no_mapped_relationship_endpoints",))
 
-        by_qn: dict[str, list[_ExternalNode]] = {}
-        for node in nodes.values():
-            by_qn.setdefault(node.provider_qualified_name, []).append(node)
-
-        relationships: list[CodeRelationshipCandidate] = []
-        seen: set[tuple[str, str, str]] = set()
-        path_chunks = self._chunks(sorted(allowed_paths), 100)
-        for path_chunk in path_chunks:
-            if len(relationships) >= self.config.max_relationships:
-                break
-            query = self._relationship_query(
-                source_paths=path_chunk,
-                target_paths=allowed_paths if len(allowed_paths) <= 200 else None,
-                limit=self.config.max_relationships - len(relationships),
-            )
-            payload = self._call(
-                "query_graph",
-                {"project": project, "query": query, "format": "json"},
-            )
-            columns = self._string_list(payload.get("columns"), "query_graph.columns")
-            if columns != expected:
-                raise CodebaseMemoryError("code graph relationship schema is incompatible")
-            rows = payload.get("rows")
-            if not isinstance(rows, list):
-                raise CodebaseMemoryError("code graph relationship rows are invalid")
-            for row in rows:
-                if not isinstance(row, list) or len(row) < 5:
-                    continue
-                source = self._resolve_node(nodes, by_qn, str(row[0]), str(row[1]))
-                target = self._resolve_node(nodes, by_qn, str(row[3]), str(row[4]))
-                relation = _RELATION_KIND.get(str(row[2]).upper())
-                if source is None or target is None or relation is None:
-                    continue
-                kind, invert = relation
-                if invert:
-                    source, target = target, source
-                key = (source.provider_id, kind, target.provider_id)
-                if key in seen or source.provider_id == target.provider_id:
-                    continue
-                seen.add(key)
-                relationships.append(
-                    CodeRelationshipCandidate(
-                        from_provider_node_id=source.provider_id,
-                        relationship_kind=kind,
-                        to_provider_node_id=target.provider_id,
-                        confidence=0.88,
-                        evidence_refs=(
-                            f"code-graph-edge:codebase-memory:{str(row[2]).upper()}",
-                        ),
-                    )
-                )
-        return relationships
-
-    @staticmethod
-    def _relationship_query(
-        *,
-        source_paths: Sequence[str],
-        target_paths: set[str] | None,
-        limit: int,
-    ) -> str:
-        source_values = ",".join(json.dumps(path) for path in source_paths)
-        predicates = [f"a.file_path IN [{source_values}]"]
-        if target_paths is not None:
-            target_values = ",".join(json.dumps(path) for path in sorted(target_paths))
-            predicates.append(f"b.file_path IN [{target_values}]")
-        return (
-            "MATCH (a)-[r]->(b) WHERE "
-            + " AND ".join(predicates)
-            + " RETURN a.qualified_name, a.file_path, type(r), "
-            + "b.qualified_name, b.file_path "
-            + f"LIMIT {max(1, limit)}"
-        )
+        relationships: dict[tuple[str, str, str], CodeRelationshipCandidate] = {}
+        unverified_calls = 0
+        unresolved_endpoints = 0
+        scanner = CodeGraphRelationshipScanner(call=call or self._call, project=project, allowed_paths=allowed_paths,
+            node_keys=nodes.keys(), page_size=self.config.page_size, max_queries=self.config.max_relationship_queries)
+        edge_limit = False
+        try:
+            for rows in scanner.pages():
+                for row in rows:
+                    source_path = self._normalize_provider_path(root, row[1])
+                    target_path = self._normalize_provider_path(root, row[4])
+                    source = nodes.get((str(row[0]), source_path))
+                    target = nodes.get((str(row[3]), target_path))
+                    relation = _RELATION_KIND.get(str(row[2]).upper())
+                    if source is None or target is None:
+                        unresolved_endpoints += 1
+                        continue
+                    if relation is None:
+                        continue
+                    kind, invert = relation
+                    score = .88
+                    resolution_refs = ()
+                    if kind == "calls":
+                        resolution = self._call_resolution(row[5:])
+                        if resolution is None:
+                            unverified_calls += 1
+                            continue
+                        score, strategy = resolution
+                        resolution_refs = (f"code-graph-call-resolution:strategy:{strategy}",
+                            "code-graph-call-resolution:candidates:1", "code-graph-call-resolution:uncalibrated-provider-score",
+                            f"code-graph-call-resolution:provider-score:{score:.6g}")
+                    if invert:
+                        source, target = target, source
+                    key = (source.provider_id, kind, target.provider_id)
+                    if source.provider_id == target.provider_id:
+                        continue
+                    evidence = f"code-graph-edge:codebase-memory:{str(row[2]).upper()}"
+                    existing = relationships.get(key)
+                    if existing is not None:
+                        relationships[key] = replace(existing, confidence=max(existing.confidence, score),
+                            evidence_refs=tuple(sorted({*existing.evidence_refs, evidence, *resolution_refs})))
+                    elif len(relationships) < self.config.max_relationships:
+                        relationships[key] = CodeRelationshipCandidate(
+                            from_provider_node_id=source.provider_id,
+                            relationship_kind=kind,
+                            to_provider_node_id=target.provider_id,
+                            confidence=score,
+                            evidence_refs=tuple(sorted((evidence, *resolution_refs))),
+                        )
+                    else:
+                        edge_limit = True
+                        break
+                if edge_limit:
+                    break
+        except CodeGraphScanError as exc:
+            raise CodebaseMemoryError(str(exc)) from exc
+        refs = [f"code-graph-relationship-queries:{scanner.query_count}"]
+        if unresolved_endpoints:
+            refs.append(f"code-graph-edges:unresolved-endpoints:{unresolved_endpoints}")
+        if edge_limit or not scanner.complete:
+            refs.append("code-graph-relationships:truncated")
+        refs.extend("code-graph-relationship-scan:" + gap for gap in sorted(scanner.gaps))
+        gaps = set(scanner.gaps)
+        if edge_limit:
+            gaps.add("relationship_limit_reached")
+        return ([relationships[key] for key in sorted(relationships)], unverified_calls, tuple(refs),
+                _RelationshipEnumeration(scanner.complete and not edge_limit, unresolved_endpoints, tuple(sorted(gaps))))
 
     @staticmethod
-    def _chunks(values: Sequence[str], size: int) -> list[list[str]]:
-        return [list(values[index : index + size]) for index in range(0, len(values), size)]
+    def _call_resolution(values):
+        confidence, strategy, candidates = values
+        if confidence in (None, "") or strategy in (None, "") or candidates in (None, ""):
+            return None
+        if (isinstance(confidence, bool) or isinstance(candidates, bool) or not isinstance(strategy, str)
+                or re.fullmatch(r"[a-z0-9_-]{1,80}", strategy) is None):
+            raise CodebaseMemoryError("code graph call resolution metadata is invalid")
+        try:
+            score = float(confidence)
+            count = int(candidates)
+        except (TypeError, ValueError, OverflowError):
+            raise CodebaseMemoryError("code graph call resolution metadata is invalid") from None
+        if not math.isfinite(score) or not 0 <= score <= 1 or str(count) != str(candidates) or count < 0:
+            raise CodebaseMemoryError("code graph call resolution metadata is invalid")
+        if count != 1 or strategy not in {"same_module", "import_map", "import_map_suffix", "lsp_override", "lsp_type_dispatch"}:
+            return None
+        return score, strategy
 
     def _call(
         self,
@@ -474,40 +679,43 @@ class CodebaseMemoryCodeIntelligenceAdapter:
         allowed_root: Path | None = None,
     ) -> dict[str, Any]:
         binary = self._resolve_binary()
-        env = os.environ.copy()
-        if self.config.cache_dir is not None:
-            self.config.cache_dir.mkdir(parents=True, exist_ok=True)
-            env["CBM_CACHE_DIR"] = str(self.config.cache_dir)
-        if allowed_root is not None:
-            env["CBM_ALLOWED_ROOT"] = str(allowed_root)
+        env = self._process_environment(allowed_root=allowed_root or self._execution_root.get())
         try:
-            completed = subprocess.run(
+            completed = self._process_runner.run(
                 [binary, "cli", tool, json.dumps(payload, separators=(",", ":"))],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=self.config.timeout_seconds,
-                env=env,
+                timeout_seconds=self.config.timeout_seconds, env=env,
+                check_current=self._execution_check.get(),
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except CodeGraphProcessError as exc:
             raise CodebaseMemoryError(f"code graph {tool} process failed") from exc
         if completed.returncode != 0:
             raise CodebaseMemoryError(f"code graph {tool} command failed")
         return self._decode_payload(completed.stdout, tool)
 
-    def _probe_version(self) -> str:
-        if self._version is not None:
+    def _process_environment(self, *, allowed_root=None):
+        # Credentials, proxy settings and unrelated provider controls are not inherited.
+        env = {key: os.environ[key] for key in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR") if key in os.environ}
+        cache = self._execution_cache.get() or self.config.cache_dir
+        if cache is not None:
+            cache.mkdir(parents=True, exist_ok=True)
+            env["CBM_CACHE_DIR"] = str(cache)
+        if allowed_root is not None:
+            env["CBM_ALLOWED_ROOT"] = str(allowed_root)
+        return env
+
+    def _probe_version(self, *, refresh=False) -> str:
+        if self._version is not None and not refresh:
             return self._version
         binary = self._resolve_binary()
         try:
-            completed = subprocess.run(
+            completed = self._process_runner.run(
                 [binary, "--version"],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=min(self.config.timeout_seconds, 5.0),
+                timeout_seconds=min(self.config.timeout_seconds, 5.0),
+                max_stdout_bytes=4096, max_stderr_bytes=4096,
+                env=self._process_environment(allowed_root=self._execution_root.get()),
+                check_current=self._execution_check.get(),
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except CodeGraphProcessError as exc:
             raise CodebaseMemoryError("code graph executable is unavailable") from exc
         if completed.returncode != 0:
             raise CodebaseMemoryError("code graph executable check failed")
@@ -517,7 +725,35 @@ class CodebaseMemoryCodeIntelligenceAdapter:
         self._version = version[0][:120]
         return self._version
 
+    def negotiate_native_contract(self, *, cli_version=None):
+        from tempfile import TemporaryDirectory
+        from .code_graph_mcp_contract import CodeGraphMcpDialogue
+        dialogue = CodeGraphMcpDialogue(index_mode=self.config.index_mode,
+            cli_version=cli_version or self._probe_version(refresh=True))
+        # The server's initialization may read HOME/config, inspect cwd and
+        # invoke helper programs. It sees neither source nor operator tools.
+        with TemporaryDirectory(prefix="nasus-cbm-protocol-") as temporary:
+            root = Path(temporary).resolve()
+            for name in ("home", "cwd", "cache", "tmp", "helpers"):
+                (root / name).mkdir(mode=0o700)
+            environment = {key: os.environ[key] for key in ("LANG", "LC_ALL") if key in os.environ}
+            environment.update(HOME=str(root / "home"), PATH=str(root / "helpers"), TMPDIR=str(root / "tmp"),
+                CBM_ALLOWED_ROOT=str(root / "cwd"), CBM_CACHE_DIR=str(root / "cache"))
+            try:
+                result = self._process_runner.run([self._resolve_binary(), "--ui=false"], env=environment,
+                    cwd=str(root / "cwd"), timeout_seconds=min(self.config.timeout_seconds, 5),
+                    max_stdout_bytes=512 * 1024, max_stderr_bytes=64 * 1024,
+                    check_current=self._execution_check.get(), dialogue=dialogue)
+            except CodeGraphProcessError as error:
+                raise CodebaseMemoryError("code graph native negotiation failed") from error
+            if result.returncode != 0:
+                raise CodebaseMemoryError("code graph native negotiation exited unsuccessfully")
+            return dialogue.receipt()
+
     def _resolve_binary(self) -> str:
+        prepared = self._execution_binary.get()
+        if prepared is not None:
+            return prepared
         configured = self.config.binary
         resolved = shutil.which(configured)
         if resolved:
@@ -530,24 +766,24 @@ class CodebaseMemoryCodeIntelligenceAdapter:
     @staticmethod
     def _decode_payload(raw: str, tool: str) -> dict[str, Any]:
         try:
-            value: Any = json.loads(raw)
-        except json.JSONDecodeError as exc:
+            value = native_query_object(raw)
+        except ValueError as exc:
             raise CodebaseMemoryError(f"code graph {tool} returned invalid JSON") from exc
-        if isinstance(value, dict) and isinstance(value.get("content"), list):
+        if isinstance(value.get("content"), list):
             if value.get("isError"):
                 raise CodebaseMemoryError(f"code graph {tool} returned an error")
             content = value["content"]
             text = content[0].get("text") if content and isinstance(content[0], dict) else None
             try:
-                value = json.loads(text) if isinstance(text, str) else None
-            except json.JSONDecodeError as exc:
+                value = native_query_object(text)
+            except ValueError as exc:
                 raise CodebaseMemoryError(f"code graph {tool} envelope is invalid") from exc
-        if not isinstance(value, dict):
-            raise CodebaseMemoryError(f"code graph {tool} response must be an object")
         return value
 
     @staticmethod
     def _repository_root(units: Sequence[SourceTextUnit]) -> Path:
+        if not units or any(not unit.source_root for unit in units):
+            raise CodebaseMemoryError("code graph requires one declared repository root for every source")
         roots = {unit.source_root for unit in units if unit.source_root}
         if len(roots) != 1:
             raise CodebaseMemoryError("code graph requires one materialized repository root")
@@ -556,17 +792,56 @@ class CodebaseMemoryCodeIntelligenceAdapter:
             raise CodebaseMemoryError("code graph repository root is unavailable")
         return root
 
-    @classmethod
-    def _assert_source_snapshot(cls, root: Path, units: Sequence[SourceTextUnit]) -> None:
+    def _assert_source_snapshot(self, root: Path, units: Sequence[SourceTextUnit]) -> None:
+        self._check_snapshot_current(force=True)
         for unit in units:
-            relative = cls._safe_relative_path(unit.relative_path)
-            path = (root / relative).resolve()
-            if root not in path.parents or not path.is_file():
-                raise CodebaseMemoryError("code graph source path escaped the repository root")
-            expected = unit.content_hash.removeprefix("sha256:")
-            actual = hashlib.sha256(path.read_bytes()).hexdigest()
-            if expected and actual != expected:
+            self._read_snapshot_file(root, unit)
+        self._check_snapshot_current(force=True)
+
+    def _read_snapshot_file(self, root: Path, unit: SourceTextUnit) -> bytes:
+        relative = self._safe_relative_path(unit.relative_path)
+        expected = unit.content_hash.removeprefix("sha256:")
+        if (re.fullmatch(r"[a-f0-9]{64}", expected) is None
+                or type(unit.byte_count) is not int or unit.byte_count < 0):
+            raise CodebaseMemoryError("code graph snapshot requires an exact digest and byte count")
+        descriptors = []
+
+        def open_owned(path, flags, *, parent=None):
+            self._check_snapshot_current()
+            try:
+                fd = os.open(path, flags, dir_fd=parent)
+            except OSError as exc:
+                raise CodebaseMemoryError("code graph snapshot path is unavailable or contains symbolic links") from exc
+            descriptors.append(fd)
+            return fd
+
+        try:
+            # Resolve each component against an already-open directory; a
+            # symlink swap must not redirect a read outside the owned snapshot.
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            parent = open_owned(root, flags)
+            parts = Path(relative).parts
+            if not parts:
+                raise CodebaseMemoryError("code graph received an unsafe relative path")
+            for part in parts[:-1]:
+                parent = open_owned(part, flags, parent=parent)
+            fd = open_owned(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, parent=parent)
+            metadata = os.fstat(fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != unit.byte_count:
                 raise CodebaseMemoryError("code source changed during graph analysis")
+            data = bytearray()
+            while len(data) <= unit.byte_count:
+                self._check_snapshot_current()
+                chunk = os.read(fd, min(65536, unit.byte_count + 1 - len(data)))
+                if not chunk:
+                    break
+                data.extend(chunk)
+            if len(data) != unit.byte_count or hashlib.sha256(data).hexdigest() != expected:
+                raise CodebaseMemoryError("code source changed during graph analysis")
+            return bytes(data)
+        finally:
+            for fd in reversed(descriptors):
+                os.close(fd)
 
     @staticmethod
     def _safe_relative_path(value: str) -> str:
@@ -647,24 +922,10 @@ class CodebaseMemoryCodeIntelligenceAdapter:
         """Keep provider-owned project identities outside persisted Nasus facts."""
 
         value = cls._required_string(payload, "project")
-        if len(value) > 160 or re.fullmatch(r"[A-Za-z0-9_.-]+", value) is None:
+        # CBM 0.8 derives this opaque query parameter from the absolute checkout
+        # path, ignoring the requested short name. Revision snapshots are deep.
+        if len(value) > 4096 or re.fullmatch(r"[A-Za-z0-9_.-]+", value) is None:
             raise CodebaseMemoryError("code graph returned an unsafe project identity")
         return value
-
-    @classmethod
-    def _resolve_node(
-        cls,
-        nodes: dict[tuple[str, str], _ExternalNode],
-        by_qn: dict[str, list[_ExternalNode]],
-        qualified_name: str,
-        path: str,
-    ) -> _ExternalNode | None:
-        normalized_path = path.strip().replace("\\", "/")
-        exact = nodes.get((qualified_name, normalized_path))
-        if exact is not None:
-            return exact
-        matches = by_qn.get(qualified_name, [])
-        return matches[0] if len(matches) == 1 else None
-
 
 __all__ = ["CodebaseMemoryCodeIntelligenceAdapter", "CodebaseMemoryError"]

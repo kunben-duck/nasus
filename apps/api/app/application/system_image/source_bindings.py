@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...domain.system_image.source_refresh import SourceRefreshSelection
+
 from .ports import SystemImageOperationsPort, SystemImageWorkspacePort
 
 
@@ -43,8 +45,13 @@ class SystemImageSourceBindingApplicationService:
             registered_from_invocation_id=registered_from_invocation_id,
         )
 
-    def ingest_sources(self, project_id: str) -> Any:
-        return self._operations.ingest_sources(project_id)
+    def ingest_sources(self, project_id: str, *, selection: SourceRefreshSelection | None = None,
+                       invocation_id: str | None = None) -> Any:
+        if invocation_id is not None:
+            return self._operations.ingest_sources(project_id, selection=selection, invocation_id=invocation_id)
+        if selection is None:
+            return self._operations.ingest_sources(project_id)
+        return self._operations.ingest_sources(project_id, selection=selection)
 
 
 __all__ = ["SystemImageSourceBindingApplicationService"]

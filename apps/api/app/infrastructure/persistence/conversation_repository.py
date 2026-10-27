@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
@@ -14,10 +16,14 @@ from .db_models import (
     ConversationLinkRecord,
     ConversationRecord,
     ConversationSummaryCheckpointRecord,
+    ConversationTurnRecord,
     SessionKnowledgeBindingRecord,
     ToolInvocationRecord,
 )
 from .unit_of_work import session_scope
+from .agent_resume_models import AgentResumeConsumptionRecord
+from .agent_start_models import AgentGoalStartReceiptRecord
+from .event_outbox_repository import EventOutboxRepository
 from ...application.agent.agent_models import (
     AgentGoal,
     AgentMemoryItem,
@@ -29,15 +35,23 @@ from ...application.agent.agent_models import (
     ConversationLink,
     ConversationSession,
     ConversationSummaryCheckpoint,
+    ConversationTurn,
     MessageBlock,
     SessionKnowledgeBinding,
 )
 from ...application.platform.tool_models import AuditEvent, ToolInvocation, ToolResult
+from ...application.platform.tool_models import EventPayload
+from ...domain.agent.resume_checkpoint import AgentResumeCheckpoint, AgentResumeCheckpointChanged
+from ...domain.agent.goal_creation import ActiveAgentGoalExists, ACTIVE_AGENT_GOAL_STATUSES, AgentGoalStartIdentity, AgentGoalStartReplayed
+from ...domain.agent.plan_policy import AgentPlanPolicyViolation
 
 __all__ = ["ConversationRepository"]
 
 
 class ConversationRepository:
+    def __init__(self, *, tool_claim_journal=None):
+        self.tool_claim_journal = tool_claim_journal
+
     def find_conversation(
         self,
         *,
@@ -78,6 +92,13 @@ class ConversationRepository:
             message_rows = session.scalars(select(ConversationMessageRecord)).all()
             goal_rows = session.scalars(select(AgentGoalRecord)).all()
             invocation_rows = session.scalars(select(ToolInvocationRecord)).all()
+            turn_rows = session.scalars(
+                select(ConversationTurnRecord).where(
+                    ConversationTurnRecord.status.in_(
+                        ("accepted", "planning", "streaming", "delegated")
+                    )
+                )
+            ).all()
 
         messages_by_conversation: dict[str, list[ConversationMessage]] = {}
         for row in message_rows:
@@ -94,12 +115,17 @@ class ConversationRepository:
             if row.conversation_id:
                 invocations_by_conversation.setdefault(row.conversation_id, []).append(self._to_tool_invocation(row))
 
+        turns_by_conversation: dict[str, ConversationTurn] = {}
+        for row in sorted(turn_rows, key=lambda item: item.created_at):
+            turns_by_conversation[row.conversation_id] = self._to_turn(row)
+
         return [
             self._to_conversation(
                 row,
                 messages_by_conversation.get(row.id, []),
                 goals_by_conversation.get(row.id, []),
                 invocations_by_conversation.get(row.id, []),
+                turns_by_conversation.get(row.id),
             )
             for row in conversations
         ]
@@ -124,6 +150,17 @@ class ConversationRepository:
                     ToolInvocationRecord.conversation_id == conversation_id
                 )
             ).all()
+            turn_row = session.scalar(
+                select(ConversationTurnRecord)
+                .where(
+                    ConversationTurnRecord.conversation_id == conversation_id,
+                    ConversationTurnRecord.status.in_(
+                        ("accepted", "planning", "streaming", "delegated")
+                    ),
+                )
+                .order_by(ConversationTurnRecord.created_at.desc())
+                .limit(1)
+            )
 
         messages = sorted(
             (self._to_message(row) for row in message_rows),
@@ -134,6 +171,7 @@ class ConversationRepository:
             messages,
             [self._to_goal(row) for row in goal_rows],
             [self._to_tool_invocation(row) for row in invocation_rows],
+            self._to_turn(turn_row) if turn_row is not None else None,
         )
 
     def upsert_conversation(self, conversation: ConversationSession) -> None:
@@ -206,6 +244,67 @@ class ConversationRepository:
                 if conversation.status in {"draft", "idle"}:
                     conversation.status = "active"
 
+    def update_message(self, conversation_id: str, message: ConversationMessage) -> None:
+        with session_scope() as session:
+            record = session.get(ConversationMessageRecord, message.id)
+            if record is None or record.conversation_id != conversation_id:
+                raise KeyError(message.id)
+            record.status = message.status
+            record.content_type = message.content_type
+            record.blocks = [block.model_dump() for block in message.blocks]
+            record.tool_refs = message.tool_refs
+            record.object_refs = message.object_refs
+            record.message_metadata = message.metadata
+            record.stream_id = message.stream_id
+            record.sequence_max = message.sequence_max
+
+    def commit_stream_message_event(
+        self,
+        *,
+        operation: Literal["append", "update"],
+        conversation_id: str,
+        message: ConversationMessage,
+        event: EventPayload,
+        outbox: EventOutboxRepository,
+    ) -> None:
+        """Commit one streaming message mutation and its outbox event atomically."""
+
+        with session_scope() as session:
+            if operation == "append":
+                record = ConversationMessageRecord(
+                    id=message.id,
+                    conversation_id=conversation_id,
+                    role=message.role,
+                    status=message.status,
+                    content_type=message.content_type,
+                    created_at=message.created_at,
+                    blocks=[block.model_dump() for block in message.blocks],
+                    tool_refs=message.tool_refs,
+                    object_refs=message.object_refs,
+                    message_metadata=message.metadata,
+                    stream_id=message.stream_id,
+                    sequence_max=message.sequence_max,
+                )
+                session.add(record)
+                conversation = session.get(ConversationRecord, conversation_id)
+                if conversation is not None:
+                    conversation.last_message_at = message.created_at
+                    if conversation.status in {"draft", "idle"}:
+                        conversation.status = "active"
+            else:
+                record = session.get(ConversationMessageRecord, message.id)
+                if record is None or record.conversation_id != conversation_id:
+                    raise KeyError(message.id)
+                record.status = message.status
+                record.content_type = message.content_type
+                record.blocks = [block.model_dump() for block in message.blocks]
+                record.tool_refs = message.tool_refs
+                record.object_refs = message.object_refs
+                record.message_metadata = message.metadata
+                record.stream_id = message.stream_id
+                record.sequence_max = message.sequence_max
+            outbox.append(event, session=session)
+
     def replace_goals(self, conversation_id: str, goals: list[AgentGoal]) -> None:
         with session_scope() as session:
             session.execute(delete(AgentGoalRecord).where(AgentGoalRecord.conversation_id == conversation_id))
@@ -239,6 +338,8 @@ class ConversationRepository:
                         thinking_tokens_used=goal.thinking_tokens_used,
                         no_progress_observations=goal.no_progress_observations,
                         started_at=goal.started_at,
+                        active_runtime_ms=goal.active_runtime_ms,
+                        active_started_at=goal.active_started_at,
                         last_progress_at=goal.last_progress_at,
                         last_progress_fingerprint=goal.last_progress_fingerprint,
                         budget_exhausted_reason=goal.budget_exhausted_reason,
@@ -247,44 +348,119 @@ class ConversationRepository:
                     )
                 )
 
-    def upsert_goal(self, goal: AgentGoal) -> None:
+    def create_goal(self, goal: AgentGoal, *, start_identity: AgentGoalStartIdentity | None = None) -> None:
         with session_scope() as session:
-            record = session.get(AgentGoalRecord, goal.id)
+            # The conversation exists even when it has no goals. Locking only
+            # matching goal rows would leave the empty-conversation race open.
+            conversation = session.scalar(select(ConversationRecord).where(
+                ConversationRecord.id == goal.conversation_id).with_for_update())
+            if conversation is None:
+                raise KeyError(goal.conversation_id)
+            if conversation.project_id != goal.project_id:
+                raise ValueError("AgentGoal project differs from its conversation.")
+            if start_identity is not None:
+                if goal.workflow_id != start_identity.workflow_id:
+                    raise AgentPlanPolicyViolation("agent_start_scope_changed", "The durable start cannot replace its controller.")
+                receipt = session.get(AgentGoalStartReceiptRecord, start_identity.workflow_id)
+                if receipt is not None:
+                    start_identity.require_receipt({key: getattr(receipt, key) for key in (
+                        "schema_version", "workflow_id", "request_digest", "goal_id", "conversation_id", "project_id", "receipt_hash")},
+                        goal.conversation_id, goal.project_id)
+                    raise AgentGoalStartReplayed(receipt.goal_id)
+            active = session.scalars(select(AgentGoalRecord).where(
+                AgentGoalRecord.conversation_id == goal.conversation_id,
+                AgentGoalRecord.status.in_(sorted(ACTIVE_AGENT_GOAL_STATUSES))).order_by(AgentGoalRecord.id).limit(2)).all()
+            if len(active) > 1:
+                raise AgentPlanPolicyViolation("active_agent_goal_ambiguous", "Multiple historical goals control this conversation; resolve them explicitly.")
+            if active:
+                raise ActiveAgentGoalExists(active[0].id)
+            if session.get(AgentGoalRecord, goal.id) is not None:
+                raise ValueError("AgentGoal identity already exists.")
+            record = AgentGoalRecord(id=goal.id, conversation_id=goal.conversation_id)
+            session.add(record)
+            self._write_goal(record, goal)
+            from .build_tool_budget_repository import BuildToolBudgetRepository
+            BuildToolBudgetRepository.initialize_in_session(session, goal, record)
+            if start_identity is not None:
+                # Flush the parent so both the ownership FK and receipt commit
+                # belong to this transaction, before any graph side effect.
+                session.flush()
+                session.add(AgentGoalStartReceiptRecord(**start_identity.receipt(
+                    goal.id, goal.conversation_id, goal.project_id)))
+
+    def upsert_goal(self, goal: AgentGoal, *, expected_resume: AgentResumeCheckpoint | None = None) -> None:
+        if expected_resume is not None:
+            expected_resume.require_transition(goal.model_dump(mode="json"))
+        with session_scope() as session:
+            if expected_resume is None:
+                record = session.get(AgentGoalRecord, goal.id)
+            else:
+                # The row lock covers both the comparison and the aggregate
+                # write, including all steps. A separate GET cannot provide CAS.
+                record = session.scalar(select(AgentGoalRecord).where(
+                    AgentGoalRecord.id == goal.id).with_for_update())
+                if record is None:
+                    raise AgentResumeCheckpointChanged()
+                if session.get(AgentResumeConsumptionRecord, (goal.id, expected_resume.digest)) is not None:
+                    raise AgentResumeCheckpointChanged()
+                expected_resume.require_matches(self._to_goal(record).model_dump(mode="json"))
+                consumed = expected_resume.consumption(goal.model_dump(mode="json"))
+                session.add(AgentResumeConsumptionRecord(goal_id=goal.id,
+                    checkpoint_digest=expected_resume.digest,
+                    conversation_id=expected_resume.conversation_id, project_id=expected_resume.project_id,
+                    workflow_id=expected_resume.workflow_id, transition_digest=consumed["transition_digest"],
+                    receipt_hash=consumed["receipt_hash"]))
             if record is None:
                 record = AgentGoalRecord(id=goal.id, conversation_id=goal.conversation_id)
                 session.add(record)
 
-            record.conversation_id = goal.conversation_id
-            record.project_id = goal.project_id
-            record.us_id = goal.us_id
-            record.goal_template = goal.goal_template
-            record.goal_description = goal.goal_description
-            record.target_refs = goal.target_refs
-            record.query_keys = goal.query_keys
-            record.planner_kind = goal.planner_kind
-            record.planning_summary = goal.planning_summary
-            record.title = goal.title
-            record.status = goal.status
-            record.summary = goal.summary
-            record.steps = [step.model_dump() for step in goal.steps]
-            record.autonomy_level = goal.autonomy_level
-            record.max_steps = goal.max_steps
-            record.max_model_calls = goal.max_model_calls
-            record.max_thinking_tokens = goal.max_thinking_tokens
-            record.max_runtime_seconds = goal.max_runtime_seconds
-            record.max_no_progress_observations = goal.max_no_progress_observations
-            record.steps_completed = goal.steps_completed
-            record.model_calls_used = goal.model_calls_used
-            record.thinking_input_tokens_used = goal.thinking_input_tokens_used
-            record.thinking_output_tokens_used = goal.thinking_output_tokens_used
-            record.thinking_tokens_used = goal.thinking_tokens_used
-            record.no_progress_observations = goal.no_progress_observations
-            record.started_at = goal.started_at
-            record.last_progress_at = goal.last_progress_at
-            record.last_progress_fingerprint = goal.last_progress_fingerprint
-            record.budget_exhausted_reason = goal.budget_exhausted_reason
-            record.pause_reason = goal.pause_reason
-            record.workflow_id = goal.workflow_id
+            self._write_goal(record, goal)
+
+    @staticmethod
+    def _write_goal(record: AgentGoalRecord, goal: AgentGoal) -> None:
+        record.conversation_id = goal.conversation_id
+        record.project_id = goal.project_id
+        record.us_id = goal.us_id
+        record.goal_template = goal.goal_template
+        record.goal_description = goal.goal_description
+        record.target_refs = goal.target_refs
+        record.query_keys = goal.query_keys
+        record.planner_kind = goal.planner_kind
+        record.planning_summary = goal.planning_summary
+        record.title = goal.title
+        record.status = goal.status
+        record.summary = goal.summary
+        record.steps = [step.model_dump() for step in goal.steps]
+        record.autonomy_level = goal.autonomy_level
+        record.max_steps = goal.max_steps
+        record.max_model_calls = goal.max_model_calls
+        record.max_thinking_tokens = goal.max_thinking_tokens
+        record.max_runtime_seconds = goal.max_runtime_seconds
+        record.max_no_progress_observations = goal.max_no_progress_observations
+        record.steps_completed = goal.steps_completed
+        record.model_calls_used = goal.model_calls_used
+        record.thinking_input_tokens_used = goal.thinking_input_tokens_used
+        record.thinking_output_tokens_used = goal.thinking_output_tokens_used
+        record.thinking_tokens_used = goal.thinking_tokens_used
+        record.no_progress_observations = goal.no_progress_observations
+        record.started_at = goal.started_at
+        record.active_runtime_ms = goal.active_runtime_ms
+        record.active_started_at = goal.active_started_at
+        record.last_progress_at = goal.last_progress_at
+        record.last_progress_fingerprint = goal.last_progress_fingerprint
+        record.budget_exhausted_reason = goal.budget_exhausted_reason
+        record.pause_reason = goal.pause_reason
+        record.workflow_id = goal.workflow_id
+
+    def is_resume_consumed(self, checkpoint: AgentResumeCheckpoint) -> bool:
+        with session_scope() as session:
+            row = session.get(AgentResumeConsumptionRecord, (checkpoint.goal_id, checkpoint.digest))
+            if row is None:
+                return False
+            checkpoint.require_scope({"id": row.goal_id, "conversation_id": row.conversation_id,
+                "project_id": row.project_id, "workflow_id": row.workflow_id})
+            checkpoint.require_consumption(row.transition_digest, row.receipt_hash)
+            return True
 
     def get_agent_goal(self, goal_id: str) -> AgentGoal | None:
         with session_scope() as session:
@@ -379,6 +555,8 @@ class ConversationRepository:
             row.input_payload = payload
             row.status = "running"
             row.revision = int(row.revision or 0) + 1
+            if self.tool_claim_journal is not None:
+                self.tool_claim_journal.record(session, row)
             session.flush()
             claimed = self._to_tool_invocation(row)
         return claimed
@@ -637,6 +815,7 @@ class ConversationRepository:
         messages: list[ConversationMessage],
         goals: list[AgentGoal],
         tool_invocations: list[ToolInvocation],
+        active_turn: ConversationTurn | None = None,
     ) -> ConversationSession:
         return ConversationSession(
             id=row.id,
@@ -655,9 +834,27 @@ class ConversationRepository:
             merged_into_conversation_id=row.merged_into_conversation_id,
             archived_at=row.archived_at,
             messages=messages,
+            active_turn=active_turn,
             agent_goals=goals,
             tool_invocations=tool_invocations,
             related_conversation_ids=row.related_conversation_ids or [],
+        )
+
+    @staticmethod
+    def _to_turn(row: ConversationTurnRecord) -> ConversationTurn:
+        return ConversationTurn(
+            id=row.id,
+            conversation_id=row.conversation_id,
+            user_message_id=row.user_message_id,
+            assistant_message_id=row.assistant_message_id,
+            workflow_id=row.workflow_id,
+            idempotency_key=row.idempotency_key,
+            status=row.status,
+            result=row.result or {},
+            error=row.error,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            completed_at=row.completed_at,
         )
 
     @staticmethod
@@ -718,6 +915,8 @@ class ConversationRepository:
             thinking_tokens_used=row.thinking_tokens_used,
             no_progress_observations=row.no_progress_observations,
             started_at=row.started_at,
+            active_runtime_ms=row.active_runtime_ms,
+            active_started_at=row.active_started_at,
             last_progress_at=row.last_progress_at,
             last_progress_fingerprint=row.last_progress_fingerprint,
             budget_exhausted_reason=row.budget_exhausted_reason,

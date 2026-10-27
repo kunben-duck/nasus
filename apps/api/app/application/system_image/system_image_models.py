@@ -1,11 +1,26 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..platform.model_settings import ProviderName
 from ..platform.project_models import ProjectCard
+from ...domain.system_image.source_snapshots import CapturedSourceManifest
+from ...domain.system_image.image_revision import ImageRevisionSummary
+from ...domain.system_image.source_tracking import require_tracked_ref
+from .publication_read_models import ImageReadState
+
+
+class KnowledgeCodeReference(BaseModel):
+    entity_id: str
+    entity_revision_id: str
+    source_revision_id: str
+
+
+class KnowledgeDocumentReference(BaseModel):
+    document_revision_id: str
+    source_revision_id: str
 
 
 class KnowledgeObject(BaseModel):
@@ -17,6 +32,8 @@ class KnowledgeObject(BaseModel):
     relations: List[str] = Field(default_factory=list)
     evidence: List[str] = Field(default_factory=list)
     freshness: str
+    code_reference: Optional[KnowledgeCodeReference] = None
+    document_reference: Optional[KnowledgeDocumentReference] = None
 
 
 class RawAssetRecord(BaseModel):
@@ -25,6 +42,7 @@ class RawAssetRecord(BaseModel):
     version_id: Optional[str] = None
     source_type: Literal["code", "us_doc", "test_asset"]
     source_uri: str
+    tracked_ref: Optional[str] = None
     source_label: Optional[str] = None
     ingestion_status: Literal["pending", "ingesting", "indexed", "failed", "stale"] = "pending"
     content_hash: str = ""
@@ -41,6 +59,11 @@ class RawAssetRecord(BaseModel):
     failure_reason: Optional[str] = None
     file_count: int = 0
     byte_count: int = 0
+
+    @model_validator(mode="after")
+    def validate_tracking(self):
+        require_tracked_ref(self.source_type, self.tracked_ref)
+        return self
 
 
 class RawAssetChunk(BaseModel):
@@ -181,7 +204,7 @@ class TaskContext(BaseModel):
     metric_refs: List[str] = Field(default_factory=list)
     evidence_refs: List[str] = Field(default_factory=list)
     missing_context: List[str] = Field(default_factory=list)
-    confidence: float = Field(default=0, ge=0, le=1)
+    confidence: Optional[float] = Field(default=0, ge=0, le=1)
     freshness_at: str
     context_hash: str
 
@@ -193,14 +216,14 @@ class QualityProfile(BaseModel):
     version_id: Optional[str] = None
     us_id: Optional[str] = None
     task_context_id: str
-    risk_score: int = Field(ge=0, le=100)
-    coverage_score: int = Field(ge=0, le=100)
-    release_score: int = Field(ge=0, le=100)
-    automation_feasibility: int = Field(ge=0, le=100)
+    risk_score: Optional[int] = Field(ge=0, le=100)
+    coverage_score: Optional[int] = Field(ge=0, le=100)
+    release_score: Optional[int] = Field(ge=0, le=100)
+    automation_feasibility: Optional[int] = Field(ge=0, le=100)
     risk_drivers: List[str] = Field(default_factory=list)
     regression_scope_refs: List[str] = Field(default_factory=list)
     evidence_refs: List[str] = Field(default_factory=list)
-    confidence: float = Field(default=0, ge=0, le=1)
+    confidence: Optional[float] = Field(default=0, ge=0, le=1)
     freshness_at: str
 
 
@@ -214,8 +237,9 @@ class SystemImageBuildState(BaseModel):
         "ready",
         "partially_failed",
         "failed",
+        "visibility_limited",
     ]
-    stage_index: int
+    stage_index: Optional[int]
     stage_total: int = 5
     label: str
     missing_source_types: List[str] = Field(default_factory=list)
@@ -223,13 +247,40 @@ class SystemImageBuildState(BaseModel):
     next_recommended_tools: List[str] = Field(default_factory=list)
 
 
+class SystemImageVisibility(BaseModel):
+    mode: Literal["project", "source_filtered"] = "project"
+    withheld_sections: List[str] = Field(default_factory=list)
+
+
+class SystemImageRestrictedProject(BaseModel):
+    id: str
+    name: str
+    code: str
+    summary: None = None
+    status: None = None
+    risk: None = None
+    progress: None = None
+    active_version: None = None
+    blocked_items: None = None
+    pending_approvals: None = None
+    system_image_status: None = None
+
+
+class SystemImageChunkView(RawAssetChunk):
+    content_ref: Optional[str] = None
+
+
 class SystemImageResponse(BaseModel):
-    project: ProjectCard
+    read_state: ImageReadState = Field(default_factory=ImageReadState)
+    candidate_revision: Optional[ImageRevisionSummary] = None
+    visibility: SystemImageVisibility = Field(default_factory=SystemImageVisibility)
+    source_manifest: Optional[CapturedSourceManifest] = None
+    project: Union[ProjectCard, SystemImageRestrictedProject]
     summary: str
     build_state: SystemImageBuildState
     baselines: List[BaselineRecord]
     sources: List[RawAssetRecord]
-    chunks: List[RawAssetChunk] = Field(default_factory=list)
+    chunks: List[Union[RawAssetChunk, SystemImageChunkView]] = Field(default_factory=list)
     objects: List[KnowledgeObject]
     relationships: List[ContextRelationship]
     overlays: List[ContextObjectOverlay]

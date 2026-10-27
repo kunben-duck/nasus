@@ -288,7 +288,7 @@ def test_project_version_and_us_workflow_runs_only_through_ports() -> None:
     assert workspace.versions[project.id][0].status == "active"
 
 
-def test_start_us_task_materializes_context_only_when_evidence_is_indexed() -> None:
+def test_start_us_task_requires_a_separate_canonical_materialization_even_when_evidence_is_indexed() -> None:
     workspace = InMemoryProjectVersionWorkspace()
     system_image = StubSystemImageOperations()
     service = ProjectVersionApplicationService(
@@ -324,7 +324,7 @@ def test_start_us_task_materializes_context_only_when_evidence_is_indexed() -> N
         )
     )
 
-    assert system_image.materialized_projects == [project.id]
+    assert system_image.materialized_projects == []
     assert workspace.us_items[project.id][0].status == "analysis"
     assert result.requires_followup is True
     assert "system_image.context.materialize" in result.next_tools

@@ -1,5 +1,7 @@
 # 系统画像构建：知识摄入管线
 
+下一阶段设计补充（2026-09-09）：多 binding、不可变 SourceRevision/Manifest、受控增量调查和失效传播见[自主系统画像](./autonomous-system-image-design.md)与[知识契约](./knowledge-contracts.md)。本文描述的已有 source 摄入基础继续复用，但不能以同类型覆盖或全项目清空派生状态实现长期更新。
+
 ## 1. 文档定位
 
 本文聚焦系统画像构建模块中的“原料如何进入系统”这一条主线。

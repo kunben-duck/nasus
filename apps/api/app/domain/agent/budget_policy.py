@@ -7,6 +7,7 @@ from hashlib import sha256
 from typing import Iterable, Protocol
 
 from .runtime_models import ModelUsage
+from .active_runtime import active_runtime_used_ms
 
 
 class AgentBudgetGoal(Protocol):
@@ -22,6 +23,8 @@ class AgentBudgetGoal(Protocol):
     thinking_tokens_used: int
     no_progress_observations: int
     started_at: str | None
+    active_runtime_ms: int | None
+    active_started_at: str | None
     last_progress_at: str | None
     last_progress_fingerprint: str | None
     budget_exhausted_reason: str | None
@@ -39,6 +42,8 @@ def evaluate_agent_budget(
     *,
     now: datetime | None = None,
 ) -> AgentBudgetDecision:
+    active_ms = active_runtime_used_ms(goal, now=now)
+    runtime_seconds = active_ms // 1000 if active_ms is not None else _runtime_seconds(goal.started_at, now=now)
     checks = (
         (
             goal.steps_completed >= goal.max_steps,
@@ -56,9 +61,9 @@ def evaluate_agent_budget(
             f"Thinking-token budget exhausted ({goal.thinking_tokens_used}/{goal.max_thinking_tokens}).",
         ),
         (
-            _runtime_seconds(goal.started_at, now=now) >= goal.max_runtime_seconds,
+            runtime_seconds >= goal.max_runtime_seconds,
             "max_runtime_seconds",
-            f"Runtime budget exhausted ({_runtime_seconds(goal.started_at, now=now)}/{goal.max_runtime_seconds}s).",
+            f"Runtime budget exhausted ({runtime_seconds}/{goal.max_runtime_seconds}s).",
         ),
         (
             goal.no_progress_observations >= goal.max_no_progress_observations,
@@ -93,6 +98,7 @@ def observation_progress_fingerprint(
     evidence_refs: Iterable[str] = (),
     next_recommended_tools: Iterable[str] = (),
     requires_followup: bool = False,
+    receipt_fingerprint: str | None = None,
 ) -> str:
     payload = {
         "tool_id": tool_id,
@@ -103,6 +109,8 @@ def observation_progress_fingerprint(
         "next_recommended_tools": sorted(set(next_recommended_tools)),
         "requires_followup": requires_followup,
     }
+    if receipt_fingerprint is not None:
+        payload["receipt_fingerprint"] = receipt_fingerprint
     return sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()

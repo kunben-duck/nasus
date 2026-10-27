@@ -23,6 +23,7 @@ class AgentConversationProjectionState:
 @dataclass(frozen=True)
 class AgentConversationPersistenceAdapters:
     append_message: Callable[[str, ConversationMessage], None]
+    update_message: Callable[[str, ConversationMessage], None]
     upsert_conversation: Callable[[ConversationSession], None]
     upsert_summary_checkpoint: Callable[[ConversationSummaryCheckpoint], None]
 

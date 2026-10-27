@@ -7,19 +7,27 @@ export function BuildComposer({
   prompt,
   setPrompt,
   runPrompt,
+  stopPrompt,
   loading,
+  streaming,
   selectedSkills,
   onToggleSkill,
   onGuessYou,
 }: BuildComposerProps) {
   const hasPrompt = prompt.trim().length > 0
-
   return (
     <div className="hero-composer">
       <div className="hero-composer-content">
         <SelectedSkillGrid selectedSkills={selectedSkills} onToggleSkill={onToggleSkill} />
         <BuildPromptInput prompt={prompt} setPrompt={setPrompt} runPrompt={runPrompt} />
-        <BuildComposerActions hasPrompt={hasPrompt} loading={loading} onGuessYou={onGuessYou} runPrompt={runPrompt} />
+        <BuildComposerActions
+          hasPrompt={hasPrompt}
+          loading={loading}
+          streaming={streaming}
+          onGuessYou={onGuessYou}
+          runPrompt={runPrompt}
+          stopPrompt={stopPrompt}
+        />
       </div>
     </div>
   )

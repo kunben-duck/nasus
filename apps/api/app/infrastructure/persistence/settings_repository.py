@@ -96,6 +96,13 @@ class SettingsRepository:
             row = session.get(ModelProviderConfigRecord, config_id)
             return row.api_key_encrypted if row else ""
 
+    def get_model_config_snapshot(self, config_id: str) -> tuple[SavedModelConfig, str]:
+        with session_scope() as session:
+            row = session.get(ModelProviderConfigRecord, config_id)
+            if row is None:
+                raise KeyError("saved model configuration not found")
+            return self._to_model_config(row), row.api_key_encrypted
+
     def save_model_config(self, config: SavedModelConfig, api_key_encrypted: str) -> None:
         with session_scope() as session:
             row = session.get(ModelProviderConfigRecord, config.config_id)

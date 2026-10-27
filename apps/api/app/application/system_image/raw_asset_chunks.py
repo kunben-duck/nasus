@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Callable
+
 from ...domain.system_image.chunking import (
     chunk_id,
     chunk_kind,
@@ -9,7 +11,7 @@ from ...domain.system_image.chunking import (
 )
 from .ports import SystemImageWorkspacePort
 from .source_ports import SourceIngestionPort
-from .system_image_models import RawAssetChunk
+from .system_image_models import RawAssetChunk, RawAssetRecord
 
 
 class SystemImageRawAssetChunkApplicationService:
@@ -23,15 +25,33 @@ class SystemImageRawAssetChunkApplicationService:
         self._workspace = workspace
         self._source_ingestion = source_ingestion
 
-    def materialize(self, project_id: str, *, captured_at: str) -> list[RawAssetChunk]:
-        chunks: list[RawAssetChunk] = []
+    def materialize(self, project_id: str, *, captured_at: str,
+                    source_ids: tuple[str, ...] | None = None,
+                    sources: list[RawAssetRecord] | None = None,
+                    check_phase: Callable[[], None] | None = None) -> list[RawAssetChunk]:
+        with self._workspace.artifact_write_session():
+            return self._materialize(project_id, captured_at=captured_at, source_ids=source_ids,
+                                     sources=sources, check_phase=check_phase)
+
+    def _materialize(self, project_id: str, *, captured_at: str,
+                     source_ids: tuple[str, ...] | None = None,
+                     sources: list[RawAssetRecord] | None = None,
+                     check_phase: Callable[[], None] | None = None) -> list[RawAssetChunk]:
+        chunks: list[RawAssetChunk] = ([] if source_ids is None else [
+            chunk for chunk in self._workspace.list_raw_asset_chunks(project_id)
+            if chunk.raw_asset_id not in source_ids
+        ])
         indexed_sources = [
             item
-            for item in self._workspace.list_raw_assets(project_id)
-            if item.ingestion_status == "indexed"
+            for item in (sources if sources is not None else self._workspace.list_raw_assets(project_id))
+            if item.ingestion_status == "indexed" and (source_ids is None or item.id in source_ids)
         ]
         for source in indexed_sources:
+            if check_phase:
+                check_phase()
             units = self._source_ingestion.extract_text_units(source)
+            if check_phase:
+                check_phase()
             for unit_index, unit in enumerate(units):
                 for chunk_index, chunk_text in enumerate(split_chunk_text(unit.text)):
                     chunk_hash = content_hash(chunk_text)
@@ -70,6 +90,8 @@ class SystemImageRawAssetChunkApplicationService:
                             created_at=captured_at,
                         )
                     )
+        if check_phase:
+            check_phase()
         self._workspace.replace_raw_asset_chunks(project_id, chunks)
         return chunks
 

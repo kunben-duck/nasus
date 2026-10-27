@@ -81,6 +81,12 @@ def test_gateway_audits_all_model_routes_without_raw_content() -> None:
         assert sensitive_value not in serialized
 
 
+def test_gateway_language_instruction_follows_studio_language() -> None:
+    assert "Simplified Chinese" in LLMGateway._language_instruction("zh")
+    assert "professional, concise English" in LLMGateway._language_instruction("en")
+    assert StudioSettings().language == "zh"
+
+
 def test_sqlalchemy_llm_call_repository_round_trip_and_filters() -> None:
     init_database()
     repository = SQLAlchemyLLMCallRepository()

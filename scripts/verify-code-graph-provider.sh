@@ -25,6 +25,7 @@ from apps.api.app.infrastructure.config.code_graph_config import CodeGraphConfig
 from apps.api.app.infrastructure.system_image.codebase_memory_code_intelligence import (
     CodebaseMemoryCodeIntelligenceAdapter,
 )
+from apps.api.app.domain.system_image.source_snapshots import snapshot_digest
 
 
 def source_unit(root: Path, relative_path: str) -> SourceTextUnit:
@@ -69,12 +70,13 @@ with tempfile.TemporaryDirectory(prefix="nasus-code-graph-contract-") as tempora
             cache_dir=Path(temporary) / "cache",
         )
     )
-    result = adapter.analyze(
-        [
-            source_unit(root, "authorization.py"),
-            source_unit(root, "payments.py"),
-        ]
-    )
+    units = [source_unit(root, "authorization.py"), source_unit(root, "payments.py")]
+    namespace = "nasus_" + snapshot_digest([(unit.relative_path, unit.content_hash) for unit in units])[7:39]
+    with adapter.open_index(units, check_current=lambda: None, namespace=namespace) as index:
+        result = index.read_projection()
+        protocol = index.protocol_receipt()
+        if protocol is None:
+            raise SystemExit("Code graph did not negotiate its native tool contracts")
 
     if len(result.entities) < 4:
         raise SystemExit(
@@ -106,6 +108,8 @@ with tempfile.TemporaryDirectory(prefix="nasus-code-graph-contract-") as tempora
                 "entities": len(result.entities),
                 "relationships": len(result.relationships),
                 "diagnostics": adapter.diagnostics(),
+                "protocol_receipt": protocol.payload(),
+                "protocol_receipt_hash": protocol.digest,
             },
             sort_keys=True,
         )

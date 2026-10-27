@@ -63,6 +63,7 @@ V1 过渡实现：
 | `POST /v1/tool-invocations` | 显式工具调用 |
 | `GET /v1/tool-invocations` | 按会话、AgentGoal、工具或状态查询工具调用链路 |
 | `GET /v1/tool-invocations/{id}` | 获取工具调用状态与结果 |
+| `GET /v1/tool-invocations/{id}/evidence` | 重新授权并展开已完成证据读取的固定原文页，禁止缓存 |
 | `POST /v1/tool-invocations/{id}/confirm` | 确认等待用户确认的工具调用 |
 | `GET /v1/audit-events` | 查询会话、工具调用或 Agent Goal 的审计事件 |
 
@@ -261,6 +262,7 @@ usage 和请求/响应摘要哈希。
 - `summary`
 - `object_refs`
 - `evidence_refs`
+- `evidence_query`（可空）：`nasus.evidence-query.v1` 的 list/read receipt，仅保存引用、定位和校验元数据，不保存源码正文。
 - `requires_followup`
 - `followup_reason`
 - `followup_prompt`
@@ -272,6 +274,10 @@ usage 和请求/响应摘要哈希。
 - `followup_reason` 必须是可机读原因，例如 `missing_source_binding`。
 - `followup_prompt` 用于前端和会话区展示下一步用户需要提供的信息。
 - `ToolResult` 必须随 `ToolInvocation` 一起持久化，服务重启后 AgentGoal 恢复必须仍能读取 follow-up 状态。
+- 幂等请求重放前必须重新执行当前权限校验；权限已撤销时返回 403，不改写原有调用事实。
+- `query.system_image.evidence.list` 必填 `project_id/source_revision_id/object_id`，可选 `entity_revision_id`；`query.system_image.evidence.read` 必填 `project_id/source_revision_id/evidence_id`，可选 `start_line/max_lines`（默认 100，1-200，拒绝布尔值/字符串数字）。来源 pin 不匹配时在对象存储读取前失败。
+- Evidence read receipt 包含固定证据元数据、起止行、`next_start_line`、`excerpt_hash`。`GET /v1/tool-invocations/{id}/evidence` 经 application observation port 再次授权、验证归档及 receipt，返回 `EvidencePage`，设置 `Cache-Control: private, no-store`。近似证据不作为精确片段返回。
+- 上述两个工具不生成模型摘要，不把正文写入 ToolInvocation、审计或 SSE；Agent 重规划接收重新授权的 receipt。原文按需展开能力已提供，自动语义调查的来源 ACL、模型出口策略仍属后续交付，不因 integrity=verified 将内容视作指令或已批准业务 oracle。
 
 `GET /v1/audit-events`
 
@@ -665,9 +671,13 @@ usage 和请求/响应摘要哈希。
 
 `GET /v1/conversations/{id}/events` 必须支持以下事件序列：
 
-- `assistant.message.started`
-- `assistant.message.delta`
-- `assistant.message.completed`
+- `conversation.turn.accepted`
+- `conversation.message.started`
+- `conversation.message.delta`
+- `conversation.message.completed`
+- `conversation.message.interrupted`
+- `conversation.message.failed`
+- `conversation.turn.completed|interrupted|failed`
 - `assistant.block.updated`
 - `tool.invoked`
 - `tool.progress`
@@ -685,8 +695,8 @@ usage 和请求/响应摘要哈希。
 
 约束：
 
-- 同一 `message_id` 下的 `assistant.message.delta` 必须严格递增 `sequence`
-- `assistant.message.completed` 是该消息唯一的结束信号
+- 同一 `stream_id + message_id` 下的 `conversation.message.delta` 必须严格递增 `sequence`
+- `conversation.message.completed|interrupted|failed` 是消息互斥的结束信号
 - 结构化卡片、计划卡、工具进度卡不得通过纯文本 delta 模拟，必须走 `assistant.block.updated`
 - `tool.progress` 必须包含：
   - `tool_invocation_id`

@@ -14,6 +14,10 @@ from ...application.quality_loop.runner_port import (
     AutomationRunnerResult,
     RunnerArtifact,
 )
+from ...domain.quality_loop.runner_observations import verify_runner_observations
+from ...domain.quality_loop.http_runner_observations import verify_http_runner_observations
+from .http_observation_artifacts import verify_http_response_artifacts
+from .request_wire import runner_request_body
 
 
 def _now_iso() -> str:
@@ -46,7 +50,7 @@ class FailClosedAutomationRunner:
 
 
 class HttpAutomationRunner:
-    """Calls the isolated Playwright runner over its authenticated internal API."""
+    """Calls the isolated browser/HTTP runner over its authenticated internal API."""
 
     def __init__(
         self,
@@ -69,28 +73,22 @@ class HttpAutomationRunner:
             }
             if request_id:
                 headers["X-Request-ID"] = request_id
+            body = runner_request_body(command)
+            request_hash = "sha256:" + hashlib.sha256(body).hexdigest()
             response = httpx.post(
                 f"{self.endpoint}/v1/jobs",
                 headers=headers,
-                json={
-                    "job_id": command.job_id,
-                    "project_id": command.project_id,
-                    "us_id": command.us_id,
-                    "base_url": command.base_url,
-                    "steps": list(command.steps),
-                    "timeout_ms": command.timeout_ms,
-                    "metadata": command.metadata,
-                },
+                content=body,
                 timeout=self.request_timeout_seconds,
             )
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, dict):
                 raise ValueError("runner response is not a JSON object")
-            return self._result_from_payload(command, payload)
+            return self._result_from_payload(command, payload, request_hash=request_hash)
         except (httpx.HTTPError, ValueError, TypeError) as exc:
             now = _now_iso()
-            reason = f"{type(exc).__name__}: {exc}"
+            reason = "Runner transport or execution receipt validation failed."
             return AutomationRunnerResult(
                 runner_job_id=command.job_id,
                 status="error",
@@ -100,16 +98,31 @@ class HttpAutomationRunner:
                 completed_at=now,
                 timeline=("Runner request failed closed.",),
                 failure_fingerprint=_fingerprint(command.job_id, reason),
-                runner_mode="http_playwright",
+                runner_mode="http_native" if command.kind == "http" else "http_playwright",
             )
 
     @staticmethod
     def _result_from_payload(
         command: AutomationRunnerCommand,
         payload: dict[str, Any],
+        *, request_hash: str,
     ) -> AutomationRunnerResult:
-        raw_status = str(payload.get("status") or "error").lower()
-        status = raw_status if raw_status in {"passed", "failed", "error", "timed_out"} else "error"
+        status = payload.get("status")
+        if payload.get("runner_job_id") != command.job_id:
+            raise ValueError("runner response job mismatch")
+        scope = dict(job_id=command.job_id, project_id=command.project_id, us_id=command.us_id,
+            request_hash=request_hash, status=status)
+        if command.kind == "http":
+            if getattr(command, "fixture_input", None) is not None:
+                from .http_fixture_input_verifier import verify_http_fixture_input
+                verify_http_fixture_input(command)
+            receipt = verify_http_runner_observations(payload.get("execution_receipt"), steps=command.steps,
+                protocol=command.http_protocol, fixture_input=getattr(command, "fixture_input", None), base_url=command.base_url,
+                metadata=command.metadata, **scope)
+            verify_http_response_artifacts(receipt, payload.get("artifacts"), command.steps)
+        else:
+            receipt = verify_runner_observations(payload.get("execution_receipt"),
+                step_actions=tuple(step.get("action") for step in command.steps), **scope)
         artifacts = tuple(
             RunnerArtifact(
                 artifact_type=str(item.get("artifact_type") or "report"),
@@ -118,7 +131,7 @@ class HttpAutomationRunner:
                 content_base64=str(item.get("content_base64") or ""),
             )
             for item in payload.get("artifacts", [])
-            if isinstance(item, dict) and item.get("content_base64")
+            if isinstance(item, dict) and (item.get("content_base64") or command.kind == "http" and item.get("content_base64") == "")
         )
         now = _now_iso()
         failure_summary = str(payload.get("failure_summary") or "")
@@ -136,7 +149,8 @@ class HttpAutomationRunner:
                 if payload.get("failure_fingerprint")
                 else _fingerprint(command.job_id, failure_summary or status)
             ),
-            runner_mode="http_playwright",
+            runner_mode="http_native" if command.kind == "http" else "http_playwright",
+            execution_receipt=receipt,
         )
 
 

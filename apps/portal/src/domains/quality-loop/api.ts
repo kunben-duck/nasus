@@ -22,6 +22,6 @@ export const qualityLoopApi = {
   getProjectApprovals: (projectId: string) => request(`/v1/projects/${projectId}/approvals`),
   getApprovalDetail: (projectId: string, approvalId: string) =>
     request<ApprovalDetail>(`/v1/projects/${projectId}/approvals/${approvalId}`),
-  getReleaseReadiness: (projectId: string) =>
-    request<ReleaseReadiness | null>(`/v1/projects/${projectId}/release-readiness`),
+  getReleaseReadiness: (projectId: string, signal?: AbortSignal) =>
+    request<ReleaseReadiness | null>(`/v1/projects/${projectId}/release-readiness`, { signal }),
 }

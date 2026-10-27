@@ -7,6 +7,7 @@ import { useProjectActionLock } from './useProjectActionLock'
 import type { ProjectConversationController } from './useProjectConversationModel'
 import { useProjectPromptRunner } from './useProjectPromptRunner'
 import { useProjectToolConfirmation } from './useProjectToolConfirmation'
+import { useI18n } from '../../shared/i18n/I18nProvider'
 
 type ProjectRouteActionArgs = {
   project?: ProjectCard
@@ -19,6 +20,7 @@ export function useProjectRouteActions({
   projectConversation,
   pausedProjectGoal,
 }: ProjectRouteActionArgs) {
+  const { locale } = useI18n()
   const queryClient = useQueryClient()
   const projectActionLock = useProjectActionLock()
   const promptRunner = useProjectPromptRunner({
@@ -33,6 +35,7 @@ export function useProjectRouteActions({
     projectConversation,
     queryClient,
     projectActionLock,
+    locale,
   })
 
   return {
@@ -40,10 +43,13 @@ export function useProjectRouteActions({
     ...actionHandlers,
     confirmToolInvocation: toolConfirmation.confirmToolInvocation,
     loading:
+      projectConversation.isLoading ||
+      !projectConversation.conversationId ||
       promptRunner.isPromptRunning ||
       projectConversation.isSending ||
       toolConfirmation.isConfirmingToolInvocation ||
       projectActionLock.actionRunning,
     activeActionId: projectActionLock.activeActionId,
+    streaming: Boolean(projectConversation.activeTurn && !['completed', 'interrupted', 'failed'].includes(projectConversation.activeTurn.status)),
   }
 }

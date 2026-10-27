@@ -22,9 +22,10 @@ export function useProjectWorkspaceSourceBindings({
   mode: AgentMode
   pendingGoal?: AgentGoal
   disabled: boolean
-  buildSystemImageFromSources: (sources: SourceBindingValues) => void
+  buildSystemImageFromSources: (sources: SourceBindingValues) => Promise<void>
 }) {
   const sourceBindingDrafts = useSourceBindingDrafts(projectId, systemImage)
+  const preparation = useMutation({ mutationFn: buildSystemImageFromSources })
   const uploadMutation = useMutation({
     mutationFn: ({ key, files }: { key: SourceBindingKey; files: File[] }) => {
       if (key === 'code') {
@@ -42,8 +43,8 @@ export function useProjectWorkspaceSourceBindings({
   })
 
   function submitSourceBindings() {
-    if (disabled) return
-    sourceBindingDrafts.submitSourceBindings(buildSystemImageFromSources)
+    if (disabled || preparation.isPending) return
+    sourceBindingDrafts.submitSourceBindings((values) => preparation.mutate(values))
   }
 
   function uploadSourceFiles(key: SourceBindingKey, files: File[]) {
@@ -51,16 +52,20 @@ export function useProjectWorkspaceSourceBindings({
     uploadMutation.mutate({ key, files })
   }
 
-  function updateSourceBinding(key: SourceBindingKey, value: string) {
+  function updateSourceBinding(key: keyof SourceBindingValues, value: string) {
     uploadMutation.reset()
+    preparation.reset()
     sourceBindingDrafts.updateSourceBinding(key, value)
   }
 
   return {
     shouldShowPanel: shouldShowSourceBindingPanel(mode, systemImage, pendingGoal),
     values: sourceBindingDrafts.values,
+    preparing: preparation.isPending,
     visibleError:
-      uploadMutation.error instanceof Error
+      preparation.error instanceof Error
+        ? preparation.error.message
+        : uploadMutation.error instanceof Error
         ? uploadMutation.error.message
         : sourceBindingDrafts.visibleError,
     updateSourceBinding,

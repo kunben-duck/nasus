@@ -1,8 +1,10 @@
 import { Link } from 'react-router-dom'
 
 import type { USItem, VersionSummary } from '../../../../domains/quality-loop/types'
+import { useI18n } from '../../../../shared/i18n/I18nProvider'
 
 export function VersionList({ versions }: { versions: VersionSummary[] }) {
+  const { t, tx } = useI18n()
   if (!versions.length) return null
 
   return (
@@ -15,7 +17,7 @@ export function VersionList({ versions }: { versions: VersionSummary[] }) {
           </div>
           <p>{version.branch_name}</p>
           <span>
-            {version.status} · {version.us_closed}/{version.us_total} US closed
+            {tx(version.status)} · {t('{closed}/{total} US closed', { closed: version.us_closed, total: version.us_total })}
           </span>
         </div>
       ))}
@@ -24,19 +26,20 @@ export function VersionList({ versions }: { versions: VersionSummary[] }) {
 }
 
 export function USCard({ item, projectId }: { item: USItem; projectId: string }) {
+  const { tx } = useI18n()
   return (
     <Link className={`quality-lane-card ${item.status}`} to={`/projects/${projectId}/workspaces/${encodeURIComponent(item.id)}`}>
       <div>
         <span className="quality-lane-dot" />
         <strong>
-          {item.id} · {item.title}
+          {item.id} · {tx(item.title)}
         </strong>
       </div>
       <p>
-        {item.owner} · {item.next_action}
+        {item.owner} · {tx(item.next_action)}
       </p>
       <span>
-        {item.risk} · {item.progress}%
+        {tx(item.risk)} · {item.progress}%
       </span>
     </Link>
   )

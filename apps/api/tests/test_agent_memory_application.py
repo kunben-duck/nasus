@@ -24,6 +24,11 @@ from apps.api.app.application.system_image.retrieval import (
     SystemImageMemoryHit,
     SystemImageMemorySearchResult,
 )
+from apps.api.app.application.system_image.memory_context import (
+    SystemImageContextFacts,
+    SystemImageMemoryContextApplicationService,
+)
+from apps.api.app.domain.system_image.source_access import SourceAccessSnapshot
 
 
 class InMemoryAgentMemoryState:
@@ -167,24 +172,17 @@ class InMemoryAgentMemoryState:
         )
 
 
-class EmptySystemImageWorkspace:
-    def has_project(self, project_id: str) -> bool:
-        return False
+class EmptyProjectContextReader:
+    """Explicit project-only authorization for application-unit fixtures."""
 
-    def list_baselines(self, project_id: str) -> list:
-        return []
+    def scope(self, project_id):
+        return SourceAccessSnapshot(project_id, 0, ()).for_actor("unit-reader", "viewer")
 
-    def list_raw_assets(self, project_id: str) -> list:
-        return []
+    def require_current(self, scope):
+        assert scope == self.scope(scope.project_id)
 
-    def list_knowledge_objects(self, project_id: str) -> list:
-        return []
-
-    def list_context_relationships(self, project_id: str) -> list:
-        return []
-
-    def list_quality_metric_snapshots(self, project_id: str) -> list:
-        return []
+    def read(self, project_id, *, version_id=None):
+        return SystemImageContextFacts(scope=self.scope(project_id))
 
 
 class StaticSystemImageRetriever:
@@ -195,10 +193,12 @@ class StaticSystemImageRetriever:
         *,
         limit: int = 8,
         trace: bool = False,
+        expected_scope=None,
     ) -> SystemImageMemorySearchResult:
         assert conversation.project_id == "project_checkout"
         assert "saved cards" in query
         assert limit == 8
+        assert expected_scope.project_id == conversation.project_id
         return SystemImageMemorySearchResult(
             hits=(
                 SystemImageMemoryHit(
@@ -246,7 +246,7 @@ def test_agent_memory_builds_context_from_declared_state_port() -> None:
     manager = AgentMemoryManager(
         state,
         StaticSystemImageRetriever(),
-        EmptySystemImageWorkspace(),
+        SystemImageMemoryContextApplicationService(EmptyProjectContextReader()),
     )
 
     context = asyncio.run(
@@ -282,7 +282,7 @@ def test_agent_memory_persists_items_links_and_checkpoints_through_port() -> Non
     manager = AgentMemoryManager(
         state,
         StaticSystemImageRetriever(),
-        EmptySystemImageWorkspace(),
+        SystemImageMemoryContextApplicationService(EmptyProjectContextReader()),
     )
 
     item = manager.record_item(

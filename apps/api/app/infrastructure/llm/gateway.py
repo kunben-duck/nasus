@@ -3,13 +3,16 @@ from __future__ import annotations
 import os
 import re
 import time
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
-from typing import Literal
+from typing import AsyncIterator, Literal
 from uuid import uuid4
 
 import httpx
+
+from ...application.agent.reply_ports import AgentReplyGenerationEvent
 
 from ...application.platform.model_settings import (
     CustomModelConfig,
@@ -164,8 +167,10 @@ class LLMGateway:
     ) -> LLMReply:
         started = time.perf_counter()
         provider = settings.model_provider
+        language_instruction = self._language_instruction(settings.language)
+        localized_system_prompt = f"{system_prompt}\n\n{language_instruction}"
         request_text = "\n".join(
-            (system_prompt, user_message, context_snapshot, history_snapshot)
+            (localized_system_prompt, user_message, context_snapshot, history_snapshot)
         )
         if settings.runtime_mode == "fallback":
             return self._audit_reply(
@@ -189,7 +194,7 @@ class LLMGateway:
                 model_preset=settings.model_preset,
                 custom_model=settings.custom_model,
                 custom_api_key=custom_api_key,
-                system_prompt=system_prompt,
+                system_prompt=localized_system_prompt,
                 user_message=user_message,
                 context_snapshot=context_snapshot,
                 history_snapshot=history_snapshot,
@@ -231,6 +236,203 @@ class LLMGateway:
             started=started,
             request_text=request_text,
         )
+
+    async def stream_reply(
+        self,
+        *,
+        settings: StudioSettings,
+        system_prompt: str,
+        user_message: str,
+        context_snapshot: str,
+        history_snapshot: str,
+        fallback_text: str,
+        custom_api_key: str | None = None,
+        call_context: LLMCallContext | None = None,
+    ) -> AsyncIterator[AgentReplyGenerationEvent]:
+        started = time.perf_counter()
+        provider = settings.model_provider
+        language_instruction = self._language_instruction(settings.language)
+        localized_system_prompt = f"{system_prompt}\n\n{language_instruction}"
+        request_text = "\n".join(
+            (localized_system_prompt, user_message, context_snapshot, history_snapshot)
+        )
+        common = {
+            "provider": provider,
+            "model_name": settings.model_name,
+        }
+        yield AgentReplyGenerationEvent(
+            kind="started",
+            mode=settings.runtime_mode,
+            reason=settings.active_provider_status.reason,
+            **common,
+        )
+
+        if settings.runtime_mode == "fallback":
+            async for event in self._stream_fallback_reply(
+                fallback_text,
+                settings=settings,
+                call_context=call_context,
+                started=started,
+                request_text=request_text,
+                reason=settings.active_provider_status.reason,
+            ):
+                yield event
+            return
+
+        content_parts: list[str] = []
+        input_tokens = 0
+        output_tokens = 0
+        usage_source = "none"
+        try:
+            async for event in self._stream_provider(
+                provider=provider,
+                model_name=settings.model_name,
+                model_preset=settings.model_preset,
+                custom_model=settings.custom_model,
+                custom_api_key=custom_api_key,
+                system_prompt=localized_system_prompt,
+                user_message=user_message,
+                context_snapshot=context_snapshot,
+                history_snapshot=history_snapshot,
+            ):
+                if event.kind == "delta" and event.delta:
+                    content_parts.append(event.delta)
+                elif event.kind == "usage":
+                    input_tokens = event.input_tokens
+                    output_tokens = event.output_tokens
+                    usage_source = event.usage_source
+                yield event
+        except Exception as exc:
+            if not content_parts:
+                async for event in self._stream_fallback_reply(
+                    fallback_text,
+                    settings=settings,
+                    call_context=call_context,
+                    started=started,
+                    request_text=request_text,
+                    reason="provider_error",
+                    model_calls=1,
+                ):
+                    yield event
+                return
+            yield AgentReplyGenerationEvent(
+                kind="failed",
+                mode="live",
+                reason="provider_error_after_partial_output",
+                content="".join(content_parts),
+                error=self._safe_provider_error(exc),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                usage_source=usage_source,
+                **common,
+            )
+            return
+
+        content = "".join(content_parts)
+        if usage_source == "none":
+            input_tokens = self._estimate_tokens(request_text)
+            output_tokens = self._estimate_tokens(content)
+            usage_source = "estimated"
+            yield AgentReplyGenerationEvent(
+                kind="usage",
+                mode="live",
+                reason="provider_success",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                usage_source=usage_source,
+                **common,
+            )
+        audited = self._audit_reply(
+            LLMReply(
+                content=content,
+                provider=provider,
+                model_name=settings.model_name,
+                mode="live",
+                reason="provider_success",
+                model_calls=1,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                usage_source=usage_source,  # type: ignore[arg-type]
+            ),
+            settings=settings,
+            context=call_context,
+            started=started,
+            request_text=request_text,
+        )
+        yield AgentReplyGenerationEvent(
+            kind="completed",
+            mode="live",
+            reason="provider_success",
+            content=content,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            usage_source=usage_source,
+            llm_call_id=audited.llm_call_id,
+            **common,
+        )
+
+    async def _stream_fallback_reply(
+        self,
+        fallback_text: str,
+        *,
+        settings: StudioSettings,
+        call_context: LLMCallContext | None,
+        started: float,
+        request_text: str,
+        reason: str,
+        model_calls: int = 0,
+    ) -> AsyncIterator[AgentReplyGenerationEvent]:
+        common = {
+            "provider": settings.model_provider,
+            "model_name": settings.model_name,
+            "mode": "fallback",
+            "reason": reason,
+        }
+        yield AgentReplyGenerationEvent(kind="delta", delta=fallback_text, **common)
+        input_tokens = self._estimate_tokens(request_text)
+        output_tokens = self._estimate_tokens(fallback_text)
+        yield AgentReplyGenerationEvent(
+            kind="usage",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            usage_source="estimated",
+            **common,
+        )
+        audited = self._audit_reply(
+            LLMReply(
+                content=fallback_text,
+                provider=settings.model_provider,
+                model_name=settings.model_name,
+                mode="fallback",
+                reason=reason,
+                model_calls=model_calls,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                usage_source="estimated",
+            ),
+            settings=settings,
+            context=call_context,
+            started=started,
+            request_text=request_text,
+        )
+        yield AgentReplyGenerationEvent(
+            kind="completed",
+            content=fallback_text,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            usage_source="estimated",
+            llm_call_id=audited.llm_call_id,
+            **common,
+        )
+
+    @staticmethod
+    def _language_instruction(language: str) -> str:
+        if language == "zh":
+            return (
+                "Use professional, concise Simplified Chinese for all user-facing text. "
+                "Keep identifiers, tool IDs, code, paths, and JSON keys unchanged."
+            )
+        return "Use professional, concise English for all user-facing text."
 
     async def test_connection(
         self,
@@ -1136,6 +1338,287 @@ class LLMGateway:
             user_message=user_message,
             context_snapshot=context_snapshot,
             history_snapshot=history_snapshot,
+        )
+
+    async def _stream_provider(
+        self,
+        *,
+        provider: ProviderName,
+        model_name: str,
+        model_preset: ModelPreset,
+        custom_model: CustomModelConfig,
+        custom_api_key: str | None,
+        system_prompt: str,
+        user_message: str,
+        context_snapshot: str,
+        history_snapshot: str,
+    ) -> AsyncIterator[AgentReplyGenerationEvent]:
+        if model_preset == "custom":
+            api_key = custom_api_key or ""
+            if not api_key:
+                raise RuntimeError("missing custom api key")
+            if custom_model.provider_kind == "openai_compatible":
+                base_url = (custom_model.base_url or "").rstrip("/")
+                if not base_url:
+                    raise RuntimeError("missing custom base url")
+                async for event in self._stream_openai_compatible(
+                    base_url=base_url,
+                    api_key=api_key,
+                    model_name=model_name,
+                    provider="openai_compatible",
+                    system_prompt=system_prompt,
+                    user_message=user_message,
+                    context_snapshot=context_snapshot,
+                    history_snapshot=history_snapshot,
+                ):
+                    yield event
+                return
+            provider = custom_model.provider_kind
+
+        if provider == "openai":
+            api_key = custom_api_key if model_preset == "custom" else os.environ["OPENAI_API_KEY"]
+            async for event in self._stream_openai_compatible(
+                base_url="https://api.openai.com/v1",
+                api_key=api_key or "",
+                model_name=model_name,
+                provider="openai",
+                system_prompt=system_prompt,
+                user_message=user_message,
+                context_snapshot=context_snapshot,
+                history_snapshot=history_snapshot,
+                include_usage=True,
+            ):
+                yield event
+            return
+        if provider == "openai_compatible":
+            async for event in self._stream_openai_compatible(
+                base_url=self._resolve_openai_compatible_base_url("chat"),
+                api_key=self._resolve_openai_compatible_api_key("chat"),
+                model_name=model_name,
+                provider="openai_compatible",
+                system_prompt=system_prompt,
+                user_message=user_message,
+                context_snapshot=context_snapshot,
+                history_snapshot=history_snapshot,
+            ):
+                yield event
+            return
+        if provider == "gemini":
+            api_key = custom_api_key if model_preset == "custom" else os.environ["GEMINI_API_KEY"]
+            async for event in self._stream_gemini(
+                model_name=model_name,
+                api_key=api_key or "",
+                system_prompt=system_prompt,
+                user_message=user_message,
+                context_snapshot=context_snapshot,
+                history_snapshot=history_snapshot,
+            ):
+                yield event
+            return
+        if provider == "anthropic":
+            api_key = custom_api_key if model_preset == "custom" else os.environ["ANTHROPIC_API_KEY"]
+            async for event in self._stream_anthropic(
+                model_name=model_name,
+                api_key=api_key or "",
+                system_prompt=system_prompt,
+                user_message=user_message,
+                context_snapshot=context_snapshot,
+                history_snapshot=history_snapshot,
+            ):
+                yield event
+            return
+        raise RuntimeError(f"provider {provider} does not support native streaming")
+
+    async def _stream_openai_compatible(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model_name: str,
+        provider: ProviderName,
+        system_prompt: str,
+        user_message: str,
+        context_snapshot: str,
+        history_snapshot: str,
+        include_usage: bool = False,
+    ) -> AsyncIterator[AgentReplyGenerationEvent]:
+        if not base_url or not api_key:
+            raise RuntimeError("missing OpenAI-compatible provider configuration")
+        payload = {
+            "model": model_name,
+            "messages": self._chat_messages(
+                system_prompt,
+                user_message,
+                context_snapshot,
+                history_snapshot,
+            ),
+            "temperature": 0.2,
+            "stream": True,
+        }
+        if include_usage:
+            payload["stream_options"] = {"include_usage": True}
+        common = {
+            "provider": provider,
+            "model_name": model_name,
+            "mode": "live",
+            "reason": "provider_success",
+        }
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            async with client.stream(
+                "POST",
+                f"{base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if not raw or raw == "[DONE]":
+                        continue
+                    body = json.loads(raw)
+                    usage = body.get("usage") or {}
+                    if usage:
+                        yield AgentReplyGenerationEvent(
+                            kind="usage",
+                            input_tokens=self._non_negative_int(usage.get("prompt_tokens")) or 0,
+                            output_tokens=self._non_negative_int(usage.get("completion_tokens")) or 0,
+                            usage_source="provider",
+                            **common,
+                        )
+                    for choice in body.get("choices") or []:
+                        delta = (choice.get("delta") or {}).get("content")
+                        if isinstance(delta, str) and delta:
+                            yield AgentReplyGenerationEvent(kind="delta", delta=delta, **common)
+
+    async def _stream_gemini(
+        self,
+        *,
+        model_name: str,
+        api_key: str,
+        system_prompt: str,
+        user_message: str,
+        context_snapshot: str,
+        history_snapshot: str,
+    ) -> AsyncIterator[AgentReplyGenerationEvent]:
+        payload = {
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": self._user_context_message(user_message, context_snapshot, history_snapshot)}]}],
+            "generationConfig": {"temperature": 0.2},
+        }
+        common = {
+            "provider": "gemini",
+            "model_name": model_name,
+            "mode": "live",
+            "reason": "provider_success",
+        }
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            async with client.stream(
+                "POST",
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent?alt=sse&key={api_key}",
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    body = json.loads(line[5:].strip())
+                    for candidate in body.get("candidates") or []:
+                        for part in ((candidate.get("content") or {}).get("parts") or []):
+                            delta = part.get("text")
+                            if isinstance(delta, str) and delta:
+                                yield AgentReplyGenerationEvent(kind="delta", delta=delta, **common)
+                    usage = body.get("usageMetadata") or {}
+                    if usage:
+                        yield AgentReplyGenerationEvent(
+                            kind="usage",
+                            input_tokens=self._non_negative_int(usage.get("promptTokenCount")) or 0,
+                            output_tokens=self._non_negative_int(usage.get("candidatesTokenCount")) or 0,
+                            usage_source="provider",
+                            **common,
+                        )
+
+    async def _stream_anthropic(
+        self,
+        *,
+        model_name: str,
+        api_key: str,
+        system_prompt: str,
+        user_message: str,
+        context_snapshot: str,
+        history_snapshot: str,
+    ) -> AsyncIterator[AgentReplyGenerationEvent]:
+        payload = {
+            "model": model_name,
+            "max_tokens": 1200,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": self._user_context_message(user_message, context_snapshot, history_snapshot)}],
+            "stream": True,
+        }
+        common = {
+            "provider": "anthropic",
+            "model_name": model_name,
+            "mode": "live",
+            "reason": "provider_success",
+        }
+        input_tokens = 0
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            async with client.stream(
+                "POST",
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    body = json.loads(line[5:].strip())
+                    event_type = body.get("type")
+                    if event_type == "message_start":
+                        input_tokens = self._non_negative_int(((body.get("message") or {}).get("usage") or {}).get("input_tokens")) or 0
+                    elif event_type == "content_block_delta":
+                        delta = (body.get("delta") or {}).get("text")
+                        if isinstance(delta, str) and delta:
+                            yield AgentReplyGenerationEvent(kind="delta", delta=delta, **common)
+                    elif event_type == "message_delta":
+                        output_tokens = self._non_negative_int((body.get("usage") or {}).get("output_tokens")) or 0
+                        yield AgentReplyGenerationEvent(
+                            kind="usage",
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            usage_source="provider",
+                            **common,
+                        )
+
+    @classmethod
+    def _chat_messages(
+        cls,
+        system_prompt: str,
+        user_message: str,
+        context_snapshot: str,
+        history_snapshot: str,
+    ) -> list[dict[str, str]]:
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": cls._user_context_message(user_message, context_snapshot, history_snapshot)},
+        ]
+
+    @staticmethod
+    def _user_context_message(
+        user_message: str,
+        context_snapshot: str,
+        history_snapshot: str,
+    ) -> str:
+        return (
+            f"Conversation memory:\n{history_snapshot}\n\n"
+            f"Conversation input:\n{user_message}\n\n"
+            f"Workspace context:\n{context_snapshot}"
         )
 
     def _openai_compatible_base_url_env(self, route: ModelRoute) -> str:

@@ -1,14 +1,16 @@
 import type { BackendStatus } from '../status/backendStatus'
+import { useI18n } from '../i18n/I18nProvider'
 
 export type { BackendStatus } from '../status/backendStatus'
 
 export function BackendStatusPill({ status }: { status: BackendStatus }) {
-  const label = status === 'live' ? 'Live' : status === 'loading' ? 'Connecting' : 'Offline preview'
+  const { t } = useI18n()
+  const label = status === 'live' ? t('Live') : status === 'loading' ? t('Connecting') : t('Offline preview')
   const copy = status === 'live'
-    ? 'Backend connected'
+    ? t('Backend connected')
     : status === 'loading'
-      ? 'Checking backend'
-      : 'Using local preview data'
+      ? t('Checking backend')
+      : t('Using local preview data')
 
   return (
     <span className={`backend-status-pill ${status}`} title={copy} data-testid="backend-status-pill">

@@ -61,6 +61,17 @@ Rules:
   `domains/platform/useProjectWorkspaceData.ts`; route modules may pass
   URL-derived IDs into this hook but must not call `qualityLoopApi` or
   `systemImageApi` directly.
+- Route query lifetimes must be checked at dispatch, not only through React
+  Query's render-time `enabled` flag. Browser history may change before old
+  observers unmount. The route layer supplies an opaque `canReadWorkspace`
+  callback; domain hooks check it before transport and before returning private
+  data, and pass the observer's abort signal to transport. Domains must not
+  import router state or encode concrete URL paths themselves.
+- Exact saved-build review is read-only discovery, not conversation ensure or
+  whole-workspace refresh. Its SSE may update the original conversation, but
+  must not invalidate unrelated domain queries. Pending and follow-up refreshes
+  recheck the current lifetime, even when the first read started on the previous
+  page. Preserve immediate token reduction and the existing single-flight queue.
 - Project overview quality asset presenters consume route-local view models
   from `projectWorkspaceSelectors.ts`; quality-loop aggregate DTOs should be
   projected before reaching `components/quality-asset`.
@@ -95,6 +106,18 @@ Rules:
   token types such as `ThemePreference`, but it must not import platform
   settings or other `domains/*` contracts.
 - Product writes must be triggered through conversation or tool invocation paths, not ad-hoc route-local API calls.
+- Fixed test-design context previews, history and validation belong to
+  `domains/system-image/contextPackApi.ts` and `useContextPacks.ts`. Knowledge
+  route panels render these contracts and reuse the authorized evidence reader;
+  they must not call HTTP or ToolInvocation directly. Context archives are
+  historical investigation drafts, never implicit generation authorization.
+- Reviewed test-design scopes belong to `domains/quality-loop`: fixed context
+  pins, complete AC/rule denominators, draft validation, private history and
+  confirmed ToolInvocation writes. The knowledge route's `scope` components
+  render structured assessments and examples, not raw JSON command editors.
+  Explicit gaps remain blockers; approval is never generation permission.
+  Source-read or response-pin failures hide private content; edits and fresh
+  reads invalidate consent. Do not restore consent from browser storage.
 - Project workspace write orchestration belongs in
   `domains/platform/tool-actions/projectActionExecutor.ts`,
   `domains/platform/toolInvocationCommands.ts`, or the owning Agent command
@@ -146,6 +169,44 @@ domains/<domain>/
 
 `types.ts` files are compatibility barrels. New types should go into focused files under `types/`.
 
+## Source Analysis Inspector
+
+- `domains/system-image/codeAnalysisApi.ts` and `useCodeAnalysis.ts` own the
+  authenticated revision/report reads, pagination keys, cancellation and
+  no-persistent-cache policy. They do not render UI or perform materialization.
+- The knowledge route composes source and report selectors explicitly. Opening
+  the inspector, changing project, or reloading it never selects a historical
+  report as the current approved image. A failed read hides previous report
+  content and requires an explicit reload before another selection.
+- `analysisObservationView.ts` adapts report DTOs for the result list. The list
+  renders text, not repository-provided HTML. Source locations and hashes are
+  observations pinned to the selected revision, not runtime acceptance or
+  approved business oracles.
+- The inspector shares the evidence dialog's theme tokens, keyboard/focus
+  behavior and scroll-without-scrollbar styling. Capture/materialization writes
+  continue to use the existing governed ToolInvocation surface.
+
+## Frozen Image Inspection
+
+- `domains/system-image/imageRevisionApi.ts` and `useImageRevisions.ts` own
+  candidate history, paginated archive reads and revision-scoped evidence
+  expansion. UI components consume typed view models, not mutable workspace
+  aliases. Object and membership pages must have the same artifact hash, count
+  and ordered IDs before evidence controls become available.
+- `routes/project/sections/knowledge/revisions` contains the read-only dialog,
+  revision selector, section pages, provenance and archived excerpts. It never
+  picks a revision automatically or publishes a candidate. Legacy branch and
+  confidence fields are not presented as approval or semantic validation.
+- Each opening/reload uses a separate query scope, `gcTime: 0`, abort signals
+  and `no-store`. Fetching hides the previous page; a failed read latches the
+  whole inspector closed to sensitive content until explicit reload. Project
+  changes and loss of the parent image dismiss the inspector.
+- Evidence is read through the image/object/evidence endpoint, which verifies
+  frozen membership and all input sources before and after archive access. Do
+  not replace this with the current alias-to-evidence listing API. Scrolling,
+  focus restoration, text-only rendering and theme tokens reuse the existing
+  knowledge inspectors.
+
 ## Agent-First Rule
 
 All user-visible write actions must map back to the same command surface used by chat:
@@ -162,6 +223,29 @@ All user-visible write actions must map back to the same command surface used by
 - High-risk actions must keep confirmation or approval gates visible.
 
 Do not add a button that performs a write path unavailable to the agent.
+
+## Internationalization
+
+- Simplified Chinese (`zh-CN`) is the primary and default product language;
+  English (`en`) is the secondary language available from Settings.
+- User-visible static copy must be registered in `shared/i18n/messages.ts` and
+  rendered through `useI18n().t`. Do not add inline language branches such as
+  `tr(en, zh)` or duplicate localized JSX trees.
+- User-visible dynamic labels and statuses returned by APIs must be rendered
+  through `useI18n().tx`. Backend contracts should still return stable enum
+  values rather than localized identifiers.
+- Product names, tool IDs, model names, code, paths, JSON keys, API fields, and
+  other machine-readable identifiers must not be translated.
+- Language changes update the UI immediately, persist through `/v1/settings`,
+  mirror to the `nasus.locale` browser cache, and set the document language to
+  `zh-CN` or `en`. The browser cache is only the startup fallback; backend
+  settings remain authoritative after authentication.
+- Agent commands generated by buttons and skills must follow the selected
+  language. The LLM gateway must apply the same language preference while
+  preserving technical identifiers verbatim.
+- `shared/i18n` is the controlled cross-cutting resource catalog. It may contain
+  product copy, but it must not import routes, domains, application shells, or
+  transport adapters.
 
 ## UI Component Rules
 
@@ -182,11 +266,16 @@ Before merging frontend architecture changes, run:
 ```bash
 ./.venv/bin/python -m pytest tests/test_ddd_boundaries.py -q
 npm run test:portal-boundaries
+npm run test:i18n
 npm run lint:portal
 npm run build:portal
 npm run test:e2e
 npm run test:smoke
 ```
+
+The E2E suite owns Chinese-default, language-switch, and reload-persistence
+coverage. The smoke suite explicitly selects English so its long-running
+system-image assertions remain focused on the canonical business path.
 
 `tests/test_portal_boundaries.py` is the frontend architectural tripwire.
 `tests/test_ddd_boundaries.py` remains the backend DDD tripwire and keeps a few

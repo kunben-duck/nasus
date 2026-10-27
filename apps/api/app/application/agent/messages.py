@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import re
+from dataclasses import asdict, is_dataclass
 from typing import Any, Dict
 
 from .ports import ConversationMessageRuntimePort
 from ..platform.tool_models import ToolInvocation, ToolInvocationRequest
+from ...domain.agent.image_plan_policy import is_pinned_image_plan
+from ...domain.agent.resume_checkpoint import AgentResumeCheckpoint, AgentResumeCheckpointChanged
+from ...domain.agent.image_plan_phases import active_phase_start
+from ...domain.agent.runtime_models import ToolPlanStep
 
 
 class ConversationMessageApplicationService:
@@ -20,7 +25,7 @@ class ConversationMessageApplicationService:
         *,
         canonical_action_id: str | None = None,
     ) -> Dict[str, Any]:
-        conversation = self._runtime.get_conversation(conversation_id)
+        self._runtime.get_conversation(conversation_id)
         await self._runtime.append_message(
             conversation_id,
             "user",
@@ -34,12 +39,26 @@ class ConversationMessageApplicationService:
                 else None
             ),
         )
+        return await self.process_message(
+            conversation_id,
+            content,
+            canonical_action_id=canonical_action_id,
+        )
+
+    async def prepare_message(
+        self,
+        conversation_id: str,
+        content: str,
+        *,
+        canonical_action_id: str | None = None,
+    ) -> dict[str, Any]:
+        conversation = self._runtime.get_conversation(conversation_id)
         source_binding_result = await self.handle_source_binding_message_if_any(conversation_id, content)
         if source_binding_result is not None:
-            return source_binding_result
+            return {"route": "finalize", "result": source_binding_result}
         confirmation_result = await self.handle_confirmation_message_if_any(conversation_id, content)
         if confirmation_result is not None:
-            return confirmation_result
+            return {"route": "finalize", "result": confirmation_result}
 
         if canonical_action_id:
             decision = await self._runtime.plan_message(
@@ -50,64 +69,132 @@ class ConversationMessageApplicationService:
         else:
             decision = await self._runtime.plan_message(conversation, content)
 
-        if decision.kind == "clarification" and decision.clarification:
+        return {
+            "route": decision.kind,
+            "decision": self._to_plain_data(decision),
+        }
+
+    async def process_message(
+        self,
+        conversation_id: str,
+        content: str,
+        *,
+        canonical_action_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> Dict[str, Any]:
+        prepared = await self.prepare_message(
+            conversation_id,
+            content,
+            canonical_action_id=canonical_action_id,
+        )
+        return await self.execute_prepared(
+            conversation_id,
+            content,
+            prepared,
+            turn_id=turn_id,
+        )
+
+    async def execute_prepared(
+        self,
+        conversation_id: str,
+        content: str,
+        prepared: dict[str, Any],
+        *,
+        turn_id: str | None = None,
+    ) -> Dict[str, Any]:
+        conversation = self._runtime.get_conversation(conversation_id)
+        route = str(prepared.get("route") or "finalize")
+        if route == "finalize":
+            return dict(prepared.get("result") or {})
+        decision = dict(prepared.get("decision") or {})
+
+        clarification = decision.get("clarification")
+        if route == "clarification" and isinstance(clarification, dict):
             await self._runtime.append_message(
                 conversation_id,
                 "assistant",
-                decision.clarification.question,
+                str(clarification.get("question") or "Please provide more context."),
                 metadata={
                     "planner_kind": "clarification",
-                    "clarification_kind": decision.clarification.reason,
-                    "missing_context": decision.clarification.missing_context,
+                    "clarification_kind": clarification.get("reason"),
+                    "missing_context": list(clarification.get("missing_context") or []),
                 },
             )
-            return {"clarification": decision.clarification.__dict__}
+            return {"clarification": clarification}
 
-        if decision.kind == "tool_plan" and decision.tool_plan:
+        tool_plan = decision.get("tool_plan")
+        if route == "tool_plan" and isinstance(tool_plan, dict):
             tool_invocations = []
-            for step in decision.tool_plan.steps:
+            for step in tool_plan.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
                 invocation = await self._runtime.create_tool_invocation(
                     ToolInvocationRequest(
                         conversation_id=conversation_id,
-                        tool_id=step.tool_id,
-                        input=step.input_payload,
+                        tool_id=str(step["tool_id"]),
+                        input=dict(step.get("input_payload") or {}),
                         initiator_surface="chat",
                         initiator_actor="user",
-                        target_scope=step.target_scope,
+                        target_scope=step.get("target_scope", "central"),
                     )
                 )
                 tool_invocations.append(invocation)
             return {"tool_invocations": tool_invocations}
 
-        if decision.kind == "agent_goal" and decision.agent_goal:
+        agent_goal = decision.get("agent_goal")
+        if route == "agent_goal" and isinstance(agent_goal, dict):
+            from ...domain.agent.runtime_models import agent_goal_proposal_from_payload
+
             goal = await self._runtime.start_goal_from_proposal(
                 conversation_id,
-                decision.agent_goal,
+                agent_goal_proposal_from_payload(agent_goal),
             )
             return {"agent_goal": goal}
 
-        direct_answer = decision.direct_answer
+        direct_answer = decision.get("direct_answer")
         fallback_text = (
-            direct_answer.fallback_text
-            if direct_answer
+            str(direct_answer.get("fallback_text"))
+            if isinstance(direct_answer, dict) and direct_answer.get("fallback_text")
             else self._runtime.fallback_text(conversation)
         )
-        query_keys = direct_answer.query_keys if direct_answer else [["conversation", conversation_id]]
+        query_keys = (
+            list(direct_answer.get("query_keys") or [])
+            if isinstance(direct_answer, dict)
+            else [["conversation", conversation_id]]
+        )
+        tool_input: dict[str, Any] = {
+            "user_message": content,
+            "fallback_text": fallback_text,
+            "query_keys": query_keys,
+        }
+        if turn_id:
+            tool_input.update({"_stream_reply": True, "_conversation_turn_id": turn_id})
         tool_invocation = await self._runtime.create_tool_invocation(
             ToolInvocationRequest(
                 conversation_id=conversation_id,
                 tool_id="query.answer",
-                input={
-                    "user_message": content,
-                    "fallback_text": fallback_text,
-                    "query_keys": query_keys,
-                },
+                input=tool_input,
                 initiator_surface="chat",
                 initiator_actor="user",
                 target_scope="central",
             )
         )
         return {"tool_invocation": tool_invocation}
+
+    @classmethod
+    def _to_plain_data(cls, value: Any) -> Any:
+        if is_dataclass(value):
+            return asdict(value)
+        if isinstance(value, dict):
+            return {key: cls._to_plain_data(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._to_plain_data(item) for item in value]
+        if hasattr(value, "__dict__"):
+            return {
+                key: cls._to_plain_data(item)
+                for key, item in vars(value).items()
+            }
+        return value
 
     async def handle_confirmation_message_if_any(self, conversation_id: str, content: str) -> Dict[str, Any] | None:
         if not self._runtime.is_confirmation_message(content):
@@ -118,8 +205,26 @@ class ConversationMessageApplicationService:
             return None
 
         goal_id = invocation.input_payload.get("agent_goal_id")
-        if isinstance(goal_id, str) and self._runtime.is_paused_goal(goal_id):
-            goal = await self._runtime.resume_goal(goal_id)
+        if isinstance(goal_id, str):
+            current = self._runtime.get_goal(goal_id)
+            conversation = self._runtime.get_conversation(conversation_id)
+            blocked = [step for step in current.steps[active_phase_start(current):] if step.phase == "acting" and step.status == "blocked"]
+            if (current.id != goal_id or current.conversation_id != conversation_id
+                    or current.project_id != conversation.project_id or invocation.conversation_id != conversation_id
+                    or current.status != "paused" or current.pause_reason != "waiting_confirmation"
+                    or len(blocked) != 1 or blocked[0].tool_invocation_id != invocation.id
+                    or blocked[0].selected_tool_id != invocation.tool_id):
+                raise AgentResumeCheckpointChanged()
+            if is_pinned_image_plan([ToolPlanStep(step.selected_tool_id, step.tool_input_payload)
+                    for step in current.steps if step.selected_tool_id], current.target_refs):
+                if invocation.input_payload.get("project_id") != current.project_id:
+                    raise AgentResumeCheckpointChanged()
+                # Chat consent is scoped to this exact pending command, never a
+                # generic structural continuation or a newer confirmation gate.
+                checkpoint = AgentResumeCheckpoint.capture(current.model_dump(mode="json"))
+                goal = await self._runtime.resume_goal(goal_id, expected_resume=checkpoint)
+            else:
+                goal = await self._runtime.resume_goal(goal_id)
             return {
                 "agent_goal": goal,
                 "tool_invocation": self._runtime.get_tool_invocation(invocation.id),
@@ -193,3 +298,6 @@ class ConversationMessageApplicationService:
         if explicit_invocation_id:
             return next((invocation for invocation in candidates if invocation.id == explicit_invocation_id), None)
         return candidates[-1] if candidates else None
+
+    def validate_conversation(self, conversation_id: str) -> None:
+        self._runtime.get_conversation(conversation_id)

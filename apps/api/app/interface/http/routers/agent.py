@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import StreamingResponse
 
 from ....application.agent.agent_models import (
@@ -11,6 +11,8 @@ from ....application.agent.agent_models import (
     AgentGoalFeedbackRequest,
     AgentMemoryCheckpointRequest,
 )
+from ....domain.agent.plan_policy import AgentPlanPolicyViolation
+from ....application.agent.resume_inputs import AgentGoalResumeRequest
 from ..dependencies import AgentApp
 from ..errors import error_response
 from ...sse import SSE_RESPONSE_HEADERS, encode_event, encode_heartbeat
@@ -24,6 +26,8 @@ async def create_agent_goal(payload: AgentGoalCreateRequest, agent: AgentApp) ->
         return await agent.create_manual_goal(payload)
     except KeyError as exc:
         raise error_response("not_found", "conversation was not found", 404) from exc
+    except AgentPlanPolicyViolation as exc:
+        raise error_response(exc.code, "Agent plan violates the fixed-input execution policy.", 400) from exc
 
 
 @router.get("/v1/agent-goals/{goal_id}")
@@ -67,10 +71,12 @@ def update_agent_goal_budget(
 @router.get("/v1/agent-memory/context")
 async def get_agent_memory_context(
     agent: AgentApp,
+    response: Response,
     conversation_id: Optional[str] = None,
     agent_goal_id: Optional[str] = None,
     space_ref: Optional[str] = None,
 ) -> Any:
+    response.headers["Cache-Control"] = "private, no-store"
     try:
         return await agent.get_agent_memory_context(
             conversation_id=conversation_id,
@@ -163,9 +169,9 @@ async def interrupt_agent_goal(goal_id: str, agent: AgentApp) -> Any:
 
 
 @router.post("/v1/agent-goals/{goal_id}/resume")
-async def resume_agent_goal(goal_id: str, agent: AgentApp) -> Any:
+async def resume_agent_goal(goal_id: str, agent: AgentApp, payload: Optional[AgentGoalResumeRequest] = None) -> Any:
     try:
-        return await agent.resume_goal(goal_id)
+        return await agent.resume_goal(goal_id, payload)
     except KeyError as exc:
         raise error_response("not_found", f"agent goal {goal_id} was not found", 404) from exc
 

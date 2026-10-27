@@ -6,6 +6,8 @@ from ...application.platform.project_access import (
     ConversationAccessScope,
     InvocationAccessScope,
 )
+from ...application.platform.errors import PlatformApplicationError
+from ...application.platform.tool_models import ToolResult
 from ..persistence.db_models import (
     AuditEventRecord,
     ConversationRecord,
@@ -47,12 +49,19 @@ class SQLAlchemyProjectAccessReadModel:
             if row is None:
                 return None
             result_payload = row.result_payload or {}
+            try:
+                result = ToolResult.model_validate(row.result_payload) if row.result_payload is not None else None
+            except ValueError as error:
+                raise PlatformApplicationError("resource_receipt_invalid", "Original resource receipt could not be verified.", 502) from error
             object_refs = result_payload.get("object_refs", [])
             return InvocationAccessScope(
                 id=row.id,
                 conversation_id=row.conversation_id,
                 input_payload=row.input_payload or {},
                 object_refs=tuple(object_refs) if isinstance(object_refs, list) else (),
+                tool_id=row.tool_id,
+                status=row.status,
+                result=result,
             )
 
     def project_id_for_version(self, version_id: str) -> str | None:

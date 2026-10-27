@@ -1,0 +1,2 @@
+id,title,preconditions,steps,expected_result,requirement_ids
+TC-EXWEB-CHAT,Chat stream contract fixture,"Dedicated authorized test environment; valid credentials and request data must be supplied","Send POST /api/v1/finance/chat/stream","Verify the streaming response content type against the approved contract; this fixture has not been executed",US-EXWEB-CHAT

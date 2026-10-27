@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal, Protocol
+from typing import Callable, Literal, Protocol
+from .image_plan_phases import active_phase_start
+from .active_runtime import begin_active_runtime, settle_active_runtime
 
 
-AgentGoalPhase = Literal["pending", "thinking", "acting", "observing", "deciding", "completed", "failed", "paused"]
+AgentGoalPhase = Literal["pending", "thinking", "acting", "observing", "deciding", "completed", "failed", "cancelled", "paused"]
 
 
 class AgentStepLike(Protocol):
@@ -28,6 +30,8 @@ class AgentGoalLike(Protocol):
     steps_completed: int
     pause_reason: str | None
     started_at: str | None
+    active_runtime_ms: int | None
+    active_started_at: str | None
     budget_exhausted_reason: str | None
 
 
@@ -51,11 +55,14 @@ class AgentGoalStateMachine:
 
     terminal_statuses = {"completed", "failed", "cancelled"}
 
+    def __init__(self, *, clock: Callable[[], datetime] | None = None):
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
     def checkpoint(self, goal: AgentGoalLike) -> AgentGoalRuntimeCheckpoint:
         blocked_index = self.blocked_act_step_index(goal)
         if blocked_index is None and goal.pause_reason == "budget_exhausted":
             blocked_index = next(
-                (index for index, step in enumerate(goal.steps) if step.status == "blocked"),
+                (index for index, step in enumerate(goal.steps) if index >= active_phase_start(goal) and step.status == "blocked"),
                 None,
             )
         current_index = self.current_step_index(goal)
@@ -71,7 +78,7 @@ class AgentGoalStateMachine:
             current_step_title=current_step.title if current_step else None,
             blocked_step_index=blocked_index,
             blocked_tool_invocation_id=blocked_step.tool_invocation_id if blocked_step else None,
-            resume_step_index=blocked_index,
+            resume_step_index=None if goal.status in self.terminal_statuses else blocked_index,
             steps_completed=goal.steps_completed,
         )
 
@@ -79,11 +86,13 @@ class AgentGoalStateMachine:
         if goal.status in self.terminal_statuses:
             return {"status": goal.status}
         previous_status = goal.status
+        now = self._clock()
+        begin_active_runtime(goal, now=now)
         goal.status = "running"
         goal.pause_reason = None
         goal.budget_exhausted_reason = None
         if goal.started_at is None:
-            goal.started_at = datetime.now(timezone.utc).isoformat()
+            goal.started_at = now.isoformat()
         lifecycle_transition = "resumed" if previous_status in {"paused", "blocked"} else "started"
         return {"status": goal.status, "lifecycle_transition": lifecycle_transition}
 
@@ -118,6 +127,7 @@ class AgentGoalStateMachine:
 
     def pause_on_gate(self, goal: AgentGoalLike, step_index: int, pause_reason: str) -> dict[str, str]:
         step = goal.steps[step_index]
+        settle_active_runtime(goal, now=self._clock())
         goal.status = "paused"
         goal.pause_reason = pause_reason
         step.status = "blocked"
@@ -134,6 +144,7 @@ class AgentGoalStateMachine:
         summary: str,
     ) -> dict[str, str]:
         step = goal.steps[step_index]
+        settle_active_runtime(goal, now=self._clock())
         goal.status = "paused"
         goal.pause_reason = "budget_exhausted"
         goal.budget_exhausted_reason = reason
@@ -150,6 +161,7 @@ class AgentGoalStateMachine:
 
     def pause_on_followup(self, goal: AgentGoalLike, step_index: int, pause_reason: str, summary: str) -> dict[str, str]:
         step = goal.steps[step_index]
+        settle_active_runtime(goal, now=self._clock())
         goal.status = "paused"
         goal.pause_reason = pause_reason
         step.status = "blocked"
@@ -159,13 +171,25 @@ class AgentGoalStateMachine:
 
     def fail_on_step(self, goal: AgentGoalLike, step_index: int, summary: str) -> dict[str, str]:
         step = goal.steps[step_index]
+        settle_active_runtime(goal, now=self._clock())
         goal.status = "failed"
         step.status = "blocked"
         step.decision = "fail"
         step.decision_rationale = summary
         return {"status": goal.status, "current_step": step.title, "lifecycle_transition": "failed"}
 
+    def cancel_on_step(self, goal: AgentGoalLike, step_index: int, summary: str) -> dict[str, str]:
+        step = goal.steps[step_index]
+        settle_active_runtime(goal, now=self._clock())
+        goal.status = "cancelled"
+        goal.pause_reason = None
+        step.status = "blocked"
+        step.decision = "pause"
+        step.decision_rationale = summary
+        return {"status": goal.status, "current_step": step.title, "lifecycle_transition": "cancelled"}
+
     def complete_goal(self, goal: AgentGoalLike, step_index: int | None = None) -> dict[str, str]:
+        settle_active_runtime(goal, now=self._clock())
         if step_index is not None and 0 <= step_index < len(goal.steps):
             step = goal.steps[step_index]
             step.status = "completed"
@@ -182,14 +206,15 @@ class AgentGoalStateMachine:
 
     @staticmethod
     def current_step_index(goal: AgentGoalLike) -> int | None:
+        start = active_phase_start(goal)
         for index, step in enumerate(goal.steps):
-            if step.status == "running":
+            if index >= start and step.status == "running":
                 return index
         for index, step in enumerate(goal.steps):
-            if step.status == "blocked":
+            if index >= start and step.status == "blocked":
                 return index
         for index, step in enumerate(goal.steps):
-            if step.status == "pending":
+            if index >= start and step.status == "pending":
                 return index
         if goal.steps:
             return len(goal.steps) - 1
@@ -198,7 +223,7 @@ class AgentGoalStateMachine:
     @staticmethod
     def blocked_act_step_index(goal: AgentGoalLike) -> int | None:
         for index, step in enumerate(goal.steps):
-            if step.phase == "acting" and step.status == "blocked":
+            if index >= active_phase_start(goal) and step.phase == "acting" and step.status == "blocked":
                 return index
         return None
 
@@ -208,6 +233,8 @@ class AgentGoalStateMachine:
             return "completed"
         if goal.status == "failed":
             return "failed"
+        if goal.status == "cancelled":
+            return "cancelled"
         if goal.status == "paused":
             return "paused"
         if step and step.phase:

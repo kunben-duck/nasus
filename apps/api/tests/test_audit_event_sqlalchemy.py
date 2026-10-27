@@ -22,7 +22,9 @@ def _cleanup(event_id: str) -> None:
         session.execute(delete(AuditEventRecord).where(AuditEventRecord.id == event_id))
 
 
-def test_sql_audit_is_idempotent_for_identical_retries_and_immutable_after_commit() -> None:
+@pytest.mark.parametrize("status", ["accepted", "reviewed", "approved", "rejected", "withdrawn",
+    "prepared", "build_attested", "recorded", "issued", "reserved", "passed", "error", "timed_out"])
+def test_sql_audit_is_idempotent_for_identical_retries_and_immutable_after_commit(status) -> None:
     init_database()
     event_id = f"audit_sql_{uuid4().hex[:10]}"
     first_process = SQLAlchemyAuditEventPersistence(ConversationRepository())
@@ -35,7 +37,7 @@ def test_sql_audit_is_idempotent_for_identical_retries_and_immutable_after_commi
         action="tool.invocation.completed",
         entity_type="tool_invocation",
         entity_id=f"tool_{event_id}",
-        status="accepted",
+        status=status,
         summary="Tool completed",
         tool_invocation_id=f"tool_{event_id}",
     )

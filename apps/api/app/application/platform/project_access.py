@@ -7,7 +7,9 @@ from uuid import uuid4
 
 from .account_models import UserProfile
 from .errors import PlatformApplicationError
+from .invocation_resource_policy import InvocationResourcePolicyPort
 from .project_models import ProjectRoleBinding
+from .tool_models import ToolResult
 from ...domain.platform.rbac import ROLE_ORDER, ToolRBAC
 
 
@@ -38,6 +40,9 @@ class InvocationAccessScope:
     conversation_id: str | None
     input_payload: Mapping[str, Any]
     object_refs: Sequence[str]
+    tool_id: str = ""
+    status: str = "pending"
+    result: ToolResult | None = None
 
 
 class ProjectAccessReadPort(Protocol):
@@ -75,6 +80,7 @@ class ProjectAccessApplicationService:
         self._repository = repository
         self._read_model = read_model
         self._actor_provider = actor_provider
+        self.invocation_resource_policy: InvocationResourcePolicyPort | None = None
 
     def grant_creator(self, project_id: str, user: UserProfile | None = None) -> ProjectRoleBinding:
         actor = self._actor(user)
@@ -238,6 +244,11 @@ class ProjectAccessApplicationService:
             )
         return actor.model_copy(update={"role": binding.role})
 
+    def current_actor(self) -> UserProfile:
+        """Trusted request/worker identity, not a project membership decision."""
+        actor = self._actor(None)
+        return actor.model_copy(update={"role": ToolRBAC.normalize_role(actor.role)})
+
     def require_conversation_access(self, conversation: Any, user: UserProfile | None = None) -> None:
         actor = self._actor(user)
         if ToolRBAC.normalize_role(actor.role) == "platform_admin":
@@ -255,7 +266,7 @@ class ProjectAccessApplicationService:
     def can_access_conversation(self, conversation: Any, user: UserProfile | None = None) -> bool:
         try:
             self.require_conversation_access(conversation, user)
-        except PlatformApplicationError:
+        except (PlatformApplicationError, KeyError):
             return False
         return True
 
@@ -281,8 +292,25 @@ class ProjectAccessApplicationService:
                 return project_id
         return None
 
+    def require_invocation_project_scope(self, invocation: Any) -> None:
+        project_id = invocation.input_payload.get("project_id")
+        if not isinstance(project_id, str) or not project_id:
+            raise PlatformApplicationError("project_required", "An explicit project is required.", 400)
+        self.require_project_access(project_id)
+        if invocation.conversation_id:
+            conversation = self._read_model.conversation_scope(invocation.conversation_id)
+            if conversation is None:
+                raise KeyError("conversation not found")
+            self.require_conversation_access(conversation)
+            if conversation.project_id and conversation.project_id != project_id:
+                raise PlatformApplicationError(
+                    "conversation_project_mismatch", "Evidence must belong to the conversation project.", 403,
+                )
+
     def can_access_invocation(self, invocation: Any, user: UserProfile | None = None) -> bool:
         actor = self._actor(user)
+        if self.invocation_resource_policy is not None and not self.invocation_resource_policy.can_access(invocation, actor):
+            return False
         if ToolRBAC.normalize_role(actor.role) == "platform_admin":
             return True
         project_id = self.project_id_for_invocation(invocation)

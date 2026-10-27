@@ -90,6 +90,15 @@ class ToolRBAC:
         )
 
     def required_roles(self, tool: ToolAuthorizationSubject) -> tuple[str, ...]:
+        if tool.tool_id in {"quality.automation.generate", "query.quality.automation_execution",
+                "quality.http_fixture.authorize", "query.quality.http_fixture_grant",
+                "quality.http_fixture.execute", "query.quality.http_fixture_execution", "quality.http_fixture.cancel",
+                "quality.run_plan.execute_http", "quality.run_plan.cancel_http", "query.quality.run_plan_case_execution",
+                "query.quality.http_fixture_operations", "query.quality.http_fixture_operation", "query.quality.http_fixture_operation_observation",
+                "quality.native_build.prepare", "query.quality.native_build_preview", "quality.native_build.cancel"}:
+            return self._roles_at_least("project_admin")
+        if tool.tool_id in {"query.quality.test_design_review_drafts", "query.system_image.context.authority_backfill", "query.quality.http_fixture_recipe"}:
+            return self._roles_at_least("qa_lead")
         if tool.tool_kind == "query":
             return self._roles_at_least("viewer")
 

@@ -10,6 +10,8 @@ export type ProjectRouteContext = {
   project: ProjectCard
   workspace?: ProjectWorkspaceData
   systemImage?: SystemImageData
+  systemImageError?: boolean
+  reviewingBuild?: boolean
   releaseReadiness?: ReleaseReadiness
   messages: MessageRow[]
   agentGoal?: AgentGoal
@@ -21,12 +23,15 @@ export type ProjectRouteContext = {
   prompt: string
   setPrompt: (value: string) => void
   runPrompt: () => void
+  stopPrompt: () => void
   invokeProjectAction: (actionId: StudioActionId, input?: Record<string, unknown>) => void
-  confirmPendingGoal: () => void
+  confirmPendingGoal: () => Promise<void>
+  continueStructuralInvestigation: () => Promise<void>
   initializeSystemImage: () => void
-  buildSystemImageFromSources: (sources: StudioSourceBindingValues) => void
+  buildSystemImageFromSources: (sources: StudioSourceBindingValues) => Promise<void>
   confirmToolInvocation: (invocationId: string) => void
   loading: boolean
+  streaming: boolean
   activeActionId: string | null
 }
 

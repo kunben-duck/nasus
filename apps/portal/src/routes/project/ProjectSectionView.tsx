@@ -2,6 +2,7 @@ import { ProjectSectionToolbar } from './sections/primitives/ProjectSectionToolb
 import { renderProjectSection, titleForProjectSection } from './ProjectSectionRegistry'
 import type { ProjectSection, ProjectSectionParams } from './ProjectSectionRegistry'
 import type { ProjectRouteContext, ProjectRouteShellState } from './ProjectRouteTypes'
+import { useI18n } from '../../shared/i18n/I18nProvider'
 
 export function ProjectSectionView({
   section,
@@ -14,10 +15,11 @@ export function ProjectSectionView({
   shellState: ProjectRouteShellState
   params: ProjectSectionParams
 }) {
+  const { tx } = useI18n()
   return (
-    <section className="agent-workspace project-section-route" data-testid={`project-${section}-route`}>
+    <section className={`agent-workspace project-section-route${section === 'knowledge' ? ' knowledge-workspace' : ''}`} data-testid={`project-${section}-route`}>
       <ProjectSectionToolbar
-        title={titleForProjectSection(section)}
+        title={tx(titleForProjectSection(section))}
         sidebarCollapsed={shellState.sidebarCollapsed}
         toggleSidebar={shellState.toggleSidebar}
       />

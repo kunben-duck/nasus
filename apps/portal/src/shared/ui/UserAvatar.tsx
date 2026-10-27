@@ -1,4 +1,5 @@
 import { findAvatarPreset } from './avatarPresets'
+import { useI18n } from '../i18n/I18nProvider'
 
 export type UserAvatarView = {
   name?: string | null
@@ -20,6 +21,7 @@ export function UserAvatar({
   imageUrl?: string
   className?: string
 }) {
+  const { t, tx } = useI18n()
   const preset = findAvatarPreset(user?.avatar_preset)
   const legacyAvatarUrl = user?.avatar_url?.trim()
   const avatarUrl = legacyAvatarUrl || imageUrl
@@ -28,9 +30,9 @@ export function UserAvatar({
     <span
       className={`avatar ${avatarUrl ? 'with-image' : ''} ${preset ? 'with-preset' : ''} ${className}`.trim()}
       style={preset ? { background: preset.background } : undefined}
-      title={preset?.label}
+      title={preset ? tx(preset.label) : undefined}
     >
-      {avatarUrl ? <img src={avatarUrl} alt={`${user?.name || 'User'} avatar`} /> : null}
+      {avatarUrl ? <img src={avatarUrl} alt={user?.name ? `${user.name} · ${t('User avatar')}` : t('User avatar')} /> : null}
       {!avatarUrl && preset ? <span className="avatar-preset-glyph" aria-hidden="true">{preset.glyph}</span> : null}
       {!avatarUrl && !preset ? userInitial(user) : null}
     </span>

@@ -1,5 +1,6 @@
 import type { QualityAssetPanelView } from '../projectWorkspaceSelectors'
 import { LatestRunRow } from './quality-asset/LatestRunRow'
+import { QualityDraftNotice } from './quality-asset/QualityDraftNotice'
 import { QualityLaneGrid } from './quality-asset/QualityLaneGrid'
 import { QualityLoopStateCard } from './quality-asset/QualityLoopStateCard'
 import { QualityPanelHeader } from './quality-asset/QualityPanelHeader'
@@ -13,6 +14,7 @@ export function QualityAssetPanel({ model }: { model?: QualityAssetPanelView }) 
     <div className="quality-asset-panel" data-testid="quality-asset-panel">
       <QualityPanelHeader header={model.header} />
       <QualityLoopStateCard qualityState={model.qualityState} />
+      <QualityDraftNotice lanes={model.lanes} />
       <QualityLaneGrid lanes={model.lanes} />
       <LatestRunRow latestRun={model.latestRun} />
     </div>

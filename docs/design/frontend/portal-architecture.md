@@ -68,12 +68,53 @@ apps/portal/src/
 - `domains/*` 提供对应产品域的 view model、query key、mutation 和事件 reducer 适配。
 - `shared/ui` 沉淀 AI Studio 风格 primitive：composer、settings popover、icon button、skill chip、project card、status badge。
 - `shared/ui` 只沉淀产品无关 primitive。Nasus 顶层侧栏、项目空间导航、设置锚点和账户 chrome 属于 `app/shells`，不能放入 shared。
+- `shared/i18n` 是统一国际化资源目录：简体中文（`zh-CN`）为默认主语言，英文（`en`）为辅助语言；页面不得内联双语分支或维护两套 JSX。
 - `shared/tokens` 是唯一视觉 token 来源，所有线性图标遵循 AI Studio 轻线条风格：约 `1.5px` stroke、圆角端点、16-18px 视觉盒、不可被压扁或拉伸。
 - 生产 Portal 的字体和图标字体必须随应用自托管并保留上游许可证，不允许把 Google Fonts、Material Symbols 或 Font Awesome CDN 作为首屏加载依赖；网络隔离或第三方 CDN 抖动不得阻塞 route `load` 与 E2E。
 - `NasusStudio`、`PrototypeStudio`、`TopLevelStudio` 仅作为迁移期视觉参考，不允许新增业务逻辑。
 - 登录 token 的浏览器持久化属于 `domains/platform/authTokenStorage.ts`。
   `shared/api/client.ts` 只能通过可配置 token provider 附加 auth header，
   不得直接读写 `localStorage` 或持有具体 storage key。
+
+RunPlan 业务执行准入：
+
+RunPlan 原业务执行入口采用 `domains/quality-loop` 的 typed API、纯协议校验、
+session recovery 和 domain hook；route section 只渲染完整原 case/setup 清单及
+独立执行/取消确认。引用核验只读既有 environment/locator/fixture 端口，不允许
+页面自声明 native 权限或直连 Runner。写操作先持久幂等请求，再通过 canonical
+ToolInvocation 创建及同 ID 确认；刷新只解析原请求，不重发或自动确认。私有历史
+必须完整校验版本、case roster、job/claim/observation 和 oracle pins；撤权/错误
+隐藏结果，unknown 不提供替代尝试。当前只验证同会话恢复及隔离浏览器替身，
+跨会话发现、QA 角色和真实目标闭环仍待完成，详见
+[RunPlan 业务任务](../system-image/run-plan-case-jobs.md)。
+
+国际化准入：
+
+- 静态用户文案必须进入 `shared/i18n/messages.ts`，通过 `useI18n().t` 渲染。
+- API 返回的状态、类型和受控动态文案通过 `useI18n().tx` 渲染；后端继续返回稳定枚举值，不返回本地化标识符。
+- 产品名、`tool_id`、模型名、代码、路径、JSON key 和 API 字段保持原文，不得翻译。
+- 设置中的语言切换必须即时生效，并同步持久化到 `/v1/settings` 与本地启动缓存；登录后的后端设置是最终事实来源。
+- 文档根节点语言随设置切换为 `zh-CN` 或 `en`，刷新后必须恢复上次选择。
+- 卡片和按钮生成的 Agent 指令以及 LLM Gateway 输出必须遵循当前语言；中文要求专业、简洁、目标明确，同时保留技术标识符。
+- 禁止新增 `tr(en, zh)`、页面级翻译对象或分散的语言判断；新增语言只能扩展统一资源目录和 Provider。
+- `npm run test:i18n` 扫描 TSX 中未经注册的可见文案；品牌、模型名、代码与 Material Symbols 等技术标识使用显式白名单，不得以扩大白名单代替补充翻译资源。
+
+中文措辞规范：
+
+- 按用户正在完成的任务组织句子，按钮用简短的动词短语，提示先说明结果，再说明下一步；避免逐词照搬英文语序。
+- 沿用“系统画像、质量闭环、项目基线”等产品术语；`Agent-first` 使用“Agent 驱动”，模型类别统一为“对话模型、向量模型、重排模型”。标题不得再次追加“模型”造成重复。
+- 面向用户使用“需求文档、用户故事、验收条件”，技术编号和代码中的 `US`、`AC` 保留原样。“义务”写为“必测项”，“模型出口”写为“发送给模型的数据”，“物化上下文”写为“生成或整理上下文”。
+- 版本与证据提示使用“所选版本、快照、审阅结论”，保留不可修改、批准范围、授权地址和失效条件等准确含义。候选、模型推断和已批准依据必须清楚区分。
+- 结果不明确时写“尚未确认是否成功”，不要直接断言失败；提供刷新状态或查看历史的下一步，保留不会自动重复提交的说明。
+- 动态提示只翻译已知模板，参数中的项目名、模型名、工具 ID、地址和原始错误细节保持原样。加载状态统一使用中文省略号“…”；英文资源键与参数占位符保持稳定。
+
+导航约定：
+
+- 顶层“系统画像、质量闭环、执行记录”分别进入 `/system-image`、`/quality-loops`、`/runs` 的项目选择页，不得统一回跳仪表盘或自动选择首个项目。
+- 项目选择页只消费服务端返回的可访问真实项目，展示完整列表；加载、无项目和服务错误必须区分，不得用预览模板替代可操作项目。
+- 选择项目后，三个入口分别打开 `/projects/:projectId/knowledge`、`/projects/:projectId/versions`、`/projects/:projectId/runs`；质量闭环复用版本与用户故事看板，再由用户进入具体用户故事工作台。
+- 项目内侧栏的选中状态以 URL 为准。知识对象详情、执行详情、版本创建、用户故事工作台、审批详情均归入对应导航组，刷新和浏览器前进后退保持一致。
+- 导航不得触发工具写动作。移动端隐藏文字时，按钮仍须保留明确的可访问名称。
 
 写动作边界：
 

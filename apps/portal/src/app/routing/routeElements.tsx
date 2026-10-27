@@ -8,6 +8,7 @@ import { DashboardRoute } from '../../routes/dashboard/DashboardRoute'
 import { DocumentationRoute } from '../../routes/documentation/DocumentationRoute'
 import { ProjectOverviewRoute } from '../../routes/project-overview/ProjectOverviewRoute'
 import { ProjectSectionRoute } from '../../routes/project/ProjectSectionRoute'
+import { ProjectDirectoryRoute } from '../../routes/project-directory/ProjectDirectoryRoute'
 
 export const requireAuthElement = <RequireAuth />
 export const welcomeElement = <PublicAuthRoute><WelcomeRoute /></PublicAuthRoute>
@@ -15,6 +16,9 @@ export const loginElement = <PublicAuthRoute><LoginRoute /></PublicAuthRoute>
 export const registerElement = <PublicAuthRoute><RegisterRoute /></PublicAuthRoute>
 export const buildElement = <BuildRoute />
 export const dashboardElement = <DashboardRoute />
+export const systemImageDirectoryElement = <ProjectDirectoryRoute feature="system-image" />
+export const qualityLoopDirectoryElement = <ProjectDirectoryRoute feature="quality-loops" />
+export const runsDirectoryElement = <ProjectDirectoryRoute feature="runs" />
 export const documentationElement = <DocumentationRoute />
 export const projectOverviewElement = <ProjectOverviewRoute />
 export const projectVersionsElement = <ProjectSectionRoute section="versions" />

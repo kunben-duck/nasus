@@ -150,6 +150,16 @@ This is intentional for V1 stability:
   implemented by
   `infrastructure/system_image/ingestion_projection.py`. Application ingestion
   code must not import or retain `ApplicationStore`.
+- Canonical source acquisition enters through `SourceAcquisitionIntentPort`.
+  Pure intent/result values live in `domain/system_image`; PostgreSQL admission,
+  result/progress integrity and manifest consumption live in the persistence
+  adapter. Inventory, revision, result, progress and Outbox share a transaction;
+  manifest members/head, consumption receipt, progress and Outbox share another.
+  Recovery verifies the original running command and current durable identity,
+  project/source ACL and full original result roster. It must not infer history
+  from retained SSE events, substitute a newer archive or create missing pins.
+  This protocol is not a worker lease. Legacy noncanonical ingestion is not yet
+  cut over, and compatibility chunks/projections remain outside these commits.
 - All system-image application state, persistence, object storage, embedding,
   rerank, project-access, and read-model refresh operations enter through
   `application/system_image/ports.py`. The production adapter is
@@ -160,6 +170,32 @@ This is intentional for V1 stability:
   composition. Both adapters receive repositories, provider clients, model
   settings/key providers, access policy, read-model refresh, and object storage
   as explicit constructor dependencies; neither may discover `ApplicationStore`.
+- Canonical handlers enter the required `ToolOperationScopePort` before dispatch.
+  Production injects the workspace's operation session; platform runtime does
+  not import a concrete workspace, ORM or ContextVar. A ContextVar holding a
+  mutable dictionary is not isolation: each operation must allocate its own
+  staging dictionary and restore the caller context on success, failure and
+  cancellation. Scope creation neither authorizes work nor auto-commits it.
+- Compatibility materialization consumes `MaterializationInputApplicationService`
+  admission and an obligatory `PreparedImageCandidate`. It must not call ingestion,
+  reopen mutable paths or use an optional candidate to bypass the frozen manifest.
+  Source and current ACL checks remain independent of operation-local staging.
+- Production materialization requires `MaterializationCommandInputPort` and its
+  original running canonical invocation. PostgreSQL pins the exact source manifest,
+  actor and command digest together with the consumption marker and Outbox before
+  extraction. Recovery reads that original manifest, never latest-input substitution
+  or implicit history repair. `us.task.start` must not hide a noncanonical rebuild.
+  Source pins are not worker leases, immutable output receipts or atomic completion.
+- Frozen extraction admits native code structure, not cross-source label heuristics.
+  Requirements, ACs, rules, cases and scripts remain distinct source projections;
+  inventory metrics must not imply verified coverage or business authority. Typed
+  semantic claims and independent reviewer decisions use their own application ports.
+  Marked unassessed inventory propagates null quality scores and confidence through
+  compatibility DTOs and PostgreSQL; historical unmarked values are not rewritten.
+  Release policy blocks unknown assessment. Governance rechecks current saved
+  readiness and execution evidence through its application port before reusing a
+  decision or promoting a baseline; approval must not override missing evidence.
+  This check is not an atomic target-build/oracle ReleaseContext.
 - Production project, system-image, and quality-loop reads are PostgreSQL
   read-through queries. The composition root must not hydrate shared project
   mappings or compose `SystemImageProjectionState`. The legacy
@@ -406,6 +442,11 @@ HTTP auth middleware may:
 - Parse Authorization headers and public-path exemptions.
 - Map authentication failures to the unified HTTP error response body.
 - Resolve platform account sessions through the platform authentication service.
+- Resolve local/static configured identities through an injected read-only
+  authenticator. Protected requests require the current persistent identity,
+  status and role; environment configuration is not a substitute for these
+  facts. Only startup composition may register a missing configured operator,
+  and must not overwrite administrator changes or take over a password user.
 - Bind the authenticated user only by calling
   `PlatformApplicationService.bind_authenticated_user`; this keeps the
   composition root from mutating the compatibility store directly.
@@ -413,6 +454,8 @@ HTTP auth middleware may:
 HTTP auth middleware must not:
 
 - Own RBAC, approval, or governance policy rules.
+- Recreate missing identities, restore suspended accounts, or cache the
+  configured role as an authorization decision.
 - Mutate project, system-image, agent, or quality-loop facts.
 - Assign `store.user` or any other `ApplicationStore` state directly; current
   user binding is an application-layer platform account use case.
@@ -850,11 +893,14 @@ Current compatibility services:
   `SystemImageModelRouteUnavailableError`; mock hash vectors and rule-based
   rerank output are development-only and must never be persisted as an
   Official System Image fact.
-- `application/system_image/materialization_snapshot.py`: transaction snapshot
+- `application/system_image/materialization_snapshot.py`: compatibility rollback snapshot
   for context materialization. Source ingestion remains an independently
   durable fact, while extracted objects, relationships, metrics, US work
   items, embeddings, retrieval/rerank records, task contexts, and quality
   profiles are restored together when provider or persistence work fails.
+  This is not one PostgreSQL/MinIO/model transaction, owner fencing or an
+  atomic concurrent-publication guarantee. Source-head conflicts must not
+  restore this snapshot over another command's source facts.
 - `application/system_image/system_image_models.py`: canonical system-image
   application contract DTOs for raw assets/chunks, knowledge objects,
   baselines, context relationships/overlays, quality metric snapshots,
@@ -894,7 +940,9 @@ Current compatibility services:
   risk, coverage, automation feasibility, release scoring, and risk-driver
   explanations. `SystemImageService` may pass current project counters and
   materialized metrics to this policy, but it must not own these scoring
-  formulas inline.
+  formulas inline. Marked source inventory is not an assessment: return null for
+  scores and confidence even when mixed with old numbers. Unmarked historical
+  compatibility formulas and TaskContext readiness do not grant execution authority.
 - `domain/system_image/us_work_items.py`: pure policy for deriving US work
   items from system-image knowledge objects and for assigning default quality
   asset lanes. `SystemImageUSWorkItemApplicationService` may map these
@@ -1457,6 +1505,238 @@ proper bounded context instead of adding more store logic.
 - `infrastructure/persistence` owns SQLAlchemy models and repository adapters.
 - Tests cover domain units, application use cases, infrastructure adapters, and
   public API contracts separately.
+
+## Reviewed Cases To Automation Inputs
+
+- `application/quality_loop/automation_inputs.py` composes verified mapping,
+  archived case-result, generation-input and current-authorization ports. It
+  does not use ORM, FastAPI, providers, runners or mutable workspace facts.
+- `domain/quality_loop/automation_input.py` retains exact case/oracle pins and
+  the complete obligation denominator. Compilation is pure and grants no
+  generation, execution or passed-coverage authority.
+- `interface/http/routers/automation_inputs.py` performs request/response and
+  typed error conversion only. The read-only preview is not a command, grant
+  or lease for a later provider or runner call.
+- New mapping and context-invalidation events refresh project-scoped private
+  consumers. Historical artifacts and event payloads are never repaired by
+  ordinary reads or rewritten to manufacture current-use authority.
+- The Portal separates validation, transport, query lifecycle and rendering.
+  A later automation command must still use ToolInvocationRuntime with fixed
+  environment/locator/fixture inputs, independent budget and script review.
+  This preview does not replace the legacy automation consumer or complete
+  the five-purpose context and target-execution requirements.
+
+## Runner Observations
+
+- Original RunPlan HTTP case observations use a pure complete-roster compiler
+  and an application verification port; physical byte/oracle verification lives
+  under `infrastructure/runner`. Batch verification must not recompile the full
+  plan per case or mix separate attempts.
+- Private observation archives depend on declared artifact and saved-plan read
+  ports. They fix the original plan ID/archive hash, reauthorize its original
+  sources before and after reads, and reverify every stored response. The
+  archive use case must not dispatch runners/models, import ORM, change original
+  plans, or create execution/coverage authority. Canonical execution, PG facts,
+  audit/Outbox and orphan recovery remain separate work, not inferred from S3.
+- Missing native receipts may retain bounded adapter errors as unknown attempts,
+  never as verified dispatch, business failure, or passed coverage. Keep them
+  separate from cases with no submitted result; reject corrupt partial proofs
+  rather than downgrading them. A new archive version must preserve old byte
+  contracts, and archive replay must not automatically retry a target request.
+- One archive operation, including write-after-read verification, may delegate
+  an operation-local verified-read scope through its saved-plan port. Only
+  already verified immutable source metadata is reused; original plan reads,
+  physical response checks and every live ACL check remain mandatory. Independent
+  reads open fresh scopes, and failures must close them without leaking state.
+  Nested context-source and candidate-recall reads explicitly reuse that scope;
+  acceptance authority, review heads, live source policies and actor authorization
+  must never be memoized with the immutable image. Actor changes independently
+  verify their image bytes, and authority/source revocation applies in the same
+  enclosing operation.
+- `domain/quality_loop/runner_observations.py` validates primitive execution
+  receipts against exact submitted scope, wire hash and every original step.
+  It does not call browsers, object storage, ORM, HTTP or application services.
+- The HTTP adapter creates one UTF-8 wire body and verifies the authenticated
+  runner response before accepting artifacts or a passing status. The runner
+  hashes the actual received bytes, not a caller-supplied digest or metadata.
+- Only actual assertion steps contribute observation counts. Interrupted and
+  unexecuted steps cannot become passed via late browser callbacks. Neither
+  these counts nor navigation-only success prove business coverage, an
+  independently approved oracle, or a matching deployed build.
+- Runner reports archive the verified receipt privately; generic artifact
+  records do not invent `case_set:current` associations. Formal fixed-case /
+  script / RunPlan and target-build provenance remain separate requirements.
+- Reports preserve the dispatched request and its exact wire hash, including
+  the originally selected compatibility TaskContext ID. Result construction
+  must not reread a mutable latest context after the runner returns.
+- New executions use one `commit_run_execution` application port: all Run and
+  evidence metadata commit in one PG transaction without replacing peer runs.
+  Legacy projections update only after commit. S3 orphans and canonical
+  audit/outbox/terminal atomicity remain explicit separate requirements.
+- All Run persistence paths share the complete field mapper. Compatibility
+  writes must not silently erase execution targets, plans or retry identities.
+
+## Original Observation Registration
+
+- `RunPlanObservationRecordApplicationService` consumes saved-plan, original
+  response-verification, private-artifact and repository ports. It must not
+  dispatch a runner, call a model or transfer preparation/build consent.
+- The canonical write accepts hashes and exact original attempt identity, not
+  caller-provided URLs, inline result bodies, coverage totals or authority.
+  Complete source access and fresh same-actor reviewer confirmation are required.
+- PG registration, every original case/action/oracle member, audit and Outbox
+  commit in one transaction. Exact plan/image/manifest/hash ancestry, immutable
+  rows and unique original attempt prevent reassociation or overwriting history.
+- Private HTTP reads reverify original response bytes and all source access.
+  Agent receipts contain metadata only and are reauthorized before use; shared
+  conversation/event projections redact original inputs and receipt payloads.
+- Observation pass/fail counts, missing results and unknown outcomes remain
+  distinct from authorized execution or verified business coverage. Neither
+  recording nor replay may retry a target request or unblock a release gate.
+- Durable SSE replay verifies payload types, SQL envelope/sequence and the
+  original PG plan/build/observation fact in the read session. These fact events
+  have only their original command attribution and metadata patch, never private
+  response bodies. A damaged page is rejected before any event is emitted.
+  Replay must not invoke write-side projectors, backfill or create missing facts.
+  This is PG metadata integrity, not a substitute for source authorization and
+  physical artifact verification by the owning application read port.
+
+## Original Target Environment Inspection
+
+- `OwnedEnvironment` and `NativeEnvironmentObservation` are pure domain values.
+  They validate exact resource identity and a bounded observation, not deployment,
+  execution authority, fixture readiness, a business oracle or coverage.
+- `RunPlanEnvironmentApplicationService` reads the original saved RunPlan and
+  original build through owning application ports. Current source access and
+  reviewer role are required before and after inspection. Request payloads cannot
+  select a Docker ID, arbitrary URL, host path, inline inventory or authority flag.
+- The Docker protocol belongs only to `infrastructure/runner`. An opt-in private
+  operator registry binds project/environment to exact container/image/network
+  IDs. No automatic discovery, developer-resource fallback, deploy or cleanup is
+  allowed through this query. The original plan must pin the same registry digest.
+- Inspection verifies the actual mounted JAR hash, non-root users, owner labels,
+  bounded resources, selected isolation settings and exact network membership.
+  Metadata projection excludes environment variables and trailing JVM arguments.
+  Actual egress/host denial, dependency health and fixtures remain separate gates.
+- Generic receipt GET/list and Agent observations share strict historical
+  validation and original-input authorization. Cohort reads recheck current ACL;
+  they do not reinspect Docker or require the operator registry to remain present.
+  Invalid authorized history propagates integrity failure, not an empty list.
+- Shared conversation and durable tool events expose only redacted lifecycle
+  metadata. Tool JSON is not an independently archived native attestation;
+  `durable_native_observation_verified` remains false. No migration or execution
+  permission is inferred from this read-only feature.
+
+## Independent Native Environment Records
+
+- `EnvironmentObservationRecordApplicationService` records a native inspection
+  only through an independently confirmed canonical command. The original
+  read-only query remains side-effect free and keeps its v1 authority flags.
+- Full inventory belongs in a private project-scoped artifact; PostgreSQL stores
+  append-only metadata and exact compound plan/build ancestry, with audit and
+  Outbox in the same transaction. Never import caller inventory or probe JSON.
+- Historical reads reauthorize original sources before private bytes and verify
+  the archive against original parents. They never load the operator registry,
+  inspect Docker, repair facts, or dispatch Runner/model work.
+- A durable observation is not a live lease, fixture/physical isolation proof,
+  execution permission, or verified business coverage. Those authorities remain
+  separate gates. See `docs/design/system-image/native-environment-records.md`.
+
+## Original Instance Health Preflight
+
+- `NativeEnvironmentHealthObservation` validates the complete original response
+  cohort and exact container/image/start epoch. It derives health from SQL/PING
+  and the reported application status, never caller-supplied success flags.
+- `RunPlanEnvironmentHealthApplicationService` is an internal composed use case.
+  Original plan/build/source permissions, current reviewer role and registry
+  policy are rechecked before and after the fixed native probes. No ORM, Docker,
+  HTTP client or framework is imported by its application/domain contracts.
+- Only infrastructure may execute the fixed local probes with a bounded output,
+  timeout and access callback. The request cannot choose a URL, SQL, credentials,
+  container or command. PG connection identifiers cannot supply an external URI.
+- Original v1 inventory and 0105 record bytes remain unchanged. Health does not
+  prove business persistence, authorization correctness, fixture readiness or
+  execution permission. Independent `quality.run_plan.record_health` requires
+  fresh original-input confirmation before probes; 0106 records private native
+  bytes plus original-parent metadata, audit and Outbox atomically. Original
+  history is reauthorized and reverified without registry, Docker or HTTP work.
+  No input JSON import, automatic backfill or execution dispatch is introduced;
+  health evidence remains separate from the full execution lifecycle.
+  See `docs/design/system-image/native-target-health.md`.
+
+## Bounded Planner Registry Transport
+
+- Internal planner registry encoding belongs to `application/agent`, not the
+  canonical Tool Catalog, public API, domain identity or execution authority.
+- Prefix factoring must roundtrip every canonical ID in registry order. Relevant
+  details retain full IDs, complete required inputs and risk/confirmation fields.
+  Never remove governance or silently truncate IDs to fit the prompt budget.
+- Both planner prompts explain the versioned transport. Returned plans still use
+  full canonical IDs and pass the original scope/input policy and ToolRuntime.
+  An encoded membership list cannot supply missing inputs or confirmation.
+- The 12-detail/6999-byte contract remains bounded and fail-closed. Public tool
+  definitions and existing ToolInvocation facts are not rewritten by the codec.
+
+## Original RunPlan Case Input Producer
+
+- `application/quality_loop/run_plan_cases` resolves the exact independently
+  confirmed command before private input reads. Its mandatory producer uses
+  application ports for original build, environment, locator and every setup;
+  client scope JSON, fixture consent and lease ownership are not business consent.
+- The producer checks complete frozen case/step/oracle membership and current
+  actor/source/target dependencies. Static locators and historical setup responses
+  remain observations, not verified coverage or release authority.
+- Read callbacks used inside a case write fence must not acquire the same project
+  lock through another session. Explicit readonly fixture history propagates to
+  recursive setup reads; it cannot adopt live worker fences or bypass original
+  immutable command ancestry, source access or raw response verification.
+- Blocking prerequisite I/O uses supervised threads. Cancellation joins owned
+  preparation work before returning, and optional target configuration is checked
+  before acquiring case dispatch slots rather than during unrelated API startup.
+- `ApplicationContainer.run_plan_cases` composes PG/MinIO/owned-runner adapters;
+  it is an internal execution core beneath the public case job use case.
+  Portal and actual PG/exweb case-to-coverage/release validation remain required, not replaced by
+  creating an arbitrary ToolInvocation or importing a protocol result.
+- Complete private case archives require S3/MinIO, bounded canonical bytes and
+  original project scope. No local/public archive fallback or shared response body.
+  See `docs/design/system-image/run-plan-case-inputs.md`.
+
+## Original RunPlan Case Claim Receipts
+
+- `ToolClaimJournal` composes fixture and case preparation hooks in the original
+  PostgreSQL ToolInvocation claim transaction. A claim is not target permission,
+  an execution outcome, business coverage or a renewable consent grant.
+- The case protocol marker is server-owned, stripped from client input and query
+  coordination, but retained in the complete immutable command digest. The pure
+  domain validates selection identities, original confirmation time and complete
+  preparation/work ancestry without importing ORM or workflow transports.
+- First work acquisition also records its original preparation binding. Missing
+  or damaged receipts cannot become legacy work or be repaired during a read.
+  Fixed migration 0119 adds append-only receipts and project/run uniqueness,
+  without changing or backfilling existing 0118 history.
+- Discovery is a bounded worker-only read port, not a public history endpoint,
+  a Temporal dispatch or an ownership claim. Historical readability cannot renew
+  execution permission; actual PG concurrency and exweb case
+  validation remain required. See `docs/design/system-image/run-plan-case-preparation.md`.
+
+## Original RunPlan Case Job Lifecycle
+
+- Public execute/cancel/query handlers use `application/quality_loop/run_plan_case_jobs`;
+  HTTP history is read-only and private/no-store. Writes remain canonical ToolRuntime
+  actions with independent confirmation and current administrator/source access.
+- Temporal adapters use the same original invocation workflow ID, reject duplicate
+  terminal restarts, heartbeat work and reconcile bounded receipt IDs. No workflow
+  transport or ORM enters the domain; the workflow engine is not native evidence.
+- Migration 0120 stores append-only cancellation/control and delivery ancestry.
+  Cancellation before work binding is durable; Tool status, audit and Outbox are
+  one PG transaction. Unknown cancel RPC never manufactures delivery or rollback.
+- Historical reads preserve original inputs and reauthorize the current reader,
+  without probing target health, adopting the reader as executor or renewing consent.
+  Complete original archives, not a worker return value or SSE event, gate completion.
+- Metadata receipts and private observations carry no formal coverage authority.
+  Portal, resource binding, unknown recovery, real external-stack/exweb validation
+  and complete P0-P6 acceptance remain required. See
+  `docs/design/system-image/run-plan-case-jobs.md`.
 
 ## New Code Checklist
 

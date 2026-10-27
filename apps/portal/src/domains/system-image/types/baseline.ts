@@ -12,6 +12,8 @@ export interface BaselineRecord {
   updated_at: string
 }
 
+export type ImageBaselineOption = Pick<BaselineRecord, 'id' | 'project_id'> & Partial<Pick<BaselineRecord, 'kind'>>
+
 export interface SystemImageBuildState {
   status:
     | 'source_required'
@@ -22,7 +24,8 @@ export interface SystemImageBuildState {
     | 'ready'
     | 'partially_failed'
     | 'failed'
-  stage_index: number
+    | 'visibility_limited'
+  stage_index: number | null
   stage_total: number
   label: string
   missing_source_types: string[]

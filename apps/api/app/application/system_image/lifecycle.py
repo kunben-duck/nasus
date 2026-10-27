@@ -9,11 +9,11 @@ class SystemImageLifecycleApplicationService:
     def __init__(self, operations: SystemImageOperationsPort) -> None:
         self._operations = operations
 
-    async def materialize_context(self, project_id: str):
-        return await self._operations.materialize_context(project_id)
+    async def materialize_context(self, project_id: str, *, invocation_id=None):
+        return await self._operations.materialize_context(project_id, **({"invocation_id": invocation_id} if invocation_id else {}))
 
-    async def initialize_baseline(self, project_id: str):
-        return await self._operations.initialize_baseline(project_id)
+    async def initialize_baseline(self, project_id: str, *, invocation_id=None):
+        return await self._operations.initialize_baseline(project_id, **({"invocation_id": invocation_id} if invocation_id else {}))
 
 
 __all__ = ["SystemImageLifecycleApplicationService"]

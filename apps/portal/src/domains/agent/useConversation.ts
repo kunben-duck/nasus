@@ -1,48 +1,49 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { SpaceType } from '../platform/types'
 import { agentApi } from './api'
+import { readConversationScope } from './conversationScopeQuery'
 import type { ConversationSession } from './types'
 import { useConversationEvents } from './useConversationEvents'
-
+import { useConversationTurn } from './useConversationTurn'
+import { createConversationMessageSender } from './conversationMessageSender'
 export function useConversation(
   spaceType: SpaceType,
   spaceId: string,
   title: string,
-  options: { enabled?: boolean } = {},
+  options: { enabled?: boolean; existingOnly?: boolean; canReadWorkspace?: () => boolean } = {},
 ) {
   const queryClient = useQueryClient()
-  const enabled = options.enabled ?? true
-
+  const enabled = options.enabled ?? true, existingOnly = options.existingOnly ?? false
   const conversationQuery = useQuery({
-    queryKey: ['conversation-scope', spaceType, spaceId],
-    queryFn: () => agentApi.ensureConversation(spaceType, spaceId, title),
+    queryKey: ['conversation-scope', spaceType, spaceId, existingOnly],
+    queryFn: ({ signal }) => readConversationScope(spaceType, spaceId, title, existingOnly, signal, options.canReadWorkspace),
+    gcTime: existingOnly ? 0 : undefined,
+    retry: existingOnly ? false : undefined,
     enabled,
   })
-
   const conversationId = conversationQuery.data?.id
-
   const snapshotQuery = useQuery({
     queryKey: ['conversation', conversationId],
     queryFn: () => agentApi.getConversation(conversationId!),
     enabled: enabled && Boolean(conversationId),
   })
-
-  useConversationEvents({ conversationId, enabled })
-
-  const sendMutation = useMutation({
-    mutationFn: (content: string) => agentApi.postMessage(conversationId!, content),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
-    },
-  })
+  useConversationEvents({ conversationId, enabled, existingOnly, canReadWorkspace: options.canReadWorkspace })
+  const activeTurn = snapshotQuery.data?.active_turn
+  const turn = useConversationTurn({ conversationId, activeTurn, queryClient })
+  const turnIsActive = Boolean(activeTurn && !['completed', 'interrupted', 'failed'].includes(activeTurn.status))
 
   return {
-    conversation: snapshotQuery.data as ConversationSession | undefined,
+    conversation: snapshotQuery.isError ? undefined : snapshotQuery.data as ConversationSession | undefined,
     conversationId,
     isLoading: conversationQuery.isLoading || snapshotQuery.isLoading,
-    sendMessage: sendMutation.mutateAsync,
-    isSending: sendMutation.isPending,
+    sendMessage: createConversationMessageSender({ conversationId, enabled, existingOnly,
+      isError: conversationQuery.isError, canReadWorkspace: options.canReadWorkspace,
+      send: turn.mutation.mutateAsync }),
+    waitForTurn: turn.waitForTurn,
+    activeTurn,
+    cancelActiveTurn: turn.cancelActiveTurn,
+    refreshConversation: async () => (await snapshotQuery.refetch({ throwOnError: true })).data,
+    isSending: turn.mutation.isPending || turnIsActive,
   }
 }
 

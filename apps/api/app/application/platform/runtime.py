@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -7,6 +8,7 @@ from uuid import uuid4
 
 from ...domain.platform.rbac import AuthorizationDecision
 from .errors import PlatformApplicationError
+from .tool_receipt_access import require_receipt_access
 from .tool_models import AuditEvent, ToolDefinition, ToolInvocation, ToolInvocationRequest, ToolResult
 from .runtime_ports import (
     AgentReplyRuntimePort,
@@ -14,10 +16,14 @@ from .runtime_ports import (
     ToolAuthorizationRuntimePort,
     ToolCatalogRuntimePort,
     ToolGovernanceRuntimePort,
+    ToolExecutionGrantRuntimePort,
     ToolInvocationEventRuntimePort,
     ToolInvocationRuntimeStatePort,
+    ToolOperationScopePort,
+    ToolWorkBudgetRuntimePort,
 )
 from .tool_handlers import ToolInvocationHandlerRegistry
+from .tool_invocation_ports import ToolInvocationAccessPort, ToolInvocationReadResourcesPort
 
 
 def _now_iso() -> str:
@@ -42,6 +48,11 @@ class ToolInvocationRuntime:
         agent_replies: AgentReplyRuntimePort,
         events: ToolInvocationEventRuntimePort,
         handlers: ToolInvocationHandlerRegistry,
+        operation_scope: ToolOperationScopePort,
+        execution_grants: ToolExecutionGrantRuntimePort | None = None,
+        replay_access: ToolInvocationAccessPort | None = None,
+        replay_resources: ToolInvocationReadResourcesPort | None = None,
+        work_budgets: ToolWorkBudgetRuntimePort | None = None,
     ) -> None:
         self._state = state
         self._catalog = catalog
@@ -51,6 +62,11 @@ class ToolInvocationRuntime:
         self._agent_replies = agent_replies
         self._events = events
         self.handlers = handlers
+        self._operation_scope = operation_scope
+        self._execution_grants = execution_grants
+        self._replay_access = replay_access
+        self._replay_resources = replay_resources
+        self._work_budgets = work_budgets
 
     async def create(self, payload: ToolInvocationRequest) -> ToolInvocation:
         canonical_tool_id = self.canonical_tool_id(payload.tool_id)
@@ -72,6 +88,7 @@ class ToolInvocationRuntime:
                     existing,
                     idempotency_fingerprint=idempotency_fingerprint,
                 )
+                self._require_replay_authorization(existing)
                 return existing
 
         invocation = ToolInvocation(
@@ -100,6 +117,7 @@ class ToolInvocationRuntime:
                 claimed_invocation,
                 idempotency_fingerprint=idempotency_fingerprint,
             )
+            self._require_replay_authorization(claimed_invocation)
             return claimed_invocation
         invocation = claimed_invocation
         self._audit(invocation, action="tool.invocation.created", status="pending", summary=invocation.summary)
@@ -117,6 +135,15 @@ class ToolInvocationRuntime:
 
     async def confirm(self, invocation_id: str) -> ToolInvocation:
         invocation = self._state.get_invocation(invocation_id)
+        # A denied confirmer must not consume another actor's pending command.
+        authorization = self._authorize(invocation)
+        if not authorization.allowed:
+            raise PlatformApplicationError(
+                "tool_confirmation_access_denied", "You are not authorized to confirm this tool invocation.", 403,
+            )
+        if self._replay_access is not None:
+            self._replay_access.require_invocation_access(invocation)
+        require_receipt_access(self._replay_resources, invocation)
         if invocation.status != "waiting_confirmation":
             return invocation
         invocation = self._state.claim_for_execution(
@@ -125,6 +152,7 @@ class ToolInvocationRuntime:
             input_updates={
                 "confirmed_by_user": True,
                 "confirmed_at": _now_iso(),
+                "confirmed_actor_id": self._authorization.current_actor_id(),
             },
         )
         if invocation is None:
@@ -139,6 +167,17 @@ class ToolInvocationRuntime:
         )
         return await self._execute_claimed(invocation)
 
+    def _require_replay_authorization(self, invocation: ToolInvocation) -> None:
+        # Idempotency retains business facts, not a past grant of access to them.
+        authorization = self._authorize(invocation)
+        if not authorization.allowed:
+            raise PlatformApplicationError(
+                "tool_replay_access_denied", "Access to this tool invocation has been revoked.", 403,
+            )
+        if self._replay_access is not None:
+            self._replay_access.require_invocation_access(invocation)
+        require_receipt_access(self._replay_resources, invocation)
+
     async def execute(self, invocation: ToolInvocation) -> ToolInvocation:
         """Dispatch to domain handlers after governance gates have passed."""
         claimed = self._state.claim_for_execution(
@@ -151,6 +190,10 @@ class ToolInvocationRuntime:
 
     async def _execute_claimed(self, invocation: ToolInvocation) -> ToolInvocation:
         """Execute an invocation after the durable state port won the claim."""
+        authorization = self._authorize(invocation)
+        if not authorization.allowed:
+            self._deny(invocation, authorization)
+            return self._state.get_invocation(invocation.id)
         handler = self.handlers.resolve(invocation.tool_id)
         self._audit(invocation, action="tool.invocation.executing", status="running", summary=f"Dispatching {invocation.tool_id}")
         if handler is None:
@@ -164,8 +207,21 @@ class ToolInvocationRuntime:
             self._persist(invocation)
             self._audit(invocation, action="tool.invocation.failed", status="failed", summary=invocation.summary)
         else:
+            if self._work_budgets is not None:
+                try:
+                    await asyncio.to_thread(self._work_budgets.reserve_tool_work, invocation)
+                except Exception:
+                    invocation.status = "failed"
+                    invocation.summary = "The original goal's cumulative tool budget is exhausted or cannot be verified; no handler was dispatched."
+                    invocation.result = ToolResult(invocation_id=invocation.id, status="failed", summary=invocation.summary,
+                        requires_followup=True, followup_reason="build_tool_budget_review",
+                        followup_prompt="Review the original goal's cumulative budget; changing phase or replaying does not reset consumption.")
+                    self._persist(invocation)
+                    self._audit(invocation, action="tool.invocation.budget_denied", status="failed", summary=invocation.summary)
+                    return invocation
             try:
-                await handler.handle(invocation)
+                with self._operation_scope.operation_session():
+                    await handler.handle(invocation)
             except Exception as exc:
                 invocation.status = "failed"
                 invocation.summary = f"Tool {invocation.tool_id} failed: {exc}"
@@ -205,6 +261,24 @@ class ToolInvocationRuntime:
         gate = self._governance.evaluate(tool, invocation)
         if not gate.is_blocking:
             return False
+
+        if (self._execution_grants is not None and gate.status == "waiting_confirmation"
+                and tool is not None and tool.risk_level == "medium" and tool.confirmation_mode == "user_confirm"):
+            try:
+                granted = await asyncio.to_thread(self._execution_grants.reserve_execution, invocation)
+            except Exception:
+                invocation.status = "failed"
+                invocation.summary = "Build execution consent is invalid, expired or exhausted; review the fixed plan and target before retrying."
+                invocation.result = ToolResult(invocation_id=invocation.id, status="failed", summary=invocation.summary,
+                    requires_followup=True, followup_reason="build_execution_authorization_review",
+                    followup_prompt="Review the persisted execution scope and budget; do not retry under different input pins.")
+                self._persist(invocation)
+                self._audit(invocation, action="tool.invocation.grant_denied", status="failed", summary=invocation.summary)
+                return True
+            if granted:
+                self._audit(invocation, action="tool.invocation.grant_reserved", status="accepted",
+                            summary="Reserved one work item under the goal's persisted build execution consent.")
+                return False
 
         invocation.status = gate.status
         invocation.summary = gate.summary
@@ -342,8 +416,11 @@ class ToolInvocationRuntime:
             "approved_by",
             "confirmed_at",
             "confirmed_by_user",
+            "confirmed_actor_id",
             "confirmed_by",
             "policy_snapshot_id",
+            "fixture_claim_protocol",
+            "case_claim_protocol",
         }
         return {key: value for key, value in input_payload.items() if key not in reserved_fields}
 

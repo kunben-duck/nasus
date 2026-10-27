@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 
 import { AuthParticleField } from './AuthParticles'
 import { useInteractiveParticles } from './useInteractiveParticles'
+import { useI18n } from '../../shared/i18n/I18nProvider'
 
 export function AuthLayout({
   eyebrow,
@@ -18,6 +19,7 @@ export function AuthLayout({
   children: ReactNode
 }) {
   const particleHandlers = useInteractiveParticles()
+  const { t } = useI18n()
 
   return (
     <main className="auth-shell welcome-shell ai-welcome-shell auth-landing-shell" {...particleHandlers}>
@@ -27,10 +29,10 @@ export function AuthLayout({
           <img src="/nasus.png" alt="Nasus" />
           <span>Nasus Studio</span>
         </Link>
-        <nav className="ai-welcome-nav" aria-label="Nasus product modules">
-          <Link to="/welcome#system-image">System image</Link>
-          <Link to="/welcome#agent-first">Agent-first</Link>
-          <Link to="/welcome#quality-loop">Quality loop</Link>
+        <nav className="ai-welcome-nav" aria-label={t('Nasus product modules')}>
+          <Link to="/welcome#system-image">{t('System image')}</Link>
+          <Link to="/welcome#agent-first">{t('Agent-first')}</Link>
+          <Link to="/welcome#quality-loop">{t('Quality loop')}</Link>
         </nav>
         {action}
       </header>

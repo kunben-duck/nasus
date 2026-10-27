@@ -12,6 +12,10 @@ from ...application.platform.actor_context import current_actor
 from ...domain.agent.state_machine import AgentGoalRuntimeCheckpoint
 from ..config.agent_runtime_config import TemporalGatewayConfig, temporal_gateway_config_from_env
 from ...domain.agent.runtime_models import AgentGoalProposal
+from ...domain.agent.image_plan_policy import BUILD_GOAL_TEMPLATES
+from ...domain.agent.resume_checkpoint import AgentResumeCheckpoint, AgentResumeCheckpointChanged, InvalidAgentResumeCheckpoint
+from ...domain.agent.goal_creation import ActiveAgentGoalExists
+from ...domain.agent.plan_policy import AgentPlanPolicyViolation
 
 
 class TemporalWorkflowHandleLike(Protocol):
@@ -53,12 +57,16 @@ class TemporalClientWorkflowGateway:
         checkpoint_provider: CheckpointProvider | None = None,
         workflow_id_provider: WorkflowIdProvider | None = None,
         goal_state_sink: GoalStateSink | None = None,
+        goal_state_reader: Callable[[str], AgentGoal] | None = None,
+        resume_replay_reader: Callable[[AgentResumeCheckpoint], bool] | None = None,
     ) -> None:
         self.config = config or temporal_gateway_config_from_env()
         self._client_factory = client_factory or self._default_client_factory
         self._checkpoint_provider = checkpoint_provider
         self._workflow_id_provider = workflow_id_provider
         self._goal_state_sink = goal_state_sink
+        self._goal_state_reader = goal_state_reader
+        self._resume_replay_reader = resume_replay_reader
         self._client: TemporalClientLike | None = None
 
     async def start_goal(self, conversation_id: str, proposal: AgentGoalProposal) -> AgentGoal:
@@ -72,7 +80,19 @@ class TemporalClientWorkflowGateway:
         )
         return await self._query_current_goal(handle, workflow_id=workflow_id)
 
-    async def resume_goal(self, goal_id: str) -> AgentGoal:
+    async def resume_goal(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
+        if expected_resume is not None and expected_resume.goal_id != goal_id:
+            raise AgentResumeCheckpointChanged()
+        if expected_resume is not None and self._goal_state_reader is not None:
+            current = self._goal_state_reader(goal_id)
+            expected_resume.require_scope(current.model_dump(mode="json"))
+            if self._resume_replay_reader is not None and self._resume_replay_reader(expected_resume):
+                return current
+            expected_resume.require_matches(current.model_dump(mode="json"))
+            if self._is_completion_review(current):
+                # The graph deliberately leaves this settled checkpoint intact.
+                # Sending a signal would wait for a fingerprint that cannot change.
+                return current
         client = await self._client_instance()
         workflow_id = self._workflow_id_for_goal(goal_id)
         handle = client.get_workflow_handle(workflow_id)
@@ -80,10 +100,15 @@ class TemporalClientWorkflowGateway:
             handle,
             workflow_id=workflow_id,
         )
-        current_goal = self._goal_from_payload(current_payload, workflow_id)
-        if current_goal.status in {"completed", "failed", "cancelled"}:
+        # An earlier request's rejection is not the outcome of this new signal.
+        current_goal = self._goal_from_payload(current_payload, workflow_id, reject_resume_error=False)
+        if expected_resume is not None and self._goal_state_reader is None:
+            expected_resume.require_matches(current_goal.model_dump(mode="json"))
+        if current_goal.status in {"completed", "failed", "cancelled"} or self._is_completion_review(current_goal):
             return self._accept_goal(current_goal)
         signal_payload: dict[str, Any] = {"goal_id": goal_id}
+        if expected_resume is not None:
+            signal_payload["expected_resume"] = expected_resume.payload()
         actor_payload = self._current_actor_payload()
         if actor_payload is not None:
             signal_payload["actor"] = actor_payload
@@ -161,10 +186,15 @@ class TemporalClientWorkflowGateway:
             await asyncio.sleep(self.config.query_poll_interval_seconds)
 
     @staticmethod
+    def _is_completion_review(goal: AgentGoal) -> bool:
+        return (goal.goal_template in BUILD_GOAL_TEMPLATES and goal.status in {"paused", "blocked"}
+                and goal.pause_reason == "build_completion_review" and goal.active_started_at is None)
+
+    @staticmethod
     def _is_goal_payload(payload: Any) -> bool:
         if isinstance(payload, AgentGoal):
             return bool(payload.id)
-        return isinstance(payload, dict) and bool(payload.get("id"))
+        return isinstance(payload, dict) and bool(payload.get("id") or payload.get("_start_error"))
 
     @staticmethod
     def _payload_fingerprint(payload: AgentGoal | dict[str, Any]) -> str:
@@ -172,7 +202,17 @@ class TemporalClientWorkflowGateway:
         return json.dumps(serializable, sort_keys=True, separators=(",", ":"), default=str)
 
     @staticmethod
-    def _goal_from_payload(payload: AgentGoal | dict[str, Any], workflow_id: str) -> AgentGoal:
+    def _goal_from_payload(payload: AgentGoal | dict[str, Any], workflow_id: str, *, reject_resume_error: bool = True) -> AgentGoal:
+        if isinstance(payload, dict) and payload.get("_start_error"):
+            code = payload["_start_error"]
+            goal_id = payload.get("goal_id")
+            if code == "active_agent_goal_exists" and type(goal_id) is str and goal_id:
+                raise ActiveAgentGoalExists(goal_id)
+            raise AgentPlanPolicyViolation(str(code), "The durable goal start was rejected; reread its original state before continuing.")
+        if reject_resume_error and isinstance(payload, dict) and payload.get("_resume_error"):
+            if payload["_resume_error"] == "agent_checkpoint_changed":
+                raise AgentResumeCheckpointChanged()
+            raise InvalidAgentResumeCheckpoint("The queued resume precondition was rejected.")
         if isinstance(payload, AgentGoal):
             goal = payload
         elif isinstance(payload, dict):
@@ -187,6 +227,14 @@ class TemporalClientWorkflowGateway:
         return goal
 
     def _accept_goal(self, goal: AgentGoal) -> AgentGoal:
+        if self._goal_state_reader is not None:
+            # Workflow queries are cursor projections, not permission to write
+            # an older snapshot over authoritative PostgreSQL facts.
+            current = self._goal_state_reader(goal.id)
+            if (current.conversation_id, current.project_id, current.workflow_id) != (
+                    goal.conversation_id, goal.project_id, goal.workflow_id):
+                raise AgentResumeCheckpointChanged()
+            return current
         if self._goal_state_sink is not None:
             self._goal_state_sink(goal)
         return goal

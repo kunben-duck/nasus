@@ -226,12 +226,14 @@ def release_ready(
 ):
     return SimpleNamespace(
         version_id=version_id,
+        status="Ready for release review" if score >= 80 and blockers == 0 else "Needs additional release evidence",
         score=score,
         blockers=blockers,
         approvals_open=approvals_open,
         pending_merge=pending_merge,
         execution_health=execution_health,
         summary=summary,
+        evidence_summary={},
     )
 
 
@@ -378,11 +380,17 @@ def test_quality_asset_revision_status_and_evidence_policy() -> None:
 
 def test_quality_asset_pack_completes_when_release_assessment_completes() -> None:
     parts = [
-        asset_part("automation_blueprint", "blocked", 2, ["run:1"]),
+        asset_part("automation_blueprint", "completed", 2, ["run:1"]),
         asset_part("release_assessment", "completed", 1, ["release:1"]),
     ]
 
     assert quality_asset_pack_status(parts) == "completed"
+
+
+def test_completed_release_cannot_hide_a_blocked_quality_asset() -> None:
+    parts = [asset_part("automation_blueprint", "blocked", 2, ["run:1"]),
+        asset_part("release_assessment", "completed", 1, ["release:1"])]
+    assert quality_asset_pack_status(parts) == "blocked"
 
 
 def test_quality_step_plan_scope_defines_lane_us_metric_and_asset_updates() -> None:
@@ -396,8 +404,8 @@ def test_quality_step_plan_scope_defines_lane_us_metric_and_asset_updates() -> N
     assert plan.us_update.status == "scope_ready"
     assert plan.us_update.next_action == "Generate scenarios"
     assert plan.metric_update.metric_dict() == {
-        "scope_items": 5,
-        "regression_focus": 0.76,
+        "measurement_basis": "generated_draft_inventory_not_quality_assessment",
+        "coverage_status": "unknown",
         "quality_context_required": True,
         "asset_lane_status": "ready_for_review",
     }
@@ -423,18 +431,19 @@ def test_quality_step_plan_scenario_plan_and_case_follow_v1_progression() -> Non
     )
     assert scenario.summary == "Generated scenario pack"
     assert [(item.lane_key, item.status) for item in scenario.lane_updates] == [
-        ("scenarios", "approved"),
+        ("scenarios", "ready_for_review"),
         ("verification", "ready_for_review"),
     ]
     assert scenario.us_update.progress == 42
     assert scenario.us_update.status == "scenario_ready"
-    assert scenario.metric_update.metric_dict()["scenario_groups"] == 8
+    assert "scenario_groups" not in scenario.metric_update.metric_dict()
+    assert scenario.metric_update.metric_dict()["coverage_status"] == "unknown"
     assert scenario.asset_part_update.part_type == "scenario_set"
     assert scenario.next_tools == ("quality.plan.generate",)
 
     assert verification.summary == "Generated verification plan"
     assert [(item.lane_key, item.status) for item in verification.lane_updates] == [
-        ("verification", "approved"),
+        ("verification", "ready_for_review"),
         ("cases", "ready_for_review"),
     ]
     assert verification.us_update.progress == 50
@@ -443,12 +452,13 @@ def test_quality_step_plan_scenario_plan_and_case_follow_v1_progression() -> Non
 
     assert cases.summary == "Generated test case pack"
     assert [(item.lane_key, item.status) for item in cases.lane_updates] == [
-        ("cases", "approved"),
+        ("cases", "ready_for_review"),
         ("automation", "ready_for_review"),
     ]
     assert cases.us_update.progress == 62
     assert cases.us_update.status == "cases_ready"
-    assert cases.metric_update.metric_dict()["test_cases"] == 14
+    assert "test_cases" not in cases.metric_update.metric_dict()
+    assert cases.metric_update.metric_dict()["coverage_status"] == "unknown"
     assert cases.metric_update.evidence_refs == (
         "case_set:current",
         "verification_plan:current",
@@ -518,7 +528,8 @@ def test_automation_quality_step_plan_success_moves_to_change_document() -> None
     assert plan.us_update.status == "execution_ready"
     assert plan.us_update.next_action == "Generate quality change document"
     assert plan.metric_update.metric_dict() == {
-        "automation_coverage": 0.74,
+        "measurement_basis": "runner_observation_not_quality_assessment",
+        "coverage_status": "unknown",
         "latest_run_status": "passed",
         "runner_mode": "local",
         "runner_job_id": "runner_job_1",
@@ -616,7 +627,12 @@ def test_release_quality_step_plan_blocks_lane_when_readiness_has_blockers() -> 
         "pending_merge": 1,
         "execution_health": "2 open FailureReport(s) require review.",
     }
-    assert plan.asset_part_update.status == "completed"
+    assert plan.us_update.status == "blocked"
+    assert plan.us_update.progress < 92
+    assert plan.us_update.next_action == "Resolve release evidence gaps"
+    assert plan.asset_part_update.status == "blocked"
+    assert "approval.request" not in plan.next_tools
+    assert quality_asset_pack_status([asset_part("release_assessment", "blocked", 1, [])]) == "blocked"
     assert plan.asset_part_update.summary == "Release is blocked."
 
 
@@ -759,13 +775,15 @@ def test_quality_step_guidance_known_steps_and_fallback_are_stable() -> None:
     assert quality_step_running_summary("scenarios") == "Generating scenario pack"
     assert (
         quality_step_assistant_followup("scenarios")
-        == "Next I will turn the approved scenario structure into executable test cases."
+        == "The generated scenarios remain drafts. Independent review is required before they can be treated as approved."
     )
     assert quality_step_running_summary("release") == "Assessing release readiness"
     assert (
         quality_step_assistant_followup("release")
         == "The quality loop is ready for human release review or governance follow-up."
     )
+    assert quality_step_assistant_followup("release", blocked=True) == (
+        "Release remains blocked. Resolve the quality and execution evidence gaps before requesting release approval.")
 
     fallback = quality_step_guidance("unknown")
     assert fallback.running_summary == "Running quality-loop tool"

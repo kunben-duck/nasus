@@ -1,28 +1,30 @@
 import type { ProjectRouteContext } from '../ProjectRouteTypes'
 import type { GovernanceApprovalCardView } from '../ProjectSectionViewModels'
 import { governanceSectionModel } from '../ProjectSectionViewModels'
+import { useI18n } from '../../../shared/i18n/I18nProvider'
 
 export function GovernanceSection({ context, approvalId }: { context: ProjectRouteContext; approvalId?: string }) {
+  const { t, tx } = useI18n()
   const { approvals, selected } = governanceSectionModel(context, approvalId)
 
   return (
     <>
       <div className="agent-heading">
-        <h1>Governance</h1>
+        <h1>{t('Governance')}</h1>
         <div className="segmented">
-          <button className="active">Pending</button>
-          <button>Resolved</button>
-          <button>Policy</button>
+          <button className="active">{t('Pending')}</button>
+          <button>{t('Resolved')}</button>
+          <button>{t('Policy')}</button>
         </div>
       </div>
       <div className="confirmation-gate-card">
         <div>
-          <span className="confirmation-kicker">Approval rail</span>
-          <strong>{selected?.title ?? 'No approval waiting'}</strong>
-          <p>{selected?.summary ?? 'High-risk tools pause here for confirmation, approval, or policy gates.'}</p>
+          <span className="confirmation-kicker">{t('Approval rail')}</span>
+          <strong>{selected ? tx(selected.title) : t('No approval waiting')}</strong>
+          <p>{selected ? tx(selected.summary) : t('High-risk tools pause here for confirmation, approval, or policy gates.')}</p>
         </div>
         <button className="composer-action-button build-submit-button" disabled={!selected}>
-          Review gate
+          {t('Review gate')}
         </button>
       </div>
       <div className="quality-lane-grid">
@@ -35,14 +37,15 @@ export function GovernanceSection({ context, approvalId }: { context: ProjectRou
 }
 
 function ApprovalCard({ approval }: { approval: GovernanceApprovalCardView }) {
+  const { tx } = useI18n()
   return (
     <div className={`quality-lane-card ${approval.status}`}>
       <div>
         <span className="quality-lane-dot" />
-        <strong>{approval.title}</strong>
+        <strong>{tx(approval.title)}</strong>
       </div>
-      <p>{approval.summary}</p>
-      <span>{approval.status}</span>
+      <p>{tx(approval.summary)}</p>
+      <span>{tx(approval.status)}</span>
     </div>
   )
 }

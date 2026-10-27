@@ -114,6 +114,31 @@ workflow worker、API 和 Portal。运行日志位于 `.nasus/dev/logs/`。
 单独调试 API 时使用 `npm run dev:api`，该命令同样加载统一开发环境并
 连接 PostgreSQL；不支持绕过 migration 继续写入历史 SQLite 状态文件。
 
+浏览器回归使用同一 PostgreSQL 服务上的一次性测试数据库：
+
+```bash
+npm run test:e2e
+npm run test:e2e -- tests/e2e/source-documents.spec.ts
+```
+
+该入口加载开发连接配置，由 `scripts/test-api-postgres.py` 创建随机
+`nasus_test_*` 数据库、执行迁移、启动独立测试 API/Portal，并在退出时清理。
+业务测试不写入开发库，也不回退到 SQLite；可用 `NASUS_TEST_DATABASE_URL`
+指定另一台本机 PostgreSQL 服务，连接角色需要创建数据库的权限。
+测试 API 的 Studio settings 当前是共享设置，浏览器回归默认单 worker，
+避免并发切换主题/语言导致样式断言和截图失真。
+
+需要验证真实 MinIO 归档时，可在已显式设置 `NASUS_TEST_DATABASE_URL`、
+`NASUS_TEST_S3_ENDPOINT`、`NASUS_TEST_S3_ACCESS_KEY` 和
+`NASUS_TEST_S3_SECRET_KEY` 后运行：
+
+```bash
+./.venv/bin/python scripts/test-api-postgres.py --minio apps/api/tests/test_source_evidence_api.py apps/api/tests/test_private_object_storage.py -q
+```
+
+`--minio` 只允许本地 S3 服务，创建随机私有 `nasus-test-*` 桶并在退出时清理；
+不会使用开发桶。默认不加此选项时仍使用隔离的本地对象适配器，不代表验证过 MinIO。
+
 生产化 Compose 拓扑验收入口：
 
 ```bash

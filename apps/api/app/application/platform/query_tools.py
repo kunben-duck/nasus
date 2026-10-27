@@ -121,7 +121,10 @@ class QueryToolApplicationService:
         conversation = self._read_model.get_conversation(invocation.conversation_id or "")
         content = plan.fallback_text
         metadata: dict[str, Any] = {"planner_kind": plan.planner_kind, "tool_id": invocation.tool_id}
-        if conversation:
+        # The fixed-input waiting command is a local read, not model-egress
+        # consent. The goal compiler verifies its target and request digest.
+        waiting = invocation.tool_id == "query.system_image.status" and "build_input_request" in invocation.input_payload
+        if conversation and not waiting:
             reply = await self._agent_replies.generate_reply(
                 conversation=conversation,
                 user_message=plan.user_message,
@@ -133,6 +136,60 @@ class QueryToolApplicationService:
             content = reply.content
             metadata = {**metadata, **reply.metadata}
         return QueryToolAnswer(content=content, metadata=metadata)
+
+    async def stream_answer(
+        self,
+        invocation: ToolInvocation,
+        plan: QueryToolPlan,
+        emit: Any,
+    ) -> QueryToolAnswer:
+        conversation = self._read_model.get_conversation(invocation.conversation_id or "")
+        if conversation is None:
+            emit({"kind": "started", "metadata": {"planner_kind": plan.planner_kind}})
+            emit({"kind": "delta", "delta": plan.fallback_text})
+            emit({"kind": "completed", "content": plan.fallback_text})
+            return QueryToolAnswer(
+                content=plan.fallback_text,
+                metadata={"planner_kind": plan.planner_kind, "tool_id": invocation.tool_id},
+            )
+
+        content_parts: list[str] = []
+        final_metadata: dict[str, Any] = {
+            "planner_kind": plan.planner_kind,
+            "tool_id": invocation.tool_id,
+        }
+        async for event in self._agent_replies.stream_reply(
+            conversation=conversation,
+            user_message=plan.user_message,
+            fallback_text=plan.fallback_text,
+            prompt_id=plan.prompt_id,
+            purpose="platform.query_tool_reply",
+            tool_invocation_id=invocation.id,
+        ):
+            if event.delta:
+                content_parts.append(event.delta)
+            if event.metadata:
+                final_metadata.update(event.metadata)
+            event_metadata = {
+                "planner_kind": plan.planner_kind,
+                "tool_id": invocation.tool_id,
+                **(event.metadata or {}),
+            }
+            emit(
+                {
+                    "kind": event.kind,
+                    "delta": event.delta,
+                    "content": event.content,
+                    "metadata": event_metadata,
+                    "error": event.error,
+                }
+            )
+            if event.kind == "failed":
+                raise RuntimeError(event.error or "Provider stream failed after partial output")
+        return QueryToolAnswer(
+            content="".join(content_parts),
+            metadata=final_metadata,
+        )
 
     async def persist_answer(self, invocation: ToolInvocation, answer: QueryToolAnswer) -> None:
         if invocation.conversation_id:

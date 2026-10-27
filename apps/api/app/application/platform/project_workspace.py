@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...domain.quality_loop.release_readiness import meets_release_review_threshold
+
 from ..quality_loop.quality_models import QualityLoopState
 from .project_models import ProjectCreateRequest, VersionCreateRequest, VersionSummary
 from .project_workspace_ports import (
@@ -233,6 +235,12 @@ class ProjectWorkspaceApplicationService:
         blockers = list(release.blocker_items if release else [])
         if any(status == "failed" for status in lane_status_by_key.values()):
             blockers.append("A quality asset lane failed and needs human review.")
+        if completed_count == len(stage_order) and not blockers:
+            version_id = snapshot.versions[0].id if snapshot.versions else None
+            if release is None:
+                blockers.append("Release readiness has not been assessed for the current version.")
+            elif not meets_release_review_threshold(release, version_id=version_id):
+                blockers.append("The current release assessment does not meet the release-review threshold.")
 
         if blockers:
             return QualityLoopState(

@@ -1,7 +1,7 @@
 import type { SystemImageData } from '../../../domains/system-image/types'
 import type { SourceBindingValues } from './sourceBindingDefaults'
 
-export type SourceBindingKey = keyof SourceBindingValues
+export type SourceBindingKey = Exclude<keyof SourceBindingValues, 'codeRef'>
 export type SourceBindingSource = SystemImageData['sources'][number]
 
 export type SourceBindingCardConfig = {

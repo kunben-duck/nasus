@@ -4,6 +4,7 @@ import { platformApi } from './api'
 import { platformApiAuthToken } from './authTokenStorage'
 import { useAuthActions } from './useAuthSession'
 import type { UserProfile } from './types'
+import { useI18n } from '../../shared/i18n/I18nProvider'
 
 const MAX_AVATAR_FILE_BYTES = 512 * 1024
 
@@ -54,6 +55,7 @@ export function useUserAvatarImage(user?: UserProfile | null): string {
 }
 
 export function useAvatarEditorModel({ variant = 'settings' }: { variant?: 'settings' | 'account' }) {
+  const { t, tx } = useI18n()
   const { setUser } = useAuthActions()
   const [status, setStatus] = useState('')
   const [saving, setSaving] = useState(false)
@@ -64,12 +66,12 @@ export function useAvatarEditorModel({ variant = 'settings' }: { variant?: 'sett
     setStatus('')
 
     if (!file.type.match(/^image\/(png|jpeg|webp|gif)$/)) {
-      setStatus('Use a PNG, JPEG, WebP, or GIF image.')
+      setStatus(t('Use a PNG, JPEG, WebP, or GIF image.'))
       return
     }
 
     if (file.size > MAX_AVATAR_FILE_BYTES) {
-      setStatus('Avatar must be 512KB or smaller.')
+      setStatus(t('Avatar must be 512KB or smaller.'))
       return
     }
 
@@ -78,10 +80,10 @@ export function useAvatarEditorModel({ variant = 'settings' }: { variant?: 'sett
       const avatarUrl = await readFileAsDataUrl(file)
       const nextUser = await platformApi.updateAvatar({ avatar_url: avatarUrl, avatar_preset: null })
       setUser(nextUser)
-      setStatus('Avatar updated.')
+      setStatus(t('Avatar updated.'))
       if (compact) setPickerOpen(false)
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Unable to update avatar.')
+      setStatus(error instanceof Error ? tx(error.message) : t('Unable to update avatar.'))
     } finally {
       setSaving(false)
     }
@@ -93,10 +95,10 @@ export function useAvatarEditorModel({ variant = 'settings' }: { variant?: 'sett
     try {
       const nextUser = await platformApi.updateAvatar({ avatar_url: null, avatar_preset: presetId })
       setUser(nextUser)
-      setStatus('Avatar updated.')
+      setStatus(t('Avatar updated.'))
       if (compact) setPickerOpen(false)
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Unable to update avatar.')
+      setStatus(error instanceof Error ? tx(error.message) : t('Unable to update avatar.'))
     } finally {
       setSaving(false)
     }

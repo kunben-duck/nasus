@@ -43,6 +43,10 @@ Nasus 的产品一级模块当前收敛为 3 个：
 ### 4.1 系统画像构建模块
 
 - [模块总览](./design/system-image/README.md)
+- [自主构建与持续演进主方案（下一阶段设计）](./design/system-image/autonomous-system-image-design.md)
+- [知识、版本与上下文契约](./design/system-image/knowledge-contracts.md)
+- [系统画像开发与验收](./design/system-image/delivery-and-evaluation.md)
+- [系统画像开源能力评估](./design/system-image/technology-evaluation.md)
 - [Context Engine 设计](./design/system-image/context-engine.md)
 - [知识摄入管线](./design/system-image/ingestion-pipeline.md)
 - [基线与分支规则](./design/system-image/baseline-and-branching.md)

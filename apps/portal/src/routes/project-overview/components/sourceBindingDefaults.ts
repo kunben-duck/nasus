@@ -15,6 +15,8 @@ export function sourceBindingDefaults(systemImage?: SystemImageData): SourceBind
 
   return {
     code: sourceFor('code'),
+    ...(systemImage?.sources.find((item) => item.source_type === 'code')?.tracked_ref
+      ? { codeRef: systemImage.sources.find((item) => item.source_type === 'code')?.tracked_ref ?? '' } : {}),
     usDoc: sourceFor('us_doc'),
     testAsset: sourceFor('test_asset'),
   }

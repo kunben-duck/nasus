@@ -1,7 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Mapping, Protocol
+
+
+def meets_release_review_threshold(readiness: object, *, version_id: str | None = None) -> bool:
+    """A completed assessment is not necessarily ready for release review."""
+    summary = getattr(readiness, "evidence_summary", {})
+    unknown = summary.get("quality_assessment_unknown", 0) if isinstance(summary, Mapping) else None
+    return (
+        readiness is not None
+        and (version_id is None or getattr(readiness, "version_id", None) == version_id)
+        and getattr(readiness, "status", None) == "Ready for release review"
+        and type(getattr(readiness, "score", None)) is int
+        and 80 <= readiness.score <= 100
+        and all(type(getattr(readiness, field, None)) is int and getattr(readiness, field) == 0
+                for field in ("blockers", "approvals_open", "pending_merge"))
+        and type(unknown) is int and unknown == 0
+    )
 
 
 class FailureReportLike(Protocol):
@@ -23,10 +39,10 @@ class ReleaseReadinessEvidence:
     evidence_types: tuple[str, ...] = ()
     asset_part_statuses: tuple[tuple[str, str], ...] = ()
     task_context_readiness: str | None = None
-    task_context_confidence: float = 0
+    task_context_confidence: float | None = 0
     missing_context_count: int = 0
-    quality_profile_coverage: int = 0
-    quality_profile_confidence: float = 0
+    quality_profile_coverage: int | None = 0
+    quality_profile_confidence: float | None = 0
     fallback_generated_parts: int = 0
     open_failures: tuple[FailureReportLike, ...] = ()
     approvals_open: int = 0
@@ -90,11 +106,14 @@ def decide_release_readiness(evidence: ReleaseReadinessEvidence) -> ReleaseReadi
     quality_asset_score = round(25 * len(accepted_parts) / len(REQUIRED_ASSET_PARTS))
 
     system_context_score = 0
-    if evidence.task_context_readiness == "ready":
-        system_context_score += 7
-    system_context_score += round(5 * _unit_interval(evidence.task_context_confidence))
-    system_context_score += round(5 * _percent(evidence.quality_profile_coverage))
-    system_context_score += round(3 * _unit_interval(evidence.quality_profile_confidence))
+    quality_assessment_unknown = (evidence.task_context_confidence is None
+        or evidence.quality_profile_coverage is None or evidence.quality_profile_confidence is None)
+    if not quality_assessment_unknown:
+        if evidence.task_context_readiness == "ready":
+            system_context_score += 7
+        system_context_score += round(5 * _unit_interval(evidence.task_context_confidence))
+        system_context_score += round(5 * _percent(evidence.quality_profile_coverage))
+        system_context_score += round(3 * _unit_interval(evidence.quality_profile_confidence))
 
     failure_list = list(evidence.open_failures)
     fallback_count = sum(1 for report in failure_list if report.fallback_to_human)
@@ -120,6 +139,9 @@ def decide_release_readiness(evidence: ReleaseReadinessEvidence) -> ReleaseReadi
     )
 
     blocker_items: list[str] = []
+    if quality_assessment_unknown:
+        blocker_items.append("System image quality assessment is unknown; retrieval inventory is not release evidence.")
+        score = min(score, 59)
     if failure_list:
         blocker_items.extend(
             f"{report.failure_kind}: {report.summary}"
@@ -182,6 +204,7 @@ def decide_release_readiness(evidence: ReleaseReadinessEvidence) -> ReleaseReadi
         "open_failures": len(failure_list),
         "fallback_generated_parts": max(0, evidence.fallback_generated_parts),
         "missing_context_items": max(0, evidence.missing_context_count),
+        "quality_assessment_unknown": int(quality_assessment_unknown),
     }
 
     if failure_list:
@@ -250,12 +273,12 @@ def _execution_health(
     )
 
 
-def _unit_interval(value: float) -> float:
-    return max(0.0, min(1.0, float(value)))
+def _unit_interval(value: float | None) -> float:
+    return max(0.0, min(1.0, float(value))) if value is not None else 0.0
 
 
-def _percent(value: int) -> float:
-    return max(0.0, min(100.0, float(value))) / 100
+def _percent(value: int | None) -> float:
+    return max(0.0, min(100.0, float(value))) / 100 if value is not None else 0.0
 
 
 def _clamp_score(value: int) -> int:

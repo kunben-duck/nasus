@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 from .quality_models import ExecutionEvidence, RunDetail
 
@@ -18,6 +18,17 @@ class AutomationRunnerCommand:
     steps: tuple[dict[str, Any], ...]
     timeout_ms: int
     metadata: dict[str, Any] = field(default_factory=dict)
+    kind: Literal["browser", "http"] = "browser"
+    http_protocol: Literal["nasus.runner-http-execution.v1", "nasus.runner-http-execution.v2", "nasus.runner-http-execution.v3"] = "nasus.runner-http-execution.v1"
+
+
+@dataclass(frozen=True)
+class FixtureBoundHttpCommand(AutomationRunnerCommand):
+    """Explicit new command shape; legacy command archives and hashes stay unchanged."""
+
+    http_protocol: Literal["nasus.runner-http-execution.v3"] = "nasus.runner-http-execution.v3"
+    kind: Literal["http"] = "http"
+    fixture_input: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass(frozen=True)
@@ -40,10 +51,31 @@ class AutomationRunnerResult:
     artifacts: tuple[RunnerArtifact, ...] = ()
     failure_fingerprint: str | None = None
     runner_mode: str = "unavailable"
+    execution_receipt: dict[str, Any] | None = None
 
 
 class AutomationRunnerPort(Protocol):
     def execute(self, command: AutomationRunnerCommand) -> AutomationRunnerResult:
+        ...
+
+
+@dataclass(frozen=True)
+class OwnedTargetHttpExecution:
+    """Original execution bytes, not a fixture or business-coverage grant."""
+
+    result: AutomationRunnerResult
+    request_body: bytes
+    result_body: bytes
+    environment_id: str
+    inventory_hash: str
+
+
+class OwnedTargetHttpRunnerPort(Protocol):
+    def execute_owned_http(
+        self, command: AutomationRunnerCommand, *, environment_id: str, artifact_hash: str,
+        inventory_hash: str, require_work: Callable[[], None],
+    ) -> OwnedTargetHttpExecution:
+        """The application supplies independent authority and a live ownership fence."""
         ...
 
 
@@ -88,6 +120,12 @@ class QualityRunWorkspacePort(Protocol):
     def save_run_detail(self, project_id: str, run: RunDetail) -> None:
         ...
 
+    def commit_run_execution(
+        self, project_id: str, run: RunDetail, evidence: list[ExecutionEvidence],
+    ) -> None:
+        """Commit a new execution and its complete evidence set atomically."""
+        ...
+
     def replace_run_evidence(
         self,
         project_id: str,
@@ -120,6 +158,8 @@ __all__ = [
     "AutomationRunnerCommand",
     "AutomationRunnerPort",
     "AutomationRunnerResult",
+    "OwnedTargetHttpExecution",
+    "OwnedTargetHttpRunnerPort",
     "EvidenceObjectStoragePort",
     "QualityAutomationExecutionPort",
     "QualityRunWorkspacePort",

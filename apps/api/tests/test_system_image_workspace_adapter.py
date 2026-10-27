@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from contextvars import copy_context
 from threading import RLock
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+
 from apps.api.app.application.platform.project_models import ProjectCard
+from apps.api.app.domain.system_image.source_access import SourceAccessDenied, SourceAccessSnapshot
 from apps.api.app.infrastructure.system_image import (
     CompatibilitySystemImageIngestionProjection,
     DefaultSystemImageRetriever,
@@ -205,6 +209,65 @@ async def _exercise_model_routes(
     return embedding_result, rerank_result
 
 
+def _workspace_with_cached_us():
+    project = ProjectCard(id="project_scope", name="Scope", code="SCP", summary="Scope isolation",
+        status="active", risk="low", progress=0, active_version="", blocked_items=0,
+        pending_approvals=0, system_image_status="draft")
+    project_repository = Mock()
+    project_repository.get_project.return_value = project
+    project_repository.list_versions.return_value = []
+    quality_repository = Mock()
+    quality_repository.list_us_items.return_value = ["original_us"]
+    quality_repository.list_asset_lanes.return_value = {}
+    image_repository = Mock()
+    image_repository.load_project_snapshot.return_value = SimpleNamespace(**{
+        name: [] for name in ("knowledge_objects", "raw_assets", "raw_asset_chunks", "baselines",
+            "relationships", "overlays", "metric_snapshots", "embedding_records", "retrieval_runs",
+            "rerank_records", "task_contexts", "quality_profiles")})
+    workspace = SQLAlchemySystemImageWorkspace(DurableSystemImageWorkspaceAdapters(
+        project_repository=project_repository, quality_loop_repository=quality_repository,
+        system_image_repository=image_repository, project_read_model_refresh=Mock(), project_access=Mock(),
+        object_storage=Mock(), model_gateway=Mock(), settings_provider=Mock(), custom_api_key_provider=Mock()))
+    assert workspace.list_us_items(project.id) == ["original_us"]
+    quality_repository.list_us_items.return_value = ["original_us", "new_us"]
+    return workspace, project.id, image_repository
+
+
+def test_operation_session_reads_current_repository_without_mutating_inherited_staging():
+    workspace, project_id, repository = _workspace_with_cached_us()
+    workspace.replace_task_contexts(project_id, ["parent_staged_context"])
+    parent = workspace._request_snapshots.get()
+    original = parent[project_id]
+
+    def child_operation():
+        with workspace.operation_session():
+            assert workspace._request_snapshots.get() is not parent
+            assert workspace.list_us_items(project_id) == ["original_us", "new_us"]
+            workspace.replace_task_contexts(project_id, ["child_committed_context"])
+            workspace.persist_system_image(project_id)
+        assert workspace._request_snapshots.get() is parent
+
+    copy_context().run(child_operation)
+    assert parent[project_id] is original
+    assert original.dirty and original.task_contexts == ["parent_staged_context"]
+    assert original.us_items == ["original_us"]
+    assert repository.replace_system_image.call_args.kwargs["task_contexts"] == ["child_committed_context"]
+
+
+@pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
+def test_operation_session_restores_caller_context_after_failure_or_cancellation(error):
+    workspace, project_id, repository = _workspace_with_cached_us()
+    parent = workspace._request_snapshots.get()
+    with pytest.raises(error):
+        with workspace.operation_session():
+            assert workspace.list_us_items(project_id) == ["original_us", "new_us"]
+            workspace.replace_task_contexts(project_id, ["not_committed"])
+            raise error()
+    assert workspace._request_snapshots.get() is parent
+    assert workspace.list_task_contexts(project_id) == []
+    repository.replace_system_image.assert_not_called()
+
+
 def test_system_image_retriever_uses_explicit_read_projections() -> None:
     state = _projection_state()
     state.knowledge_objects["project_001"] = [
@@ -258,6 +321,15 @@ def test_system_image_retriever_uses_explicit_read_projections() -> None:
         "raw_asset_chunk:chunk_checkout",
         "agent_memory:memory_001",
     }
+
+
+def test_legacy_retriever_cannot_silently_ignore_an_authorized_scope() -> None:
+    retriever = DefaultSystemImageRetriever(Mock(), Mock())
+    scope = SourceAccessSnapshot("project_001", 0, ()).for_actor("viewer", "viewer")
+    with pytest.raises(SourceAccessDenied, match="cannot validate"):
+        asyncio.run(retriever.search_project_memory(
+            SimpleNamespace(project_id="project_001"), "query", expected_scope=scope,
+        ))
 
 
 def test_ingestion_projection_receives_lock_factory_instead_of_store() -> None:

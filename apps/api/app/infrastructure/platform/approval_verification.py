@@ -52,6 +52,10 @@ class SQLAlchemyToolApprovalVerificationState(ToolApprovalVerificationStatePort)
         approval = self._approvals.get_approval_detail(project_id, approval_id)
         return approval.status if approval is not None else None
 
+    def approval_policy(self, project_id: str, approval_id: str) -> str | None:
+        approval = self._approvals.get_approval_detail(project_id, approval_id)
+        return approval.policy_reason if approval is not None else None
+
 
 @dataclass(frozen=True)
 class ToolApprovalVerificationFacts:
@@ -88,6 +92,12 @@ class ProjectedToolApprovalVerificationState(ToolApprovalVerificationStatePort):
             return None
         detail = self._facts.approval_details.get(approval_id)
         return detail.status if detail is not None else approval.status
+
+    def approval_policy(self, project_id: str, approval_id: str) -> str | None:
+        if not any(item.id == approval_id for item in self._facts.approvals.get(project_id, [])):
+            return None
+        detail = self._facts.approval_details.get(approval_id)
+        return detail.policy_reason if detail is not None else None
 
 
 __all__ = [

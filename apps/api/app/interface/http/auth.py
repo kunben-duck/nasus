@@ -13,6 +13,7 @@ from .request_context import error_envelope, resolve_request_id
 
 PUBLIC_PATHS = {"/healthz", "/readyz", "/v1/auth/login", "/v1/auth/register"}
 TokenAuthenticator = Callable[[str], Optional[UserProfile]]
+ConfiguredIdentityAuthenticator = Callable[[UserProfile], Optional[UserProfile]]
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ def authenticate_request(
     request: Request,
     config: AuthConfig,
     token_authenticator: TokenAuthenticator | None = None,
+    configured_identity_authenticator: ConfiguredIdentityAuthenticator | None = None,
 ) -> UserProfile | JSONResponse:
     header = request.headers.get("authorization", "")
     scheme, _, header_token = header.partition(" ")
@@ -76,12 +78,16 @@ def authenticate_request(
             if session_user is not None:
                 return session_user
         if config.bearer_token and token == config.bearer_token:
-            return config.user()
+            if is_public_request(request):
+                return config.user()
+            return authenticate_configured_identity(request, config, configured_identity_authenticator)
         if not is_public_request(request):
             return auth_error(request, "invalid_token", "Bearer token is invalid.", 401)
 
-    if is_public_request(request) or config.disabled:
+    if is_public_request(request):
         return config.user()
+    if config.disabled:
+        return authenticate_configured_identity(request, config, configured_identity_authenticator)
 
     if config.required and not config.bearer_token:
         return auth_error(
@@ -94,6 +100,25 @@ def authenticate_request(
     if not token:
         return auth_error(request, "missing_token", "Bearer token is required.", 401)
     return auth_error(request, "invalid_token", "Bearer token is invalid.", 401)
+
+
+def authenticate_configured_identity(
+    request: Request,
+    config: AuthConfig,
+    authenticator: ConfiguredIdentityAuthenticator | None,
+) -> UserProfile | JSONResponse:
+    if authenticator is None:
+        return auth_error(request, "configured_identity_verifier_unavailable",
+            "The configured identity verifier is unavailable.", 503)
+    try:
+        user = authenticator(config.user())
+    except Exception:
+        return auth_error(request, "configured_identity_verifier_unavailable",
+            "The configured identity verifier is unavailable.", 503)
+    if user is None or user.id != config.user_id or user.email != config.user_email:
+        return auth_error(request, "configured_identity_unavailable",
+            "The configured identity is not available for authenticated access.", 401)
+    return user
 
 
 def auth_error(request: Request, code: str, message: str, status_code: int) -> JSONResponse:

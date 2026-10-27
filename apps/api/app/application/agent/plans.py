@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from .ports import AgentPlanStatePort
 from ...domain.agent.runtime_models import AgentGoalProposal, ToolPlanStep
+from ...domain.agent.image_plan_policy import is_pinned_image_plan, validate_image_plan
+from ...domain.agent.plan_policy import AgentPlanPolicyViolation
+from .image_investigation_plans import AgentInvestigationPlanPort
+from .build_intent_entries import AgentBuildIntentEntryPort, DIGEST_REF
+from .natural_build_entries import REQUEST_REF
+from .source_build_wait import WAIT_REF, WAIT_TOOL
+from ...domain.agent.image_plan_phases import active_phase_start, phase_target_refs
 
 if TYPE_CHECKING:
     from .agent_models import AgentGoal
+
+
+class AgentImagePhasePort(Protocol):
+    def verify_goal(self, goal: "AgentGoal") -> int: ...
 
 
 @dataclass
@@ -20,15 +31,72 @@ class AgentGoalPlanCompiler:
     """
 
     state: AgentPlanStatePort
+    investigations: AgentInvestigationPlanPort | None = None
+    image_phases: AgentImagePhasePort | None = None
+    build_intents: AgentBuildIntentEntryPort | None = None
+
+    def validate_goal_plan(self, goal: "AgentGoal", extra_steps: list[ToolPlanStep] | None = None) -> None:
+        start = active_phase_start(goal)
+        if not start and any(ref.startswith((REQUEST_REF, WAIT_REF)) for ref in goal.target_refs):
+            if self.build_intents is None:
+                raise AgentPlanPolicyViolation("build_preparation_unavailable", "Build preparation is unavailable.")
+            self.build_intents.validate_preparation_goal(goal)
+        if start:
+            if self.image_phases is None or self.image_phases.verify_goal(goal) != start:
+                raise AgentPlanPolicyViolation("image_phase_receipt_missing", "A phased goal requires its authoritative activation ledger.")
+        elif any(step.id.startswith("build_plan_phase:") for step in goal.steps):
+            raise AgentPlanPolicyViolation("image_phase_marker_changed", "A phase marker has no active phase reference.")
+        steps = [ToolPlanStep(step.selected_tool_id, step.tool_input_payload)
+                 for step in goal.steps[start:] if step.selected_tool_id]
+        validate_image_plan([*steps, *(extra_steps or [])], phase_target_refs(goal))
 
     def compile_tool_plan(self, proposal: AgentGoalProposal) -> list[ToolPlanStep]:
         explicit_steps = self._explicit_steps(proposal)
+        if any(ref.startswith((DIGEST_REF, REQUEST_REF, WAIT_REF)) for ref in proposal.target_refs):
+            if self.build_intents is None or explicit_steps:
+                raise AgentPlanPolicyViolation("saved_build_intent_steps_changed", "Saved-intent entries use the canonical compiler, not caller-provided steps.")
+            generated = self.build_intents.compile(proposal)
+            if not generated:
+                raise AgentPlanPolicyViolation("saved_build_intent_unavailable", "The saved intent could not be compiled.")
+            validate_image_plan(generated, proposal.target_refs)
+            return self._validate_known_tools(generated)
+        context_steps = []
+        if any(key in proposal.initial_tool_input for key in ("plan_id", "source_manifest_id", "image_revision_id")):
+            context_steps = [ToolPlanStep("system_image.build.plan", proposal.initial_tool_input)]
+        validate_image_plan([*context_steps, *explicit_steps], proposal.target_refs)
         if explicit_steps:
             return self._validate_known_tools(explicit_steps)
+        if is_pinned_image_plan(context_steps, proposal.target_refs) or proposal.goal_template == "system_image_investigation":
+            raise AgentPlanPolicyViolation("pinned_image_steps_required", "Read the saved plan and provide explicit fixed-input work; mutable state planning is not allowed.")
         if proposal.goal_template == "system_image_build":
             project_id = self._project_id_from_proposal(proposal)
             return self._compile_system_image_plan_for_project(project_id)
         return []
+
+    def compile_preparation_continuation(self, goal, invocation):
+        if (invocation.tool_id != "system_image.build.plan"
+                or not any(ref.startswith(REQUEST_REF) for ref in goal.target_refs)):
+            return None
+        if self.build_intents is None:
+            raise AgentPlanPolicyViolation("build_preparation_unavailable", "Build preparation is unavailable.")
+        refs, steps = self.build_intents.preparation_continuation(goal, invocation)
+        self.validate_goal_plan(goal.model_copy(update={"target_refs": refs}), steps)
+        return refs, self._validate_known_tools(steps)
+
+    def compile_source_input_continuation(self, goal):
+        if (not any(ref.startswith(WAIT_REF) for ref in goal.target_refs)
+                or any(ref.startswith(REQUEST_REF) for ref in goal.target_refs)):
+            return None
+        if self.build_intents is None:
+            raise AgentPlanPolicyViolation("build_preparation_unavailable", "Build preparation is unavailable.")
+        self.validate_goal_plan(goal)
+        refs, steps = self.build_intents.source_input_continuation(goal)
+        original = [ToolPlanStep(step.selected_tool_id, step.tool_input_payload)
+                    for step in goal.steps if step.selected_tool_id]
+        if len(original) != 1 or original[0].tool_id != WAIT_TOOL:
+            raise AgentPlanPolicyViolation("build_input_wait_scope_changed", "The original waiting command changed.")
+        validate_image_plan([*original, *steps], refs)
+        return refs, self._validate_known_tools(steps)
 
     def compile_followup_tool_plan(self, goal: "AgentGoal") -> list[ToolPlanStep]:
         """Compile remaining tools after a paused goal receives missing context.
@@ -40,9 +108,35 @@ class AgentGoalPlanCompiler:
         the same AgentGoal.
         """
 
+        if self.investigations is not None:
+            self.validate_goal_plan(goal)
+            proposed = self.investigations.followup(goal)
+            if proposed:
+                self.validate_goal_plan(goal, proposed)
+                return self._validate_known_tools(proposed)
+        steps = [ToolPlanStep(tool_id=step.selected_tool_id, input_payload=step.tool_input_payload)
+                 for step in goal.steps[active_phase_start(goal):] if step.selected_tool_id]
+        if is_pinned_image_plan(steps, phase_target_refs(goal)) or goal.goal_template == "system_image_investigation":
+            return []
         if not self._is_system_image_goal(goal):
             return []
         return self._compile_system_image_plan_for_project(self._project_id_from_goal(goal))
+
+    def compile_structure_continuation(self, goal: "AgentGoal") -> list[ToolPlanStep]:
+        if self.investigations is None:
+            return []
+        self.validate_goal_plan(goal)
+        proposed = self.investigations.after_structure(goal)
+        self.validate_goal_plan(goal, proposed)
+        return self._validate_known_tools(proposed)
+
+    def compile_reference_continuation(self, goal: "AgentGoal") -> list[ToolPlanStep]:
+        if self.investigations is None:
+            return []
+        self.validate_goal_plan(goal)
+        proposed = self.investigations.after_reference(goal)
+        self.validate_goal_plan(goal, proposed)
+        return self._validate_known_tools(proposed)
 
     def _explicit_steps(self, proposal: AgentGoalProposal) -> list[ToolPlanStep]:
         if proposal.planned_tools:

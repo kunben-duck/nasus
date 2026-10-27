@@ -49,12 +49,13 @@ def release_decision_id(project_id: str, version_id: str, us_id: str | None) -> 
 
 
 def release_decision_status(readiness: ReleaseReadinessLike, execution_evidence_refs: list[str]) -> str:
-    if readiness.score < 60 or readiness.blockers:
+    if (getattr(readiness, "evidence_summary", {}).get("quality_assessment_unknown", 0)
+            or readiness.score < 60 or readiness.blockers):
         return "blocked"
-    if readiness.score < 80 or readiness.approvals_open or readiness.pending_merge:
-        return "conditional"
     if not execution_evidence_refs:
         return "needs_evidence"
+    if readiness.score < 80 or readiness.approvals_open or readiness.pending_merge:
+        return "conditional"
     return "ready"
 
 

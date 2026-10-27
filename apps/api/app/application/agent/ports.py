@@ -15,6 +15,8 @@ from .agent_models import (
     ConversationSummaryCheckpoint,
 )
 from ...domain.agent.memory import AgentMemoryContext
+from ...domain.agent.resume_checkpoint import AgentResumeCheckpoint
+from ...domain.agent.goal_creation import AgentGoalStartIdentity
 from ..platform.tool_models import (
     AuditEvent,
     ToolDefinition,
@@ -189,6 +191,13 @@ class ConversationMessageStatePort(Protocol):
     ) -> None:
         ...
 
+    def update_message(
+        self,
+        conversation: ConversationSession,
+        message: ConversationMessage,
+    ) -> None:
+        ...
+
     async def maybe_create_summary_checkpoint(
         self,
         conversation: ConversationSession,
@@ -283,7 +292,8 @@ class AgentGoalProjectionStatePort(Protocol):
 class AgentGoalLifecycleStatePort(Protocol):
     """State, audit, message, and event effects for AgentGoal lifecycle rules."""
 
-    def create_goal(self, goal: AgentGoal) -> None:
+    def create_goal(self, goal: AgentGoal, *, start_identity: AgentGoalStartIdentity | None = None) -> None:
+        """Atomically create or raise ActiveAgentGoalExists before runtime dispatch."""
         ...
 
     def persist_goal(self, goal: AgentGoal) -> None:
@@ -333,7 +343,7 @@ class AgentLoopStatePort(Protocol):
     def get_conversation(self, conversation_id: str) -> ConversationSession:
         ...
 
-    def create_goal(self, payload: AgentGoalCreateRequest) -> AgentGoal:
+    def create_goal(self, payload: AgentGoalCreateRequest, *, start_identity: AgentGoalStartIdentity | None = None) -> AgentGoal:
         ...
 
     def get_goal(self, goal_id: str) -> AgentGoal:
@@ -393,6 +403,12 @@ class AgentGraphStatePort(Protocol):
         ...
 
     def persist_goal(self, goal: AgentGoal) -> None:
+        ...
+
+    def persist_goal_at_checkpoint(self, goal: AgentGoal, checkpoint: AgentResumeCheckpoint) -> None:
+        ...
+
+    def is_resume_consumed(self, checkpoint: AgentResumeCheckpoint) -> bool:
         ...
 
     def record_goal_audit(
@@ -462,6 +478,12 @@ class AgentWorkflowStatePort(Protocol):
     def accept_remote_goal(self, goal: AgentGoal) -> None:
         ...
 
+    def get_goal(self, goal_id: str) -> AgentGoal:
+        ...
+
+    def is_resume_consumed(self, checkpoint: AgentResumeCheckpoint) -> bool:
+        ...
+
 
 class ConversationMessageRuntimePort(Protocol):
     """Cross-boundary commands required by main conversation orchestration."""
@@ -515,7 +537,10 @@ class ConversationMessageRuntimePort(Protocol):
     def is_paused_goal(self, goal_id: str) -> bool:
         ...
 
-    async def resume_goal(self, goal_id: str) -> AgentGoal:
+    def get_goal(self, goal_id: str) -> AgentGoal:
+        ...
+
+    async def resume_goal(self, goal_id: str, *, expected_resume: AgentResumeCheckpoint | None = None) -> AgentGoal:
         ...
 
     def get_tool_invocation(self, invocation_id: str) -> ToolInvocation:
@@ -553,6 +578,24 @@ class AgentConversationEventPublisherPort(Protocol):
         self,
         conversation_id: str,
         checkpoint_id: str,
+    ) -> None:
+        ...
+
+    async def publish_message_event(
+        self,
+        conversation_id: str,
+        message: ConversationMessage,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        ...
+
+    async def publish_turn_event(
+        self,
+        conversation_id: str,
+        turn_id: str,
+        event_type: str,
+        payload: dict[str, Any],
     ) -> None:
         ...
 

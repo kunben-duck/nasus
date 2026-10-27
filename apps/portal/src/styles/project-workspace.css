@@ -99,6 +99,20 @@
   margin-bottom: 18px;
 }
 
+.knowledge-heading {
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+.knowledge-summary > div {
+  min-width: 0;
+}
+
+.knowledge-summary strong {
+  overflow-wrap: anywhere;
+  text-transform: none;
+}
+
 .segmented {
   display: inline-flex;
   border: 1px solid var(--border);
@@ -368,10 +382,11 @@
   min-height: 36px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: rgba(15, 16, 18, 0.72);
+  background: var(--bg);
   color: var(--text);
   outline: none;
   padding: 8px 10px;
+  font-family: inherit;
   font-size: 12px;
 }
 
@@ -384,6 +399,13 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.source-tracked-ref-field {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .source-upload-button {
@@ -515,6 +537,28 @@
 
 .system-image-hint.failed {
   color: var(--red);
+}
+
+.source-visibility-notice {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.source-visibility-notice p {
+  margin: 6px 0 0;
+}
+
+.source-visibility-notice strong {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
 }
 
 .agent-goal-panel {
@@ -1162,9 +1206,20 @@
 
 .quality-panel-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+}
+
+.quality-panel-header > div {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.quality-panel-header > button {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .quality-panel-header strong {
@@ -1411,6 +1466,23 @@
   line-height: 1.45;
 }
 
+.confirmation-gate-card > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.confirmation-gate-card > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .confirmation-gate-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 .confirmation-kicker {
   color: var(--yellow);
   font-size: 11px;
@@ -1441,6 +1513,12 @@
 .metric-mini strong {
   margin-top: 7px;
   font-size: 22px;
+}
+
+.metric-mini-unavailable strong {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
 }
 
 .message-row {

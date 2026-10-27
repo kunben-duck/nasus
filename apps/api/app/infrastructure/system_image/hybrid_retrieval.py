@@ -5,7 +5,7 @@ import re
 from collections import defaultdict
 from typing import Iterable, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, literal, select
 
 from ...application.system_image.retrieval_port import (
     HybridRetrievalHit,
@@ -43,7 +43,7 @@ class SQLAlchemySystemImageRetrievalIndex(SystemImageRetrievalIndexPort):
         statuses = ["ready"]
         if query.allow_fallback_vectors:
             statuses.append("fallback")
-        return (
+        filters = (
             EmbeddingRow.project_id == query.project_id,
             EmbeddingRow.baseline_id == query.baseline_id,
             EmbeddingRow.embedding_model == query.embedding_model,
@@ -51,6 +51,16 @@ class SQLAlchemySystemImageRetrievalIndex(SystemImageRetrievalIndexPort):
             EmbeddingRow.dimensions == query.dimensions,
             EmbeddingRow.status.in_(statuses),
         )
+        if query.authorized_subjects is not None:
+            # Match _subject_ref priority. A denied chunk/object cannot fall back
+            # to an allowed source_ref on the same row. Filter before rank/limit.
+            subject = case(
+                (func.nullif(EmbeddingRow.chunk_ref, "").is_not(None), literal("raw_asset_chunk:") + EmbeddingRow.chunk_ref),
+                (func.nullif(EmbeddingRow.object_ref, "").is_not(None), literal("context_object:") + EmbeddingRow.object_ref),
+                else_=literal("raw_asset:") + EmbeddingRow.source_ref,
+            )
+            filters += (subject.in_(query.authorized_subjects.subject_refs),)
+        return filters
 
     def _postgres_candidates(self, session, query: HybridRetrievalQuery):
         filters = self._filters(query)

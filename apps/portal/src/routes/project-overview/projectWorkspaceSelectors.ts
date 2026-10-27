@@ -60,7 +60,7 @@ export function shouldShowSourceBindingPanel(
   return (
     mode === 'sources' ||
     systemImage?.build_state.status === 'source_required' ||
-    pendingGoal?.pause_reason === 'missing_source_binding'
+    ['missing_source_binding', 'missing_captured_code'].includes(pendingGoal?.pause_reason ?? '')
   )
 }
 

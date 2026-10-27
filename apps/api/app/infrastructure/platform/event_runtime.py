@@ -51,6 +51,10 @@ class SSEWakeUpBuffer(EventStreamBufferPort):
     ) -> None:
         self._facts = facts
         self._mutation_guard = mutation_guard
+        self._loop_queues: dict[
+            asyncio.AbstractEventLoop,
+            dict[tuple[int, str], asyncio.Queue[EventPayload]],
+        ] = {}
 
     def conversation_queue(self, conversation_id: str) -> asyncio.Queue[EventPayload]:
         return self._queue(self._facts.conversation_queues, conversation_id)
@@ -72,10 +76,24 @@ class SSEWakeUpBuffer(EventStreamBufferPort):
         queues: dict[str, asyncio.Queue[EventPayload]],
         stream_id: str,
     ) -> asyncio.Queue[EventPayload]:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
         with self._mutation_guard():
-            queue = queues.get(stream_id)
+            for closed_loop in tuple(self._loop_queues):
+                if closed_loop.is_closed():
+                    del self._loop_queues[closed_loop]
+            # Local Turn threads must never wake waiters owned by the API loop.
+            # Cross-loop delivery remains the durable outbox poller's responsibility.
+            local = self._loop_queues.setdefault(loop, {}) if loop is not None else None
+            key = (id(queues), stream_id)
+            queue = local.get(key) if local is not None else queues.get(stream_id)
             if queue is None:
                 queue = asyncio.Queue()
+                if local is not None:
+                    local[key] = queue
+                # Preserve the compatibility projection, not loop ownership.
                 queues[stream_id] = queue
             return queue
 
