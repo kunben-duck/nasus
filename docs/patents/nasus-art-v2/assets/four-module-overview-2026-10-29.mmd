@@ -1,0 +1,9 @@
+flowchart LR
+    imageBuild["01 系统画像构建"]
+    testGeneration["02 测试用例生成"]
+    testExecution["03 测试用例执行"]
+    feedbackUpdate["04 有效数据采纳与滚动更新"]
+    imageBuild -->|"画像与证据"| testGeneration
+    testGeneration -->|"用例与脚本"| testExecution
+    testExecution -->|"运行证据"| feedbackUpdate
+    feedbackUpdate -->|"新增或变更数据与更新范围"| imageBuild

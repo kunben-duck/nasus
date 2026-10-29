@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="920" viewBox="0 0 1600 920" role="img" aria-labelledby="title desc">
+<title id="title">动态系统画像驱动的软件验证闭环</title>
+<desc id="desc">最终态方案分为系统画像构建、测试用例生成、测试用例执行、有效数据采纳与滚动更新四个模块。采纳模块确定更新范围，调用构建模块形成下一画像版本。</desc>
+<rect width="1600" height="920" fill="#F7F9FC"/>
+<text x="60" y="31" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="42" fill="#162C46">动态系统画像驱动的软件验证闭环</text>
+<text x="60" y="87" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="24" fill="#53657B">四个核心模块 · 最终态方案总览</text>
+<text x="60" y="132" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="23" fill="#53657B">初始来源：需求文档、代码、接口与数据定义、已有测试资产</text>
+<rect x="60" y="190" width="650" height="250" rx="18" fill="#FFFFFF" stroke="#D6DFEB" stroke-width="2"/>
+<rect x="84" y="214" width="52" height="44" rx="10" fill="#2866A8" stroke="none" stroke-width="2"/>
+<text x="94" y="219" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="28" fill="#FFFFFF">01</text>
+<text x="154" y="217" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="32" fill="#162C46">系统画像构建</text>
+<text x="88" y="281" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="26" fill="#334155">原始数据解析、实体抽取</text>
+<text x="88" y="321" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="26" fill="#334155">结构关系提取、大模型语义关联</text>
+<rect x="84" y="374" width="602" height="44" rx="8" fill="#F1F5FA" stroke="none" stroke-width="2"/>
+<text x="97" y="381" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="24" fill="#2866A8">输出：版本化实体、关系与来源证据</text>
+<rect x="890" y="190" width="650" height="250" rx="18" fill="#FFFFFF" stroke="#D6DFEB" stroke-width="2"/>
+<rect x="914" y="214" width="52" height="44" rx="10" fill="#7952A3" stroke="none" stroke-width="2"/>
+<text x="924" y="219" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="28" fill="#FFFFFF">02</text>
+<text x="984" y="217" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="32" fill="#162C46">测试用例生成</text>
+<text x="918" y="281" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="26" fill="#334155">变更影响分析、相关证据召回</text>
+<text x="918" y="321" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="26" fill="#334155">复用与补充生成、必验完整性校验</text>
+<rect x="914" y="374" width="602" height="44" rx="8" fill="#F1F5FA" stroke="none" stroke-width="2"/>
+<text x="927" y="381" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="24" fill="#7952A3">输出：测试用例、脚本与判据绑定</text>
+<rect x="890" y="570" width="650" height="250" rx="18" fill="#FFFFFF" stroke="#D6DFEB" stroke-width="2"/>
+<rect x="914" y="594" width="52" height="44" rx="10" fill="#23775C" stroke="none" stroke-width="2"/>
+<text x="924" y="599" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="28" fill="#FFFFFF">03</text>
+<text x="984" y="597" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="32" fill="#162C46">测试用例执行</text>
+<text x="918" y="661" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="26" fill="#334155">固定目标构建、环境和测试数据</text>
+<text x="918" y="701" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="26" fill="#334155">执行、采集观察、核对独立预期</text>
+<rect x="914" y="754" width="602" height="44" rx="8" fill="#F1F5FA" stroke="none" stroke-width="2"/>
+<text x="927" y="761" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="24" fill="#23775C">输出：运行证据、通过 / 失败 / 未知</text>
+<rect x="60" y="570" width="650" height="250" rx="18" fill="#FFFFFF" stroke="#D6DFEB" stroke-width="2"/>
+<rect x="84" y="594" width="52" height="44" rx="10" fill="#9A6B23" stroke="none" stroke-width="2"/>
+<text x="94" y="599" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="28" fill="#FFFFFF">04</text>
+<text x="154" y="597" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="32" fill="#162C46">有效数据采纳与滚动更新</text>
+<text x="88" y="661" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="26" fill="#334155">新来源与运行反馈：校验、去重</text>
+<text x="88" y="701" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="26" fill="#334155">确定影响范围，触发画像更新</text>
+<rect x="84" y="754" width="602" height="44" rx="8" fill="#F1F5FA" stroke="none" stroke-width="2"/>
+<text x="97" y="761" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="24" fill="#9A6B23">输出：采纳数据与更新范围</text>
+<path d="M714,315 L884,315" stroke="#2866A8" stroke-width="4"/>
+<polygon points="884,315 871,307 871,323" fill="#2866A8"/>
+<text x="735" y="278" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="22" fill="#2866A8">画像与证据</text>
+<path d="M1215,444 L1215,564" stroke="#7952A3" stroke-width="4"/>
+<polygon points="1215,564 1207,551 1223,551" fill="#7952A3"/>
+<text x="1240" y="490" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="22" fill="#7952A3">用例与脚本</text>
+<path d="M886,695 L716,695" stroke="#23775C" stroke-width="4"/>
+<polygon points="716,695 729,687 729,703" fill="#23775C"/>
+<text x="750" y="656" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="22" fill="#23775C">运行证据</text>
+<path d="M385,566 L385,446" stroke="#9A6B23" stroke-width="4"/>
+<polygon points="385,446 377,459 393,459" fill="#9A6B23"/>
+<text x="410" y="490" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="22" fill="#9A6B23">新增 / 变更数据</text>
+<text x="60" y="855" dominant-baseline="text-before-edge" font-family="Arial Unicode MS, PingFang SC, sans-serif" font-size="23" fill="#53657B">滚动更新形成下一版本；在途测试固定原画像。失败与未知可采纳为观察，不能直接改写业务预期。</text>
+</svg>

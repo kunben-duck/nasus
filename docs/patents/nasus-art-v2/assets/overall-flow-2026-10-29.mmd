@@ -1,0 +1,66 @@
+flowchart LR
+  subgraph phaseA["A 多源采集与结构化解析"]
+    s01["S01 固定来源与采集清单"]
+    s02["S02 解析结构并对齐身份"]
+  end
+  subgraph phaseB["B 关系评估与版本化画像"]
+    s03["S03 生成并判断候选关系"]
+    s04["S04 校验关系与接纳修订"]
+    s05["S05 发布版本化系统画像"]
+  end
+  subgraph phaseC["C 影响分析与双通道召回"]
+    s06["S06 识别变化与传播影响"]
+    s07["S07 完整必验清单 M"]
+    s08["S08 辅助材料混合召回"]
+  end
+  subgraph phaseD["D 上下文编译与资产生成"]
+    s09["S09 检查缺口并完整分包"]
+    s10["S10 复用、生成并校验资产"]
+    s11["S11 冻结执行计划 RunPlan"]
+  end
+  subgraph phaseE["E 执行判定与演进回流"]
+    s12["S12 执行测试并归档观察"]
+    s13["S13 核验证据并重算判据"]
+    s14{"S14 质量条件是否满足"}
+    s15["S15 准入与使用前重验"]
+    s16["S16 分类回流与画像演进"]
+  end
+  authority["独立批准验收条件、风险政策与历史保护项"]
+  gapRouter{"缺口类型"}
+  f1["F1 缺关系或观察：定向调查"]
+  f2["F2 缺预期：等待权威输入"]
+  f3["F3 缺资产：补齐用例脚本数据"]
+  f4["F4 超限或关键未知：等待扩围或阻断"]
+  blocked["阻断或补验；修复后新构建新计划"]
+  releaseResult["有效准入结果；使用时继续重验"]
+  s01 --> s02 --> s03 --> s04 --> s05
+  s05 -->|"固定新旧画像"| s06
+  authority --> s07
+  s06 -->|"适用范围"| s07
+  s06 -->|"材料与关系查询"| s08
+  s07 -->|"完整清单 M"| s09
+  s08 -->|"可排序的支持材料"| s09
+  s09 --> s10 --> s11 --> s12 --> s13 --> s14
+  s09 -->|"信息缺失或超限"| gapRouter
+  s10 -->|"资产缺口或校验未通过"| gapRouter
+  gapRouter --> f1 & f2 & f3 & f4
+  f1 -.-> s02
+  f1 -.-> s03
+  f2 -.->|"取得新批准依据后"| authority
+  f3 -.-> s10
+  f3 -.-> s11
+  f4 -.->|"补足资源或扩大范围后"| s06
+  s14 -->|"是"| s15
+  s14 -->|"否"| blocked
+  s15 -->|"授权及依赖重验满足"| releaseResult
+  s15 -->|"变化或不满足"| blocked
+  blocked -.->|"具备新证据或修复构建后"| s06
+  s13 -.->|"原始观察与成功失败未知结果"| s16
+  s16 -.->|"R1 经治理的画像补丁"| s04
+  s16 -.->|"相关依赖变化使旧资格重评"| s13
+  classDef model fill:#F6F2FF,stroke:#B6A1E3;
+  classDef mandatory fill:#ECF9F4,stroke:#77B69C;
+  classDef caution fill:#FFF7E8,stroke:#D8AD62;
+  class s03,s08,s10,s16 model;
+  class s07,s09,s13,authority mandatory;
+  class s14,gapRouter,f1,f2,f3,f4,blocked caution;

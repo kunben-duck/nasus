@@ -1,0 +1,228 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2700" height="2310" viewBox="0 0 2700 2310" role="img" aria-labelledby="title desc">
+<title id="title">动态系统画像驱动测试生成与软件验证：总体方案流程图</title>
+<desc id="desc">五阶段十六步骤。独立验收输入约束完整必验集合；辅助材料并行召回；缺口按类型回跳；执行结果分别用于准入及受治理回流。图示最终态设计，并不表示全部能力已经实现。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/></marker></defs>
+<style>text{font-family:"Arial Unicode MS","PingFang SC","Noto Sans CJK SC",sans-serif} .line{stroke-linejoin:round;stroke-linecap:round}</style>
+<rect x="0" y="0" width="2700" height="2310" rx="0" fill="#F8FAFD" stroke="none" stroke-width="2"/>
+<text x="100" y="50" dominant-baseline="text-before-edge" text-anchor="start" font-size="48" font-weight="600" fill="#142B45">一种基于动态系统画像的测试用例生成与软件验证方法</text>
+<text x="100" y="120" dominant-baseline="text-before-edge" text-anchor="start" font-size="27" font-weight="400" fill="#52677F">总体方案流程图  ·  按编号从左到右、逐行阅读  ·  同一必验清单连接画像、用例与目标证据</text>
+<rect x="100" y="182" width="2500" height="72" rx="15" fill="#EAF0F8" stroke="none" stroke-width="2"/>
+<text x="124" y="202" dominant-baseline="text-before-edge" text-anchor="start" font-size="28" font-weight="400" fill="#24445F">业务目标：在连续代码变更下，及时识别集成影响、补齐必要测试，并依据目标版本的有效证据形成质量判断</text>
+<path class="line" d="M 2600 1672 L 2650 1672 L 2650 300 L 1860 300 L 1860 365" fill="none" stroke="#7044AA" stroke-width="3" stroke-dasharray="10 8" marker-end="url(#arrow)"/>
+<rect x="1920" y="263" width="309.0" height="35" rx="6" fill="#FFFFFF" stroke="none" stroke-width="2"/>
+<text x="1930" y="266" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#7044AA">R1 经治理的画像补丁 → S04</text>
+<text x="100" y="307" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#255AA8">A  多源采集与结构化解析</text>
+<text x="1120" y="307" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#7044AA">B  关系评估与版本化画像</text>
+<rect x="100" y="365" width="460" height="285" rx="18" fill="#FFFFFF" stroke="#B9C8DA" stroke-width="2"/>
+<rect x="120" y="385" width="64" height="32" rx="8" fill="#255AA8" stroke="none" stroke-width="2"/>
+<text x="152" y="388" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S01</text>
+<text x="122" y="433" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">固定来源与采集清单</text>
+<text x="122" y="483" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">代码 / 需求 / 接口 / 数据 / 测试资产</text>
+<text x="122" y="515" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">绑定来源修订、原文与内容摘要</text>
+<text x="122" y="547" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">记录成功、缺失及不支持范围</text>
+<text x="122" y="579" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">采集缺失不能当作真实删除</text>
+<rect x="610" y="365" width="460" height="285" rx="18" fill="#FFFFFF" stroke="#B9C8DA" stroke-width="2"/>
+<rect x="630" y="385" width="64" height="32" rx="8" fill="#255AA8" stroke="none" stroke-width="2"/>
+<text x="662" y="388" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S02</text>
+<text x="632" y="433" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">解析结构并对齐身份</text>
+<text x="632" y="483" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">语法、契约、SQL / ORM 适配器</text>
+<text x="632" y="515" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">提取函数、接口、事件、数据对象</text>
+<text x="632" y="547" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">保留命名空间、调用点和字段</text>
+<text x="632" y="579" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">重名 / 动态边界保留解析缺口</text>
+<rect x="1120" y="365" width="460" height="285" rx="18" fill="#F6F2FF" stroke="#B6A1E3" stroke-width="2"/>
+<rect x="1140" y="385" width="64" height="32" rx="8" fill="#7044AA" stroke="none" stroke-width="2"/>
+<text x="1172" y="388" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S03</text>
+<text x="1558" y="389" dominant-baseline="text-before-edge" text-anchor="end" font-size="20" font-weight="400" fill="#7044AA">大模型参与</text>
+<text x="1142" y="433" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">生成并判断候选关系</text>
+<text x="1142" y="483" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">显式引用、结构邻接与候选召回</text>
+<text x="1142" y="515" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">模型判断支持 / 反对 / 未知</text>
+<text x="1142" y="547" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">输出双端原文引用及缺失依据</text>
+<text x="1142" y="579" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">模型输出保留候选身份</text>
+<rect x="1630" y="365" width="460" height="285" rx="18" fill="#FFFFFF" stroke="#B9C8DA" stroke-width="2"/>
+<rect x="1650" y="385" width="64" height="32" rx="8" fill="#255AA8" stroke="none" stroke-width="2"/>
+<text x="1682" y="388" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S04</text>
+<text x="1652" y="433" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">校验关系与接纳修订</text>
+<text x="1652" y="483" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">核验类型、端点、原文和修订</text>
+<text x="1652" y="515" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">检查历史接受 / 否定的适用性</text>
+<text x="1652" y="547" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">按证据规则与审阅策略接纳</text>
+<text x="1652" y="579" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">冲突与未知不伪装为确定事实</text>
+<rect x="2140" y="365" width="460" height="285" rx="18" fill="#F0F8FF" stroke="#80A6CA" stroke-width="2"/>
+<rect x="2160" y="385" width="64" height="32" rx="8" fill="#275F91" stroke="none" stroke-width="2"/>
+<text x="2192" y="388" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S05</text>
+<text x="2162" y="433" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">发布版本化系统画像</text>
+<text x="2162" y="483" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">实体＋关系＋依据＋适用状态</text>
+<text x="2162" y="515" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">固定成员、查询范围与索引代际</text>
+<text x="2162" y="547" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">旧画像可复核；新版本不覆盖旧版</text>
+<text x="2162" y="579" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">发布画像不代表业务验证通过</text>
+<path class="line" d="M 560 508 L 610 508" fill="none" stroke="#64748B" stroke-width="3" marker-end="url(#arrow)"/>
+<path class="line" d="M 1070 508 L 1120 508" fill="none" stroke="#64748B" stroke-width="3" marker-end="url(#arrow)"/>
+<path class="line" d="M 1580 508 L 1630 508" fill="none" stroke="#64748B" stroke-width="3" marker-end="url(#arrow)"/>
+<path class="line" d="M 2090 508 L 2140 508" fill="none" stroke="#64748B" stroke-width="3" marker-end="url(#arrow)"/>
+<path class="line" d="M 2370 650 L 2370 700 L 60 700 L 60 1015 L 100 1015" fill="none" stroke="#64748B" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="116" y="665" width="556.0" height="35" rx="6" fill="#FFFFFF" stroke="none" stroke-width="2"/>
+<text x="126" y="668" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#64748B">固定新旧画像＋变更输入；新增来源修订从 S01 进入</text>
+<text x="100" y="777" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#176F52">C  影响分析与双通道召回</text>
+<text x="1120" y="777" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#255AA8">D  上下文编译、资产生成与计划固定</text>
+<rect x="610" y="743" width="460" height="68" rx="12" fill="#DFF3EA" stroke="#77B69C" stroke-width="2"/>
+<text x="840" y="753" dominant-baseline="text-before-edge" text-anchor="middle" font-size="23" font-weight="600" fill="#176F52">独立输入：批准验收条件</text>
+<text x="840" y="782" dominant-baseline="text-before-edge" text-anchor="middle" font-size="21" font-weight="400" fill="#176F52">风险政策 / 历史保护项 / 全局规则</text>
+<path class="line" d="M 840 811 L 840 850" fill="none" stroke="#176F52" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="100" y="850" width="460" height="330" rx="18" fill="#FFFFFF" stroke="#B9C8DA" stroke-width="2"/>
+<rect x="120" y="870" width="64" height="32" rx="8" fill="#255AA8" stroke="none" stroke-width="2"/>
+<text x="152" y="873" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S06</text>
+<text x="122" y="918" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">识别变化与传播影响</text>
+<text x="122" y="968" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">同时分析新旧画像与当前业务范围</text>
+<text x="122" y="1000" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">沿调用、字段和契约传播影响</text>
+<text x="122" y="1032" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">查询范围依赖覆盖空召回与新增项</text>
+<text x="122" y="1064" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">保留解释路径和未处理边界</text>
+<text x="122" y="1096" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">未知 / 截断：扩大范围或阻断</text>
+<rect x="610" y="850" width="460" height="153" rx="16" fill="#ECF9F4" stroke="#77B69C" stroke-width="2"/>
+<text x="630" y="866" dominant-baseline="text-before-edge" text-anchor="start" font-size="26" font-weight="600" fill="#176F52">S07  完整必验清单 M</text>
+<text x="630" y="912" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#334155">由独立依据＋适用范围编译</text>
+<text x="630" y="941" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#334155">固定身份与修订；不受 Top-K 裁剪</text>
+<rect x="610" y="1027" width="460" height="153" rx="16" fill="#F6F2FF" stroke="#B6A1E3" stroke-width="2"/>
+<text x="630" y="1043" dominant-baseline="text-before-edge" text-anchor="start" font-size="26" font-weight="600" fill="#7044AA">S08  辅助材料混合召回</text>
+<text x="630" y="1089" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#334155">精确 / 全文 / 向量 / 关系扩展</text>
+<text x="630" y="1118" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#334155">先筛版本、权限、否定，再排序</text>
+<path class="line" d="M 560 1015 L 585 1015 L 585 926 L 610 926" fill="none" stroke="#176F52" stroke-width="3" marker-end="url(#arrow)"/>
+<path class="line" d="M 585 1015 L 585 1103 L 610 1103" fill="none" stroke="#7044AA" stroke-width="3" marker-end="url(#arrow)"/>
+<path class="line" d="M 1070 926 L 1120 926" fill="none" stroke="#176F52" stroke-width="3" marker-end="url(#arrow)"/>
+<path class="line" d="M 1070 1103 L 1120 1103" fill="none" stroke="#7044AA" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1120" y="850" width="460" height="330" rx="18" fill="#ECF9F4" stroke="#77B69C" stroke-width="2"/>
+<rect x="1140" y="870" width="64" height="32" rx="8" fill="#176F52" stroke="none" stroke-width="2"/>
+<text x="1172" y="873" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S09</text>
+<text x="1558" y="874" dominant-baseline="text-before-edge" text-anchor="end" font-size="20" font-weight="400" fill="#176F52">I1＋I2</text>
+<text x="1142" y="918" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">检查缺口并完整分包</text>
+<text x="1142" y="968" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">检查触发 / 预期 / 观察 / 隔离</text>
+<text x="1142" y="1000" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">联合条件不拆；全局规则继承</text>
+<text x="1142" y="1032" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">必需内容先入包，余量加入材料</text>
+<text x="1142" y="1064" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">输出固定 GenerationEnvelope</text>
+<text x="1142" y="1096" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">缺口或超限：保留 M，进入分流</text>
+<rect x="1630" y="850" width="460" height="330" rx="18" fill="#F6F2FF" stroke="#B6A1E3" stroke-width="2"/>
+<rect x="1650" y="870" width="64" height="32" rx="8" fill="#7044AA" stroke="none" stroke-width="2"/>
+<text x="1682" y="873" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S10</text>
+<text x="2068" y="874" dominant-baseline="text-before-edge" text-anchor="end" font-size="20" font-weight="400" fill="#7044AA">大模型参与</text>
+<text x="1652" y="918" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">复用、生成并校验资产</text>
+<text x="1652" y="968" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">复用适用用例，模型补齐缺失部分</text>
+<text x="1652" y="1000" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">逐项对应 M：用例 / 断言 / 缺口</text>
+<text x="1652" y="1032" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">核验引用、原预期及步骤映射</text>
+<text x="1652" y="1064" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">准备脚本并完成必要审阅</text>
+<text x="1652" y="1096" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">生成完成不等于执行验证通过</text>
+<rect x="2140" y="850" width="460" height="330" rx="18" fill="#FFFFFF" stroke="#B9C8DA" stroke-width="2"/>
+<rect x="2160" y="870" width="64" height="32" rx="8" fill="#255AA8" stroke="none" stroke-width="2"/>
+<text x="2192" y="873" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S11</text>
+<text x="2162" y="918" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">冻结执行计划 RunPlan</text>
+<text x="2162" y="968" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">绑定画像、M、判据和脚本</text>
+<text x="2162" y="1000" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">绑定构建、环境、数据及执行批次</text>
+<text x="2162" y="1032" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">检查前置状态与执行准备</text>
+<text x="2162" y="1064" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">计划冻结后保持原始依赖</text>
+<text x="2162" y="1096" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">修复构建使用新契约和新计划</text>
+<path class="line" d="M 1580 1015 L 1630 1015" fill="none" stroke="#64748B" stroke-width="3" marker-end="url(#arrow)"/>
+<path class="line" d="M 2090 1015 L 2140 1015" fill="none" stroke="#64748B" stroke-width="3" marker-end="url(#arrow)"/>
+<path class="line" d="M 1350 1180 L 1350 1225" fill="none" stroke="#986019" stroke-width="3"/>
+<path class="line" d="M 1860 1180 L 1860 1225" fill="none" stroke="#986019" stroke-width="3"/>
+<path class="line" d="M 330 1225 L 1860 1225" fill="none" stroke="#986019" stroke-width="3"/>
+<rect x="620" y="1192" width="365.0" height="35" rx="6" fill="#FFFFFF" stroke="none" stroke-width="2"/>
+<text x="630" y="1195" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#986019">缺口按类型路由；必验项继续保留</text>
+<path class="line" d="M 330 1225 L 330 1250" fill="none" stroke="#986019" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="100" y="1250" width="460" height="110" rx="14" fill="#FFF7E8" stroke="#D8AD62" stroke-width="2"/>
+<text x="120" y="1267" dominant-baseline="text-before-edge" text-anchor="start" font-size="25" font-weight="600" fill="#986019">F1  缺关系 / 观察路径</text>
+<text x="120" y="1313" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#74562E">定向调查 → S02 / S03</text>
+<path class="line" d="M 840 1225 L 840 1250" fill="none" stroke="#986019" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="610" y="1250" width="460" height="110" rx="14" fill="#FFF7E8" stroke="#D8AD62" stroke-width="2"/>
+<text x="630" y="1267" dominant-baseline="text-before-edge" text-anchor="start" font-size="25" font-weight="600" fill="#986019">F2  缺独立预期</text>
+<text x="630" y="1313" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#74562E">等待权威修订 → S07</text>
+<path class="line" d="M 1350 1225 L 1350 1250" fill="none" stroke="#986019" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1120" y="1250" width="460" height="110" rx="14" fill="#FFF7E8" stroke="#D8AD62" stroke-width="2"/>
+<text x="1140" y="1267" dominant-baseline="text-before-edge" text-anchor="start" font-size="25" font-weight="600" fill="#986019">F3  缺用例 / 脚本 / 数据</text>
+<text x="1140" y="1313" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#74562E">补齐适用资产 → S10 / S11</text>
+<path class="line" d="M 1860 1225 L 1860 1250" fill="none" stroke="#986019" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1630" y="1250" width="460" height="110" rx="14" fill="#FFF7E8" stroke="#D8AD62" stroke-width="2"/>
+<text x="1650" y="1267" dominant-baseline="text-before-edge" text-anchor="start" font-size="25" font-weight="600" fill="#986019">F4  预算不足 / 关键未知</text>
+<text x="1650" y="1313" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#74562E">保留缺口；等待、扩围或阻断</text>
+<path class="line" d="M 2370 1180 L 2370 1405 L 60 1405 L 60 1672 L 100 1672" fill="none" stroke="#64748B" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="116" y="1367" width="780.0" height="35" rx="6" fill="#FFFFFF" stroke="none" stroke-width="2"/>
+<text x="126" y="1370" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#64748B">已审阅资产＋固定计划 → 在目标构建执行；发生修复时重新经过 S06—S11</text>
+<text x="100" y="1453" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#275F91">E  目标执行、证据判定与演进回流</text>
+<rect x="100" y="1510" width="460" height="325" rx="18" fill="#FFFFFF" stroke="#B9C8DA" stroke-width="2"/>
+<rect x="120" y="1530" width="64" height="32" rx="8" fill="#255AA8" stroke="none" stroke-width="2"/>
+<text x="152" y="1533" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S12</text>
+<text x="122" y="1578" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">执行测试并归档观察</text>
+<text x="122" y="1628" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">Runner / API / 事件与数据适配器</text>
+<text x="122" y="1660" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">使用隔离数据、身份和等待截止</text>
+<text x="122" y="1692" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">记录原始响应、事件与账本观察</text>
+<text x="122" y="1724" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">绑定业务键、构建、批次及窗口</text>
+<text x="122" y="1756" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">区分未执行、失败与执行未知</text>
+<rect x="610" y="1510" width="460" height="325" rx="18" fill="#ECF9F4" stroke="#77B69C" stroke-width="2"/>
+<rect x="630" y="1530" width="64" height="32" rx="8" fill="#176F52" stroke="none" stroke-width="2"/>
+<text x="662" y="1533" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S13</text>
+<text x="1048" y="1534" dominant-baseline="text-before-edge" text-anchor="end" font-size="20" font-weight="400" fill="#176F52">I3</text>
+<text x="632" y="1578" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">核验证据并重算判据</text>
+<text x="632" y="1628" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">枚举适用范围内完整执行记录</text>
+<text x="632" y="1660" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">清单与代际来自同一读取快照</text>
+<text x="632" y="1692" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">核验目标、环境与观察完整性</text>
+<text x="632" y="1724" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">按独立判据计算逐项结果</text>
+<text x="632" y="1756" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">保留未知与仍然有效的反例</text>
+<rect x="1120" y="1510" width="460" height="325" rx="18" fill="#FFFFFF" stroke="#B9C8DA" stroke-width="2"/>
+<rect x="1140" y="1530" width="64" height="32" rx="8" fill="#986019" stroke="none" stroke-width="2"/>
+<text x="1172" y="1533" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S14</text>
+<text x="1142" y="1578" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">质量条件是否满足</text>
+<path d="M 1350 1624 L 1545 1702 L 1350 1780 L 1155 1702 Z" fill="#FFF3D9" stroke="#D8AD62" stroke-width="2"/>
+<text x="1350" y="1658" dominant-baseline="text-before-edge" text-anchor="middle" font-size="25" font-weight="600" fill="#74531B">必验项有效通过</text>
+<text x="1350" y="1698" dominant-baseline="text-before-edge" text-anchor="middle" font-size="20" font-weight="400" fill="#74531B">无关键失败 / 未知 / 缺证据</text>
+<text x="1350" y="1740" dominant-baseline="text-before-edge" text-anchor="middle" font-size="21" font-weight="400" fill="#74531B">风险政策满足</text>
+<text x="1350" y="1800" dominant-baseline="text-before-edge" text-anchor="middle" font-size="22" font-weight="400" fill="#74531B">审批或综合分不能覆盖质量缺口</text>
+<rect x="1630" y="1510" width="460" height="325" rx="18" fill="#F0F8FF" stroke="#80A6CA" stroke-width="2"/>
+<rect x="1650" y="1530" width="64" height="32" rx="8" fill="#275F91" stroke="none" stroke-width="2"/>
+<text x="1682" y="1533" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S15</text>
+<text x="2068" y="1534" dominant-baseline="text-before-edge" text-anchor="end" font-size="20" font-weight="400" fill="#275F91">I3</text>
+<text x="1652" y="1578" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">准入与使用前重验</text>
+<text x="1652" y="1628" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">质量判断与操作授权分别检查</text>
+<text x="1652" y="1660" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">绑定来源、批准和执行记录代际</text>
+<text x="1652" y="1692" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">提交及实际使用前重验同一依赖</text>
+<text x="1652" y="1724" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">变化或竞争：重新判断 / 阻断</text>
+<text x="1652" y="1756" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">输出目标版本有效准入结果</text>
+<rect x="2140" y="1510" width="460" height="325" rx="18" fill="#F6F2FF" stroke="#B6A1E3" stroke-width="2"/>
+<rect x="2160" y="1530" width="64" height="32" rx="8" fill="#7044AA" stroke="none" stroke-width="2"/>
+<text x="2192" y="1533" dominant-baseline="text-before-edge" text-anchor="middle" font-size="19" font-weight="600" fill="#FFFFFF">S16</text>
+<text x="2578" y="1534" dominant-baseline="text-before-edge" text-anchor="end" font-size="20" font-weight="400" fill="#7044AA">I3</text>
+<text x="2162" y="1578" dominant-baseline="text-before-edge" text-anchor="start" font-size="30" font-weight="600" fill="#152B43">分类回流与画像演进</text>
+<text x="2162" y="1628" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">成功 / 失败 / 未知都可归档</text>
+<text x="2162" y="1660" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">关系、规则和资产经治理后入图</text>
+<text x="2162" y="1692" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">仅追加观察不必重建整轮契约</text>
+<text x="2162" y="1724" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">相关依赖变化：旧资格重新评估</text>
+<text x="2162" y="1756" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#334155">运行观察不能改写正式预期</text>
+<path class="line" d="M 560 1672 L 610 1672" fill="none" stroke="#64748B" stroke-width="3" marker-end="url(#arrow)"/>
+<path class="line" d="M 1070 1672 L 1120 1672" fill="none" stroke="#64748B" stroke-width="3" marker-end="url(#arrow)"/>
+<path class="line" d="M 1580 1672 L 1630 1672" fill="none" stroke="#176F52" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1578" y="1631" width="42.0" height="34" rx="6" fill="#FFFFFF" stroke="none" stroke-width="2"/>
+<text x="1588" y="1634" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#176F52">是</text>
+<path class="line" d="M 840 1510 L 840 1487 L 2370 1487 L 2370 1510" fill="none" stroke="#7044AA" stroke-width="3" stroke-dasharray="10 8" marker-end="url(#arrow)"/>
+<rect x="1470" y="1451" width="319.0" height="35" rx="6" fill="#FFFFFF" stroke="none" stroke-width="2"/>
+<text x="1480" y="1454" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#7044AA">原始观察与各类判定均可回流</text>
+<path class="line" d="M 1350 1835 L 1350 1880" fill="none" stroke="#986019" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1120" y="1880" width="460" height="105" rx="14" fill="#FFF1E8" stroke="#D8AD62" stroke-width="2"/>
+<text x="1142" y="1897" dominant-baseline="text-before-edge" text-anchor="start" font-size="25" font-weight="600" fill="#986019">否：阻断 / 补验 / 修复</text>
+<text x="1142" y="1941" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#74562E">修复后：新构建＋新契约＋新计划</text>
+<path class="line" d="M 1860 1835 L 1860 1880" fill="none" stroke="#176F52" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1630" y="1880" width="460" height="105" rx="14" fill="#E8F6EF" stroke="#77B69C" stroke-width="2"/>
+<text x="1652" y="1897" dominant-baseline="text-before-edge" text-anchor="start" font-size="25" font-weight="600" fill="#176F52">核验满足：进入发布流程</text>
+<text x="1652" y="1941" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#38634F">消费准入结果时仍检查相关代际</text>
+<rect x="2140" y="1880" width="460" height="105" rx="14" fill="#F6F2FF" stroke="#B6A1E3" stroke-width="2"/>
+<text x="2162" y="1897" dominant-baseline="text-before-edge" text-anchor="start" font-size="25" font-weight="600" fill="#7044AA">R1 返回 S04：校验补丁</text>
+<text x="2162" y="1941" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#655379">保留历史；不自动继承旧通过结论</text>
+<path class="line" d="M 2370 1835 L 2370 1880" fill="none" stroke="#7044AA" stroke-width="3" stroke-dasharray="10 8" marker-end="url(#arrow)"/>
+<rect x="100" y="1880" width="970" height="105" rx="14" fill="#EDF2F8" stroke="none" stroke-width="2"/>
+<text x="124" y="1897" dominant-baseline="text-before-edge" text-anchor="start" font-size="25" font-weight="600" fill="#24445F">图例：颜色表示处理职责，不表示实现完成度</text>
+<text x="124" y="1941" dominant-baseline="text-before-edge" text-anchor="start" font-size="22" font-weight="400" fill="#52677F">蓝灰＝规则处理  紫＝模型参与/反馈  绿＝完整义务/证据  黄＝缺口/判断</text>
+<rect x="100" y="2032" width="2500" height="76" rx="14" fill="#EAF0F8" stroke="none" stroke-width="2"/>
+<text x="124" y="2054" dominant-baseline="text-before-edge" text-anchor="start" font-size="26" font-weight="400" fill="#24445F">支撑组件：PostgreSQL＋pgvector  |  MinIO/S3  |  解析适配器  |  模型网关  |  Temporal / AgentGoal  |  Runner</text>
+<text x="100" y="2140" dominant-baseline="text-before-edge" text-anchor="start" font-size="29" font-weight="600" fill="#173B57">I1  验证目标驱动画像完善</text>
+<text x="100" y="2185" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#52677F">S03 / S09：用可关闭的缺口约束补图</text>
+<text x="950" y="2140" dominant-baseline="text-before-edge" text-anchor="start" font-size="29" font-weight="600" fill="#173B57">I2  完整必验清单跨阶段保持</text>
+<text x="950" y="2185" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#52677F">S07—S13：生成、执行及判定沿用同一 M</text>
+<text x="1800" y="2140" dominant-baseline="text-before-edge" text-anchor="start" font-size="29" font-weight="600" fill="#173B57">I3  画像与验证结论联动演进</text>
+<text x="1800" y="2185" dominant-baseline="text-before-edge" text-anchor="start" font-size="23" font-weight="400" fill="#52677F">S13—S16：依赖变化影响证据与准入</text>
+<text x="100" y="2250" dominant-baseline="text-before-edge" text-anchor="start" font-size="25" font-weight="400" fill="#687C90">最终态技术方案｜现有组件与新增设计组合，完整自动闭环尚未全部贯通｜2026年10月29日</text>
+<text x="2600" y="2250" dominant-baseline="text-before-edge" text-anchor="end" font-size="21" font-weight="400" fill="#687C90">NASUS · PATENT REVIEW</text>
+</svg>
