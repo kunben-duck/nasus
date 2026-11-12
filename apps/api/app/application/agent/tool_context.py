@@ -261,13 +261,18 @@ def compact_tool_catalog_json(
         }
         for _, _, tool in sorted(scored, reverse=True)
     ]
-    payload["relevant_tools"] = _budgeted_details(payload, ranked, min(len(ranked), max(1, relevant_limit)), max_bytes)
+    count = min(len(ranked), max(1, relevant_limit))
+    payload["relevant_tools"] = _budgeted_details(payload, ranked, count, max_bytes)
     return _serialize_with_byte_budget(payload, max_bytes)
+
+
+def _governance_details(tool: dict) -> dict:
+    return {key: value for key, value in tool.items() if key not in {"label", "description"}}
 
 
 def _budgeted_details(payload: dict, ranked: list[dict], count: int, max_bytes: int) -> list[dict]:
     base_bytes = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-    costs = [len(json.dumps({**tool, "label": tool["label"][:1], "description": tool["description"][:1]},
+    costs = [len(json.dumps(_governance_details(tool),
                            ensure_ascii=False, separators=(",", ":")).encode("utf-8")) for tool in ranked]
     used = base_bytes + max(0, count - 1)
     selected = []
@@ -276,8 +281,8 @@ def _budgeted_details(payload: dict, ranked: list[dict], count: int, max_bytes: 
         if remaining < 0:
             break
         suffix = costs[index + 1:]
-        # Keep complete lower-ranked contracts only when an oversized detail
-        # cannot fit; the lossless registry still advertises every tool ID.
+        # Skip a ranked entry only if its governance contract cannot fit
+        # without prose. The registry still holds every ID.
         if len(suffix) >= remaining and used + costs[index] + sum(sorted(suffix)[:remaining]) <= max_bytes:
             selected.append(tool)
             used += costs[index]
@@ -303,7 +308,7 @@ def _serialize_with_byte_budget(payload: dict, max_bytes: int) -> str:
     if compact_labels:
         result = serialize(1, compact_labels=True)
     if len(result.encode("utf-8")) > max_bytes:
-        raise ValueError("tool catalog metadata exceeds the planner byte budget")
+        return _serialize_governance_with_byte_budget(payload, max_bytes)
     # Labels are explanatory, not identifiers. Keep them intact unless the
     # entire registry no longer fits with one-character descriptions.
     # Never remove IDs, required inputs,
@@ -316,6 +321,31 @@ def _serialize_with_byte_budget(payload: dict, max_bytes: int) -> str:
             result, lower = candidate, cap + 1
         else:
             upper = cap - 1
+    return result
+
+
+def _serialize_governance_with_byte_budget(payload: dict, max_bytes: int) -> str:
+    # Display text is optional; never replace a ranked governance contract to
+    # make space for it. Complete labels are more useful than one-letter hints.
+    tools = payload["relevant_tools"]
+    details = [_governance_details(tool) for tool in tools]
+
+    def serialize() -> str:
+        return json.dumps({**payload, "relevant_tools": details}, ensure_ascii=False, separators=(",", ":"))
+
+    result = serialize()
+    if len(result.encode("utf-8")) > max_bytes:
+        raise ValueError("tool catalog metadata exceeds the planner byte budget")
+    for field in ("label", "description"):
+        for tool, detail in zip(tools, details):
+            if not tool[field]:
+                continue
+            detail[field] = tool[field]
+            candidate = serialize()
+            if len(candidate.encode("utf-8")) <= max_bytes:
+                result = candidate
+            else:
+                del detail[field]
     return result
 
 

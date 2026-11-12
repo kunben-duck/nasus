@@ -17,9 +17,14 @@ CASE_OUTCOME_SCHEMA = "nasus.run-plan-case-outcome.v1"
 CASE_EXECUTE_TOOL = "quality.run_plan.execute_http"
 CASE_CANCEL_TOOL = "quality.run_plan.cancel_http"
 CASE_LEASE_SECONDS = 90
+CASE_CONSENT_SECONDS = 900
 
 
 class RunPlanCaseExecutionInvalid(ValueError):
+    pass
+
+
+class RunPlanCaseConsentExpired(RunPlanCaseExecutionInvalid):
     pass
 
 
@@ -236,9 +241,13 @@ def verify_case_command_selection(snapshot, selection, *, actor_id, invocation_i
             raise RunPlanCaseExecutionInvalid("case work requires its unchanged independently confirmed original command")
         confirmed = datetime.fromisoformat(payload["confirmed_at"])
         if confirmed.tzinfo is None or (not historical and (now is None or now.tzinfo is None
-                or not 0 <= (now - confirmed).total_seconds() <= 900)):
+                or (now - confirmed).total_seconds() < 0)):
             raise RunPlanCaseExecutionInvalid("case command consent must be fresh by PostgreSQL time")
+        if not historical and (now - confirmed).total_seconds() > CASE_CONSENT_SECONDS:
+            raise RunPlanCaseConsentExpired("original case command consent expired by PostgreSQL time")
         return acceptance_digest({"tool_id": snapshot["tool_id"], "input_payload": payload})
+    except RunPlanCaseConsentExpired:
+        raise
     except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
         raise RunPlanCaseExecutionInvalid("original case execution command cannot be verified") from None
 

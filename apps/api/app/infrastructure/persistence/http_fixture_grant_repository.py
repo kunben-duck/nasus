@@ -138,7 +138,8 @@ class HttpFixtureGrantRepository(EnvironmentObservationRepository):
             raise RunPlanIntegrityError("fixture grant was rebound from its canonical recipe ancestry")
         return value
 
-    def issue(self, request, scope, source_scope_digest, *, actor_id, invocation_id, require_access, native_environment=None):
+    def issue(self, request, scope, source_scope_digest, *, actor_id, invocation_id, require_access, verify_inputs,
+              native_environment=None):
         with session_scope() as session:
             TestDesignScopeRepository._lock(session, request.project_id)
             TestDesignScopeRepository._actor(session, request.project_id, actor_id)
@@ -158,6 +159,7 @@ class HttpFixtureGrantRepository(EnvironmentObservationRepository):
                         or row.request_hash != acceptance_digest(request.model_dump(mode="json"))):
                     raise RunPlanIntegrityError("fixture grant replay cannot renew or rebind original consent")
                 require_access()
+                verify_inputs()
                 return value
             # One attempt may include several cases. Its immutable first grant
             # fixes the plan/target/actor; each case separately fixes its recipe.
@@ -211,7 +213,8 @@ class HttpFixtureGrantRepository(EnvironmentObservationRepository):
                 conversation_id=command.conversation_id, agent_goal_id=command.input_payload.get("agent_goal_id"),
                 entity_version=0, mutation_kind="append", patch={key: value[key] for key in GRANT_EVENT_FIELDS},
                 query_keys=[["http-fixture-grants", request.project_id]], snapshot_hint=True), session=session)
-            require_access()
+            # The immutable fact stays uncommitted until the full parent chain is reverified.
+            verify_inputs()
             session.flush()
             # Complete ancestry checks can outlive confirmation. Reject the
             # entire new fact transaction rather than renewing its original TTL.

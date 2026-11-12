@@ -113,6 +113,7 @@ class ConversationSummaryCheckpointApplicationService:
         self._state = state
         self._events = events
         self.policy = policy or ConversationSummaryCheckpointService()
+        self.semantic = None
 
     def latest_checkpoint(self, conversation_id: str) -> ConversationSummaryCheckpoint | None:
         return self.policy.latest_checkpoint(
@@ -135,6 +136,8 @@ class ConversationSummaryCheckpointApplicationService:
         )
 
     async def maybe_create_checkpoint(self, conversation: ConversationSession) -> ConversationSummaryCheckpoint | None:
+        if self.semantic is not None:
+            return await self.semantic.maybe_schedule(conversation)
         checkpoint = self.build_checkpoint(conversation)
         if checkpoint is None:
             return None

@@ -131,7 +131,28 @@ def test_fixed_exweb_fixture_dispatch_consent_atomicity_and_unknown_result(nativ
         runner.payload = lambda cmd: (specimen(cmd, states=["passed", "passed", "passed", "failed"], status="failed")
             if cmd.metadata["fixture_phase"] == "setup" else specimen(cmd))
         lifecycle = HttpFixtureLifecycleApplicationService(runner, owned, OwnedHttpFixtureObservationVerifier())
-        result = lifecycle.prepare(scope, recipe, require_work=current)
+        phase_reads = {}
+        with monkeypatch.context() as patch:
+            calls = []
+            require_scope = access.require_scope
+
+            def track_scope(scoped):
+                calls.append(scoped)
+                return require_scope(scoped)
+
+            def measure(phase, operation):
+                def measured(*args, **kwargs):
+                    start = len(calls)
+                    result = operation(*args, **kwargs)
+                    phase_reads[phase] = calls[start:]
+                    return result
+                return measured
+
+            patch.setattr(access, "require_scope", track_scope)
+            patch.setattr(owned, "claim", measure("claim", owned.claim))
+            patch.setattr(owned, "complete", measure("complete", owned.complete))
+            result = lifecycle.prepare(scope, recipe, require_work=current)
+        assert phase_reads == {"claim": [scope] * 3, "complete": [scope] * 3}
         assert result.execution.result.status == "failed" and result.command.steps[-1]["value_json"] == '"EXPLICIT_INDEPENDENT_EXPECTED"'
         assert lifecycle.prepare(scope, recipe, require_work=current) == result and len(runner.commands) == 1
         with session_scope() as session:

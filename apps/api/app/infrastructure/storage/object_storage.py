@@ -12,6 +12,13 @@ from typing import Any
 from .scoped_s3_client import ScopedS3Client
 
 
+def _omit_empty_continue(request, **_kwargs):
+    # An empty PUT needs no continue handshake. Some S3-compatible servers
+    # reply immediately, leaving botocore's pooled response parser in early-response mode.
+    if str(request.headers.get("Content-Length")) == "0" and "Expect" in request.headers:
+        del request.headers["Expect"]
+
+
 @dataclass(frozen=True)
 class ObjectStoragePutResult:
     storage_ref: str
@@ -117,10 +124,12 @@ class ObjectStorage:
             import boto3  # type: ignore[import-not-found]
         except ModuleNotFoundError as exc:
             raise RuntimeError("S3 object storage is configured but boto3 is not installed") from exc
-        return boto3.session.Session().client(
+        client = boto3.session.Session().client(
             "s3", endpoint_url=config.endpoint, aws_access_key_id=config.access_key,
             aws_secret_access_key=config.secret_key, region_name=config.region,
         )
+        client.meta.events.register("before-sign.s3.PutObject", _omit_empty_continue)
+        return client
 
     def put_json(self, key: str, payload: dict[str, Any]) -> ObjectStoragePutResult:
         body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -183,7 +192,7 @@ class ObjectStorage:
     ) -> None:
         with self._s3_write_client() as client:
             client.put_object(
-                Bucket=self.config.bucket, Key=key, Body=body, ContentType=content_type,
+                Bucket=self.config.bucket, Key=key, Body=body, ContentLength=len(body), ContentType=content_type,
                 Metadata={"nasus-content-hash": content_hash},
             )
 

@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from apps.api.app.infrastructure.persistence.build_plan_models import BuildPlanRecord
 from apps.api.app.infrastructure.persistence.build_authorization_models import BuildAuthorizationRecord
 from apps.api.app.infrastructure.persistence.image_publication_models import ImagePublicationHeadRecord
-from apps.api.app.infrastructure.persistence.db_models import AgentGoalRecord, BaselineRecord
+from apps.api.app.infrastructure.persistence.db_models import AgentGoalRecord, BaselineRecord, ToolInvocationRecord
 from apps.api.app.infrastructure.persistence.structure_build_models import StructureBuildArtifactRecord
 from apps.api.app.infrastructure.persistence.unit_of_work import session_scope
 from apps.api.app.application.agent.graph import LocalAgentGraphRuntime
@@ -17,13 +17,13 @@ from apps.api.tests.test_source_evidence_api import evidence_api
 from apps.api.tests.test_agent_investigation_continuation import replace_graph, resume
 
 
-def send(v, message, *, headers=None, canonical_action_id=None):
+def send(v, message, *, headers=None, canonical_action_id=None, timeout_seconds=20):
     conversation_id = v["conversation"].json()["id"]
     result = v["client"].post(f"/v1/conversations/{conversation_id}/messages",
         headers={**(headers or v["headers"]), "Idempotency-Key": uuid4().hex}, json={"content": message,
             **({"canonical_action_id": canonical_action_id} if canonical_action_id else {})})
     assert result.status_code == 202, result.text
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + timeout_seconds
     while True:
         turn = v["client"].get(f"/v1/conversations/{conversation_id}/turns/{result.json()['turn_id']}",
             headers=headers or v["headers"]).json()
@@ -117,6 +117,25 @@ def test_unresolved_or_quoted_request_cannot_enter_mutable_or_new_writes(evidenc
     assert result["messages"][-1]["metadata"]["clarification_kind"] == "system_image_build_preparation"
     with session_scope() as session:
         assert session.scalar(select(func.count()).select_from(BuildPlanRecord).where(BuildPlanRecord.project_id == v["project_id"])) == 0
+
+
+@pytest.mark.parametrize("question", ["当前系统画像是否已经完成构建", "系统画像是不是已经构建完成了", "看看系统画像是不是构建完成了"])
+def test_status_question_is_read_only_while_build_waits_for_consent(evidence_api, question):
+    v = evidence_api
+    goal, fixed = require_prepared(v, send(v, "构建系统画像"))
+
+    def invocations():
+        with session_scope() as session:
+            return {row.id: (row.tool_id, row.status) for row in session.scalars(select(ToolInvocationRecord).where(
+                ToolInvocationRecord.conversation_id == v["conversation"].json()["id"]))}
+
+    before = invocations()
+    result = send(v, question)
+    assert result["messages"][-1]["metadata"].get("tool_id") == "query.system_image.status"
+    assert require_prepared(v, result) == (goal, fixed)
+    after = invocations()
+    assert {key: after[key] for key in before} == before
+    assert [value for key, value in after.items() if key not in before] == [("query.system_image.status", "completed")]
 
 
 def test_ambiguous_target_clarifies_instead_of_selecting_first_baseline(evidence_api):

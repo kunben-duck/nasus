@@ -36,13 +36,13 @@ class OwnedTargetHealthInspector:
             "target": ["curl", "--disable", "--noproxy", "*", "--silent", "--show-error", "--max-time", "5",
                 "--max-filesize", str(MAX_HEALTH_RESPONSE_BYTES - 4), "--proto", "=http", "--request", "GET",
                 "--header", "Accept-Encoding: identity", "--write-out", "\n%{http_code}",
-                "--url", "http://127.0.0.1:8080/actuator/health"]}
+                "--url", "http://127.0.0.1:8080" + self.inspector.profile.health_path]}
         checks = []
-        for role in ("pg", "redis", "target"):
+        for role in (*self.inspector.profile.dependencies, "target"):
             member = members[role]
             body = self.inspector._command(["exec", "--user", member["user"], member["container_id"], *queries[role]],
                 require_work, MAX_HEALTH_RESPONSE_BYTES)
-            checks.append({"role": role, "probe": HEALTH_PROBES[role],
+            checks.append({"role": role, "probe": self.inspector.profile.health_probe if role == "target" else HEALTH_PROBES[role],
                 **{key: member[key] for key in ("container_id", "image_id", "started_at")},
                 "response_base64": base64.b64encode(body).decode("ascii"), "response_hash": byte_digest(body), "byte_count": len(body)})
         after = self.inspector.inspect(artifact_hash, require_work=require_work)

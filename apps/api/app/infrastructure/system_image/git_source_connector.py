@@ -18,7 +18,7 @@ from ...application.system_image.source_ports import (
 )
 from ...application.system_image.system_image_models import RawAssetRecord
 from .git_snapshot_cache import GitSnapshotCache
-from ...domain.system_image.source_tracking import require_tracked_ref
+from ...domain.system_image.source_tracking import is_fixed_git_commit, require_tracked_ref
 
 
 class GitSourceConnectorError(OSError):
@@ -95,6 +95,7 @@ class GitSourceConnector:
 
     def materialize(self, source: RawAssetRecord, *, refresh: bool) -> MaterializedSource:
         tracked_ref = require_tracked_ref(source.source_type, source.tracked_ref)
+        fixed_commit = tracked_ref if is_fixed_git_commit(tracked_ref) else None
         safe_uri, parsed = self._validated_uri(source.source_uri)
         if not self.git_binary:
             raise GitSourceConnectorError("Git executable is required to materialize remote code sources")
@@ -109,6 +110,10 @@ class GitSourceConnector:
 
         with self._checkout_lock(lock_path), self._git_environment(source, parsed) as git_env:
             pinned_revision = self._pinned_revision(source) if not refresh else None
+            if fixed_commit is not None and pinned_revision not in (None, fixed_commit):
+                raise GitSourceConnectorError("Git source history conflicts with the fixed commit")
+            if not refresh:
+                pinned_revision = pinned_revision or fixed_commit
             if (checkout / ".git").is_dir():
                 if refresh:
                     self._refresh_checkout(checkout, safe_uri, git_env, tracked_ref=tracked_ref)
@@ -138,6 +143,8 @@ class GitSourceConnector:
                 ).strip()
             if not re.fullmatch(r"[0-9a-fA-F]{40,64}", revision):
                 raise GitSourceConnectorError("Git checkout did not resolve to a valid commit revision")
+            if fixed_commit is not None and revision != fixed_commit:
+                raise GitSourceConnectorError("Git remote did not return the requested fixed commit")
             snapshot = self.snapshots.materialize(
                 namespace=cache_key,
                 revision=revision,
@@ -219,6 +226,8 @@ class GitSourceConnector:
         commit = self._run_git(["-C", str(checkout), "rev-parse", "--verify", "FETCH_HEAD^{commit}"], env=env).strip()
         if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
             raise GitSourceConnectorError("Git tracked reference did not resolve to a commit")
+        if is_fixed_git_commit(tracked_ref) and commit != tracked_ref:
+            raise GitSourceConnectorError("Git remote did not return the requested fixed commit")
         self._run_git(["-C", str(checkout), "checkout", "--detach", "--force", commit], env=env)
         self._run_git(["-C", str(checkout), "clean", "-ffd"], env=env)
 

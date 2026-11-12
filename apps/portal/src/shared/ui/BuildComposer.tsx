@@ -4,22 +4,18 @@ import type { BuildComposerProps } from './build-composer/BuildComposerTypes'
 import { SelectedSkillGrid } from './build-composer/SelectedSkillGrid'
 
 export function BuildComposer({
-  prompt,
-  setPrompt,
-  runPrompt,
-  stopPrompt,
-  loading,
-  streaming,
-  selectedSkills,
-  onToggleSkill,
-  onGuessYou,
+  prompt, promptHistory, setPrompt, runPrompt, stopPrompt,
+  loading, streaming, selectedSkills, onToggleSkill, onGuessYou,
 }: BuildComposerProps) {
   const hasPrompt = prompt.trim().length > 0
   return (
     <div className="hero-composer">
       <div className="hero-composer-content">
         <SelectedSkillGrid selectedSkills={selectedSkills} onToggleSkill={onToggleSkill} />
-        <BuildPromptInput prompt={prompt} setPrompt={setPrompt} runPrompt={runPrompt} />
+        <BuildPromptInput
+          prompt={prompt} promptHistory={promptHistory} setPrompt={setPrompt}
+          runPrompt={runPrompt} busy={loading || streaming}
+        />
         <BuildComposerActions
           hasPrompt={hasPrompt}
           loading={loading}

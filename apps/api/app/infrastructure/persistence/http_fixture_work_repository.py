@@ -144,6 +144,10 @@ class PostgresHttpFixtureWorkRepository:
     def _require(self, lease):
         with fixture_phase("work_original_scope"):
             parent = self.journal.access.require_scope(lease.scope)
+        self.require_ownership(lease, parent)
+
+    def require_ownership(self, lease, parent):
+        """Check live ownership against the pinned parent; not dispatch authority."""
         with session_scope() as session:
             with fixture_phase("work_live_lease"):
                 self._live(session, lease, parent)
@@ -152,19 +156,27 @@ class PostgresHttpFixtureWorkRepository:
         with self._read_session(), fixture_phase("work_renew"):
             return self._renew(lease, require_current=require_current)
 
-    def _renew(self, lease, *, require_current):
+    def renew_ownership(self, lease, parent, *, require_current):
+        """Renew only live ownership of pinned work; effect gates verify the original archives."""
+        with self._read_session(), fixture_phase("work_renew"):
+            return self._renew(lease, require_current=require_current, pinned_parent=parent)
+
+    def _renew(self, lease, *, require_current, pinned_parent=None):
         with fixture_phase("work_initial_authority"):
             require_current()
-        with fixture_phase("work_original_scope"):
-            parent = self.journal.access.require_scope(lease.scope)
+        parent = pinned_parent
+        if parent is None:
+            with fixture_phase("work_original_scope"):
+                parent = self.journal.access.require_scope(lease.scope)
         with session_scope() as session:
             with fixture_phase("work_transaction_lock"):
                 self.journal._lock(session, parent)
             with fixture_phase("work_live_lease"):
                 self._live(session, lease, parent, lock=True)
-            with fixture_phase("work_final_scope"):
-                if acceptance_digest(self.journal.access.require_scope(lease.scope)) != acceptance_digest(parent):
-                    raise HttpFixtureInvalid("fixture work original parent changed during renewal")
+            if pinned_parent is None:
+                with fixture_phase("work_final_scope"):
+                    if acceptance_digest(self.journal.access.require_scope(lease.scope)) != acceptance_digest(parent):
+                        raise HttpFixtureInvalid("fixture work original parent changed during renewal")
             with fixture_phase("work_final_authority"):
                 require_current()
             # The old lease must still be live after slow guards; an expired
@@ -188,9 +200,10 @@ class PostgresHttpFixtureWorkFence:
         return {"work_id": self.lease.work_id, "owner_id": self.lease.owner_id,
             "epoch": self.lease.epoch, "request_digest": self.lease.request_digest}
 
-    def require(self, session, scope, phase, command):
+    def require(self, session, scope, phase, command, *, parent):
         self.lease.require_phase(scope, phase)
-        parent = self.repository.journal.access.require_scope(scope)
+        # The journal already verified this parent in the same write phase.
+        # _live still checks the registered plan, actor, ownership and PG time.
         self.repository._live(session, self.lease, parent, lock=True)
         # The journal compiles and verifies the full command before opening its
         # write transaction. Re-entering cleanup inspection here would acquire

@@ -63,17 +63,22 @@ class HttpLocatorRecordApplicationService:
             current()
             return result
 
-    def _read(self, project_id, record_id):
+    def _read(self, project_id, record_id, *, case_plan=None):
         access = self.locators.authorization.scope(project_id)
         current = lambda: self.locators.authorization.require_current(access)
         stored = self.repository.read(project_id, record_id)
         request = RunPlanLocatorQuery.model_validate(stored["request"])
         if request.project_id != project_id or stored["metadata"]["record_id"] != record_id:
             raise RunPlanIntegrityError("locator record read scope differs")
-        self.locators._inputs(request)
+        if case_plan is None:
+            self.locators._inputs(request)
+        else:
+            saved = case_plan(project_id, request.run_plan_id, request.run_plan_artifact_hash, access=access)
+            self.locators._original_plan(request, saved)
         current()
         archive = self.artifacts.read(project_id, stored["artifact_ref"], stored["metadata"]["artifact_hash"])
-        saved = self.locators.plans.read(project_id, request.run_plan_id)
+        if case_plan is None:
+            saved = self.locators.plans.read(project_id, request.run_plan_id)
         if acceptance_digest(validate_locator_archive(archive, stored["request"], saved)) != acceptance_digest(stored["metadata"]):
             raise RunPlanIntegrityError("locator metadata differs from its independently archived bytes")
         self.locators.inventory.verify(saved["artifact"]["plan"], archive["report"]["inventory"], require_access=current)
@@ -83,6 +88,13 @@ class HttpLocatorRecordApplicationService:
     def read(self, project_id, record_id):
         with self.locators._session():
             return self._read(project_id, record_id)
+
+    def read_for_case(self, project_id, record_id, *, case_plan):
+        """Verify the original locator and source bytes inside a bracketed case parent read."""
+        if not callable(case_plan):
+            raise RunPlanIntegrityError("locator requires the original case plan read port")
+        with self.locators._session():
+            return self._read(project_id, record_id, case_plan=case_plan)
 
     def receipt(self, project_id, record_id):
         return {"metadata": self.read(project_id, record_id)["metadata"], "historical_not_live": True}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from .agent_models import (
@@ -24,6 +24,8 @@ from ..platform.prompts import PromptRegistryPort
 from ..system_image.retrieval import SystemImageMemoryHit, SystemImageRetriever
 from ...domain.system_image.publication import PublicationChanged
 from ...domain.platform.prompt_registry import builtin_prompt
+from .task_memory import task_notebook
+from ..platform.actor_context import current_actor
 
 
 class AgentMemoryManager:
@@ -36,6 +38,8 @@ class AgentMemoryManager:
         system_image_memory_context: SystemImageMemoryContextApplicationService,
         conversation_summaries: ConversationSummaryCheckpointService | None = None,
         prompt_registry: PromptRegistryPort | None = None,
+        *,
+        read_guard: Callable[[ConversationSession], None] | None = None,
     ) -> None:
         self._state = state
         self.conversation_summaries = (
@@ -44,6 +48,9 @@ class AgentMemoryManager:
         self.system_image_memory_context = system_image_memory_context
         self.system_image_retriever = system_image_retriever
         self._prompt_registry = prompt_registry
+        self._read_guard = read_guard
+        self.semantic = None
+        self.history_recall = None
 
     async def get_context_view(
         self,
@@ -67,7 +74,7 @@ class AgentMemoryManager:
             else self._state.active_goal_for_conversation(conversation.id)
         )
         tools = list(self._state.available_tools())
-        memory_context = await self.build_context(conversation, tools=tools)
+        memory_context = await self.build_context(conversation, tools=tools, inspect_only=True)
         latest_checkpoint = self._latest_checkpoint(conversation.id)
         project_id = conversation.project_id
         project_memory = self._project_long_term_memory_view(project_id, version_id=conversation.version_id)
@@ -102,7 +109,11 @@ class AgentMemoryManager:
                 "tool_ids": [tool.tool_id for tool in tools],
             },
         }
+        if self.semantic is not None and not restricted:
+            result["context_budget"] = memory_context.budget_metadata
+            result["conversation_memory"].update(self.semantic.status(conversation))
         self.system_image_memory_context.require_current(scope)
+        self._read_conversation(conversation)
         return result
 
     async def create_summary_checkpoint(
@@ -120,6 +131,12 @@ class AgentMemoryManager:
             agent_goal_id=agent_goal_id,
             space_ref=space_ref,
         )
+        if self.semantic is not None:
+            checkpoint = await self.semantic.compact(conversation, force=True)
+            if checkpoint is None:
+                raise ValueError("No completed messages are available to summarize")
+            self._read_conversation(conversation)
+            return checkpoint
         latest_checkpoint = self._latest_checkpoint(conversation.id)
         checkpoint = self._build_summary_checkpoint(conversation, force=True, created_by=created_by)
         if checkpoint is None:
@@ -131,6 +148,7 @@ class AgentMemoryManager:
 
         self._state.persist_summary_checkpoint(conversation, checkpoint)
         await self._state.publish_memory_checkpointed(conversation, checkpoint)
+        self._read_conversation(conversation)
         return checkpoint
 
     def record_item(
@@ -217,6 +235,7 @@ class AgentMemoryManager:
         *,
         tools: list[ToolDefinition] | None = None,
         trace_retrieval: bool = False,
+        inspect_only: bool = False,
     ) -> AgentMemoryContext:
         scope = self._source_scope(conversation)
         restricted = bool(scope and scope.requires_provenance)
@@ -235,10 +254,30 @@ class AgentMemoryManager:
             expected_scope=scope,
         )
         memory_hits = list(memory_search.hits)
+        context_snapshot = self.context_snapshot(conversation, tools=tools, memory_hits=memory_hits,
+            image_read_state=memory_search.image_read_state, retrieval_strategy=memory_search.strategy)
+        budget_metadata = None
+        if self.semantic is not None and not restricted:
+            checkpoint = self.semantic.valid_checkpoint(conversation)
+            context_snapshot += "\n" + task_notebook(conversation, checkpoint, self._state.active_goal_for_conversation(conversation.id),
+                memory_search.image_read_state.model_dump(mode="json") if memory_search.image_read_state else None)
+            if self.history_recall is not None:
+                references = []
+                for invocation in conversation.tool_invocations[-4:]:
+                    receipt = invocation.result.conversation_history if invocation.result else None
+                    if receipt and invocation.conversation_id == conversation.id:
+                        for row in receipt.get("messages", []):
+                            references.extend(self.history_recall(conversation.id, message_id=row["message_id"],
+                                offset=row.get("offset", 0))["messages"])
+                if references:
+                    import json
+                    context_snapshot += "\n[recalled_conversation_reference_data]\n" + json.dumps(references, ensure_ascii=False)
+            history_snapshot, budget_metadata = await self.semantic.prepare(conversation, self.system_prompt(conversation),
+                context_snapshot, inspect_only=inspect_only)
+            recent_turn_count = len(history_snapshot.messages)
         result = AgentMemoryContext(
             system_prompt=self.system_prompt(conversation),
-            context_snapshot=self.context_snapshot(conversation, tools=tools, memory_hits=memory_hits,
-                image_read_state=memory_search.image_read_state, retrieval_strategy=memory_search.strategy),
+            context_snapshot=context_snapshot,
             history_snapshot=history_snapshot,
             recent_turn_count=recent_turn_count,
             checkpoint_count=checkpoint_count,
@@ -248,12 +287,21 @@ class AgentMemoryManager:
             retrieval_run_refs=list(memory_search.retrieval_run_refs),
             retrieval_strategy=memory_search.strategy,
             image_read_state=memory_search.image_read_state.model_dump(mode="json") if memory_search.image_read_state else None,
+            budget_metadata=budget_metadata,
         )
         self.system_image_memory_context.require_current(scope)
         return result
 
     def _source_scope(self, conversation: ConversationSession) -> SourceAccessScope | None:
         return self.system_image_memory_context.scope(conversation.project_id) if conversation.project_id else None
+
+    def semantic_scope(self, conversation):
+        scope = self._source_scope(conversation)
+        if scope and scope.requires_provenance:
+            raise PermissionError("Historical messages have no complete source-local provenance")
+        self.system_image_memory_context.require_current(scope)
+        actor = current_actor()
+        return scope.fingerprint if scope else "conversation:" + conversation.id + ":" + (actor.user.id if actor else "system")
 
     def _latest_checkpoint(self, conversation_id: str) -> ConversationSummaryCheckpoint | None:
         return self.conversation_summaries.latest_checkpoint(
@@ -288,6 +336,8 @@ class AgentMemoryManager:
         scope = self._source_scope(conversation)
         if scope and scope.requires_provenance:
             return "Prior conversation memory is withheld until its complete source provenance is verified."
+        if self.semantic is not None:
+            return self.semantic.history(conversation)
         segments: list[str] = []
         latest_checkpoint = self._latest_checkpoint(conversation.id)
         if latest_checkpoint:
@@ -428,6 +478,11 @@ class AgentMemoryManager:
             )
         return sections
 
+    def _read_conversation(self, conversation: ConversationSession) -> ConversationSession:
+        if self._read_guard is not None:
+            self._read_guard(conversation)
+        return conversation
+
     def _conversation_for_memory_query(
         self,
         *,
@@ -437,18 +492,18 @@ class AgentMemoryManager:
     ) -> ConversationSession:
         if agent_goal_id:
             goal = self._state.get_goal(agent_goal_id)
-            return self._state.get_conversation(goal.conversation_id)
+            return self._read_conversation(self._state.get_conversation(goal.conversation_id))
         if conversation_id:
-            return self._state.get_conversation(conversation_id)
+            return self._read_conversation(self._state.get_conversation(conversation_id))
         if space_ref:
             space_type, _, space_id = space_ref.partition(":")
             if not space_type or not space_id:
                 raise KeyError(space_ref)
             for conversation in self._state.list_conversations():
                 if conversation.space_type == space_type and conversation.space_id == space_id:
-                    return conversation
+                    return self._read_conversation(conversation)
                 if space_type == "project" and conversation.project_id == space_id:
-                    return conversation
+                    return self._read_conversation(conversation)
         raise KeyError("conversation_id, agent_goal_id, or space_ref is required")
 
     @staticmethod

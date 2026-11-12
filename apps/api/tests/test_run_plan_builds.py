@@ -9,22 +9,35 @@ from apps.api.app.application.quality_loop.run_plan_build_inputs import RunPlanB
 from apps.api.app.application.quality_loop.run_plan_builds import RunPlanBuildApplicationService
 from apps.api.app.domain.quality_loop.acceptance_specification import acceptance_digest
 from apps.api.app.domain.quality_loop.native_build import NativeBuildRequest, NativeBuildOutput, build_receipt
+from apps.api.app.domain.quality_loop.build_profiles import JAVA_BUILD, PYTHON_BUILD
 from apps.api.app.domain.quality_loop.run_plan import compile_run_plan, RunPlanChanged, RunPlanIntegrityError, RunPlanInvalid
 from apps.api.app.domain.quality_loop.run_plan_build import compile_run_plan_build
 from apps.api.app.domain.shared.native_build_source import NativeBuildSourcePin, FrozenNativeBuildSource, NativeBuildFile, byte_digest
 from apps.api.app.domain.system_image.source_access import SourceAccessDenied
 from apps.api.tests.test_native_build import protocol_jar
 from apps.api.tests.test_run_plans import plan_inputs
+from apps.api.app.infrastructure.runner.native_python_build import python_archive, runtime_python_inventory
 
 
-def binding_inputs(*, multiple=False):
+def binding_inputs(*, multiple=False, python_profile=False):
     draft, review, sources, selection = plan_inputs()
     if multiple:
         sources["source_members"].append({"binding_id": "second", "source_revision_id": "second-revision", "source_type": "code", "status": "captured"})
     artifact = protocol_jar()
     pom = b"<project>Binding protocol only.</project>"
+    files = (NativeBuildFile("pom.xml", pom),)
+    artifact_path, adapter = "target/app.jar", JAVA_BUILD
+    toolchain = {"image_id": byte_digest(b"image"), "java": "21", "maven": "3.9.11", "network": "none",
+        "dependency_cache": "operator_read_only", "version_output_hash": byte_digest(b"protocol")}
+    if python_profile:
+        pom = b'[project]\nname="protocol-only"\n'
+        files = (NativeBuildFile("config/settings.py", b"DEBUG=False\n"), NativeBuildFile("manage.py", b""),
+            NativeBuildFile("pyproject.toml", pom))
+        artifact_path, adapter = "target/app.pyz", PYTHON_BUILD
+        toolchain = {key: value for key, value in toolchain.items() if key not in {"java", "maven"}}
+        toolchain.update(python="3.12", zipapp="1", dependency_lock_hash=byte_digest(b"lock"))
     target = selection.target_build.model_dump(mode="json")
-    target.update(artifact_name="app.jar", artifact_hash=byte_digest(artifact), build_definition_hash=byte_digest(pom),
+    target.update(artifact_name=artifact_path.split("/")[-1], artifact_hash=byte_digest(artifact), build_definition_hash=byte_digest(pom),
         code_sources=[{key: member[key] for key in ("binding_id", "source_revision_id")}
             for member in sources["source_members"] if member["source_type"] == "code"])
     value = selection.model_dump(mode="json")
@@ -39,11 +52,12 @@ def binding_inputs(*, multiple=False):
         pin = NativeBuildSourcePin(**{key: sources[key] for key in
             ("project_id", "image_revision_id", "image_artifact_hash", "manifest_id", "manifest_hash")},
             binding_id=member["binding_id"], source_revision_id=member["source_revision_id"], source_id="source-" + member["binding_id"],
-            external_revision="fixed", content_hash=byte_digest(b"pom.xml\0" + pom), snapshot_manifest_hash=byte_digest(b"snapshot"))
-        request = NativeBuildRequest(FrozenNativeBuildSource(pin, (NativeBuildFile("pom.xml", pom),)), "target/app.jar")
+            external_revision="fixed", content_hash=byte_digest(b"".join(f.path.encode() + b"\0" + f.body for f in files)), snapshot_manifest_hash=byte_digest(b"snapshot"))
+        request = NativeBuildRequest(FrozenNativeBuildSource(pin, files), artifact_path, adapter=adapter)
+        if python_profile:
+            artifact = python_archive(request.source)
         output = NativeBuildOutput(request.digest, artifact, b"Protocol only, not compiled.",
-            {"image_id": byte_digest(b"image"), "java": "21", "maven": "3.9.11", "network": "none",
-                "dependency_cache": "operator_read_only", "version_output_hash": byte_digest(b"protocol")}, {})
+            toolchain, runtime_python_inventory(artifact) if python_profile else {}, adapter)
         receipt = build_receipt(request, output)
         ident = "native-" + member["binding_id"]
         metadata = {"project_id": "p", "invocation_id": ident, "build_id": "build-" + ident,
@@ -53,7 +67,35 @@ def binding_inputs(*, multiple=False):
     selection = RunPlanBuildSelection(project_id="p", run_plan_id="plan", run_plan_artifact_hash=acceptance_digest(archived),
         native_builds=[{key: build["metadata"][key] for key in ("invocation_id", "build_id", "artifact_hash", "receipt_digest")} for build in builds],
         target_build_invocation_id=builds[0]["invocation_id"], reason="Independent original build binding protocol specimen")
+    if python_profile:
+        plan["selection"]["target_build"].update(runtime="Python", runtime_version="3.12", build_tool="zipapp",
+            build_tool_version="1", artifact_hash=byte_digest(artifact))
+        value = selection.model_dump(mode="json")
+        refresh_pins(view, value, builds)
+        selection = RunPlanBuildSelection.model_validate(value)
     return view, selection, builds
+
+
+def test_python_binding_retains_frozen_plan_and_lock_without_granting_execution():
+    view, selection, builds = binding_inputs(python_profile=True)
+    binding = compile_run_plan_build(view, selection.model_dump(mode="json"), builds)
+    assert binding["builds"][0]["toolchain"]["dependency_lock_hash"] == byte_digest(b"lock")
+    assert binding["builds"][0]["artifact"]["path"] == "target/app.pyz"
+    assert not binding["execution_authorized"]
+
+
+@pytest.mark.parametrize("fault", ["unknown_adapter", "missing_lock", "java_runtime", "wrong_definition", "wrong_suffix"])
+def test_python_binding_rejects_cross_profile_or_missing_evidence(fault):
+    view, selection, builds = binding_inputs(python_profile=True)
+    value, receipt = selection.model_dump(mode="json"), builds[0]["receipt"]
+    if fault == "unknown_adapter": receipt["adapter"] = "user-selected-executable"
+    elif fault == "missing_lock": receipt["toolchain"].pop("dependency_lock_hash")
+    elif fault == "java_runtime": view["artifact"]["plan"]["selection"]["target_build"]["runtime"] = "Java"
+    elif fault == "wrong_definition": receipt["source"]["files"][-1]["path"] = "pom.xml"
+    elif fault == "wrong_suffix": receipt["artifact"]["path"] = "target/app.jar"
+    refresh_pins(view, value, builds)
+    with pytest.raises((RunPlanInvalid, RunPlanIntegrityError)):
+        compile_run_plan_build(view, value, builds)
 
 
 def refresh_pins(view, selection, builds):

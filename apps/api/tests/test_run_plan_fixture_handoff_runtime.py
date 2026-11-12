@@ -6,6 +6,7 @@ import pytest
 
 from apps.api.app.application.quality_loop.run_plan_cases import RunPlanCaseApplicationService
 from apps.api.app.domain.quality_loop.run_plan_case_execution import RunPlanCaseExecutionInvalid
+from apps.api.app.domain.system_image.source_access import SourceAccessDenied
 from apps.api.app.infrastructure.runner import run_plan_case_runtime as runtime
 from apps.api.app.infrastructure.runner.http_fixture_verifier import OwnedHttpFixtureObservationVerifier
 from apps.api.tests.test_run_plan_case_execution import Journal, Artifacts
@@ -45,6 +46,39 @@ def test_actual_worker_adapter_passes_complete_original_inputs_on_execution_and_
     assert application.read(worker.journal.scope) == result
     assert len(configured) == 1 and len(runner.commands) == len(original)
     assert prepared.fixture_inputs == original
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+def test_prepared_worker_checks_authority_without_reloading_original_inputs_before_binding(fixture_inputs, monkeypatch, revoked):
+    v = fixture_inputs
+    worker, runner, configured = configured_worker(monkeypatch)
+    worker.journal.require_poll = worker.journal.require
+    original_configure, original_acquire = runtime.ConfiguredOwnedTargetHttpRunner, worker.journal.acquire
+
+    def configure(**kwargs):
+        assert v.state["health_reads"] == 1
+        return original_configure(**kwargs)
+
+    def acquire(*args, **kwargs):
+        assert v.state["health_reads"] == 1
+        return original_acquire(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "ConfiguredOwnedTargetHttpRunner", configure)
+    monkeypatch.setattr(worker.journal, "acquire", acquire)
+    if revoked:
+        def deny(*args, **kwargs):
+            raise SourceAccessDenied("revoked before configuring the original case Runner")
+        monkeypatch.setattr(v.service, "require_live_authority", deny)
+    application = RunPlanCaseApplicationService(v.service, worker)
+    execute = lambda: asyncio.run(application.execute(v.selection, invocation_id=v.snapshot["id"]))
+    if revoked:
+        with pytest.raises(SourceAccessDenied):
+            execute()
+        assert not configured and not runner.commands and worker.journal.scope is None
+    else:
+        assert execute()["state"]["state"] == "observed"
+        assert len(configured) == 1 and len(runner.commands) == len(v.selection.fixture_setups)
+        assert v.state["health_reads"] > 1
 
 
 @pytest.mark.parametrize("fault", ["missing", "wire", "pin"])

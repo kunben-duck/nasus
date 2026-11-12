@@ -14,6 +14,7 @@ from ...application.quality_loop.generation_work_lease import (
     GenerationWorkLease, GenerationLeaseBusy, GenerationLeaseLost, GENERATION_LEASE_SECONDS,
 )
 from ...domain.system_image.source_snapshots import snapshot_digest
+from ...domain.quality_loop.build_profiles import JAVA_BUILD, build_profile
 from .db_models import AuditEventRecord, ToolInvocationRecord, UserIdentityRecord, ProjectRoleBindingRecord
 from .image_revision_models import ImageRevisionRecord
 from .source_snapshot_models import SourceRevisionRecord, SourceManifestMemberRecord
@@ -251,9 +252,13 @@ class NativeBuildRepository:
             fields = {"invocation_id": invocation_id, "project_id": request.project_id, "build_id": reserved["build_id"],
                 "artifact_ref": saved["artifact_ref"], "artifact_hash": saved["artifact_hash"],
                 "receipt_digest": snapshot_digest(receipt), "recorded_at": datetime.now(timezone.utc).isoformat()}
+            profile = build_profile(receipt["adapter"])
+            count_keys = ("runtime_library_count", "compiled_class_count") if profile.adapter == JAVA_BUILD else ("python_file_count",)
+            counts = {key: receipt["runtime_inventory"][key] for key in count_keys}
+            if any(type(count) is not int or count < 0 for count in counts.values()):
+                raise ValueError("invalid runtime inventory counts")
             payload = {**fields, "request_digest": request.request_digest, "artifact": receipt["artifact"],
-                "runtime_library_count": receipt["runtime_inventory"]["runtime_library_count"],
-                "compiled_class_count": receipt["runtime_inventory"]["compiled_class_count"], "execution_authorized": False}
+                **counts, "execution_authorized": False}
             session.add(Result(**fields, payload=payload, content_hash=snapshot_digest(payload)))
             session.flush()
             self._event(session, command, "quality.native_build.archived", {"build_id": reserved["build_id"],

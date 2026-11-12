@@ -8,6 +8,8 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from ...application.platform.tool_models import EventPayload
+from ...application.quality_loop.execution_work_guard import work_poll
+from ...application.quality_loop.http_fixture_diagnostics import fixture_phase
 from ...application.quality_loop.http_fixture_journal_access import HttpFixtureSavedPlanAccessPort, HttpFixtureExecutionArtifactPort
 from ...application.quality_loop.http_fixtures import HttpFixtureDispatchAlreadyClaimed, HttpFixturePhaseRecord
 from ...application.quality_loop.http_fixture_work import HttpFixtureTransactionFencePort
@@ -99,15 +101,18 @@ class PostgresHttpFixtureDispatchJournal:
         NativeBuildRepository._actor(session, parent["project_id"], self.actor_id)
         return self._parent(session, parent)
 
-    def _expected(self, scope, phase, *, read_only=False):
-        receipt = None
+    def _setup_receipt(self, scope, phase, *, read_only=False, require_current=None):
         if type(phase) is str and phase.startswith("cleanup:"):
-            original = self.inspect(scope, "setup", read_only=read_only)
+            original = self.inspect(scope, "setup", read_only=read_only, require_current=require_current)
             if original is None or original.execution is None:
                 raise HttpFixtureInvalid("cleanup cannot invent an unobserved original setup resource")
-            receipt = self.verifier.verify(original.command, original.execution,
+            return self.verifier.verify(original.command, original.execution,
                 environment_id=scope.environment_id, inventory_hash=scope.inventory_hash)
-        return self.access.command(scope, phase, setup_receipt=receipt)
+        return None
+
+    def _expected(self, scope, phase, *, read_only=False, require_current=None):
+        receipt = self._setup_receipt(scope, phase, read_only=read_only, require_current=require_current)
+        return self.access.command_with_parent(scope, phase, setup_receipt=receipt)
 
     def _records(self, session, parent, scope, phase, command):
         ident = self._identity(scope, phase)
@@ -176,74 +181,165 @@ class PostgresHttpFixtureDispatchJournal:
             patch={key: value[key] for key in ("project_id", "claim_id", "status")},
             query_keys=[["http-fixture-journal", value["project_id"]]], snapshot_hint=True), session=session)
 
-    def inspect(self, scope, phase, *, original_command=None, read_only=False):
-        with self._read_session():
-            return self._inspect(scope, phase, original_command=original_command, read_only=read_only)
+    def inspect(self, scope, phase, *, original_command=None, read_only=False, require_current=None):
+        with self._read_session(), fixture_phase("journal_inspect"):
+            return self._inspect(scope, phase, original_command=original_command, read_only=read_only,
+                require_current=require_current)
 
-    def _inspect(self, scope, phase, *, original_command=None, read_only=False):
-        if type(read_only) is not bool or read_only and any(value is not None for value in
-                (self.work_fence, self.consent_fence, self.command_fence)):
+    def _require_read_only(self):
+        if any(value is not None for value in (self.work_fence, self.consent_fence, self.command_fence)):
             raise HttpFixtureInvalid("readonly original history cannot act as a live worker fence")
+
+    @staticmethod
+    def _require_original_setup_pin(reserved, authority):
+        pin = reserved.get("canonical_command")
+        if (reserved["schema"] != FIXTURE_CANONICAL_DISPATCH_SCHEMA or type(pin) is not dict
+                or any(pin.get(key) != value for key, value in authority.model_dump(mode="json").items())):
+            raise HttpFixtureInvalid("selected setup cannot adopt another command's original dispatch")
+
+    def _read_verified_result(self, parent, scope, phase, command, completed):
+        execution = self.artifacts.read(parent, scope, phase, command, completed["artifact_ref"], completed["artifact_hash"])
+        receipt = self.verifier.verify(command, execution, environment_id=scope.environment_id, inventory_hash=scope.inventory_hash)
+        if completed["receipt_digest"] != acceptance_digest(receipt) or completed["status"] != execution.result.status:
+            raise HttpFixtureInvalid("fixture stored outcome differs from the original native response")
+        return execution, receipt
+
+    def inspect_original_setup_cohort(self, scope, *, original_setup, require_current, verify_original=None):
+        """Read one pinned setup and its cleanup slots without reopening setup per slot."""
+        self._require_read_only()
+        if not isinstance(original_setup, HttpFixtureCommandAuthority) or (verify_original is not None and not callable(verify_original)):
+            raise HttpFixtureInvalid("fixture cohort requires the original setup command")
+        authority = HttpFixtureCommandAuthority.model_validate(original_setup.model_dump(mode="json"))
+        return self._inspect_setup_cohort(scope, authority=authority, require_current=require_current,
+            verify_original=verify_original, recheck=verify_original is not None)
+
+    def inspect_cleanup_history(self, scope, *, require_current):
+        """Read the original setup resource and all cleanup slots with a fresh final comparison."""
+        self._require_read_only()
+        return self._inspect_setup_cohort(scope, authority=None, require_current=require_current, recheck=True)
+
+    def _inspect_setup_cohort(self, scope, *, authority, require_current, recheck, verify_original=None):
+        with self._read_session(), fixture_phase("journal_setup_cohort"):
+            require_current()
+            parent, setup = self.access.command_with_parent(scope, "setup")
+            with session_scope() as session:
+                NativeBuildRepository._actor(session, parent["project_id"], self.actor_id, lock=False)
+                self._parent(session, parent)
+                reserved, completed = self._records(session, parent, scope, "setup", setup)
+                if reserved is None or completed is None:
+                    raise HttpFixtureInvalid("cleanup cannot invent an unobserved original setup resource")
+                if authority is not None:
+                    self._require_original_setup_pin(reserved, authority)
+                require_current()
+                execution, receipt = self._read_verified_result(parent, scope, "setup", setup, completed)
+                records = [("setup", HttpFixturePhaseRecord(setup, execution))]
+                pins = [("setup", setup, reserved, completed, execution)]
+                require_current()
+                for phase, command in self.access.cleanup_commands_from_receipt(scope, receipt):
+                    require_current()
+                    reserved, completed = self._records(session, parent, scope, phase, command)
+                    require_current()
+                    execution = None if completed is None else self._read_verified_result(
+                        parent, scope, phase, command, completed)[0]
+                    records.append((phase, None if reserved is None else HttpFixturePhaseRecord(command, execution)))
+                    pins.append((phase, command, reserved, completed, execution))
+                if verify_original is not None:
+                    require_current()
+                    verify_original()
+                if self.access.require_scope(scope) != parent:
+                    raise HttpFixtureInvalid("fixture cohort parent differs from the original saved plan")
+                require_current()
+                NativeBuildRepository._actor(session, parent["project_id"], self.actor_id, lock=False)
+            if recheck:
+                self._recheck_original_setup_rows(parent, scope, pins, require_current)
+            return tuple(records)
+
+    def _recheck_original_setup_rows(self, parent, scope, pins, require_current):
+        # Use a new session so a late result, cleanup or corrupted archive cannot
+        # be hidden by an ORM identity already loaded during the first read.
+        with session_scope() as session:
+            require_current()
+            NativeBuildRepository._actor(session, parent["project_id"], self.actor_id, lock=False)
+            self._parent(session, parent)
+            for phase, command, reserved, completed, execution in pins:
+                require_current()
+                if self._records(session, parent, scope, phase, command) != (reserved, completed):
+                    raise HttpFixtureInvalid("original fixture journal changed while reading")
+                if completed is not None:
+                    require_current()
+                    if self._read_verified_result(parent, scope, phase, command, completed)[0] != execution:
+                        raise HttpFixtureInvalid("original fixture response changed while reading")
+            require_current()
+            NativeBuildRepository._actor(session, parent["project_id"], self.actor_id, lock=False)
+
+    def _inspect(self, scope, phase, *, original_command=None, read_only=False, require_current=None):
+        if type(read_only) is not bool or (require_current is not None and (not read_only or not callable(require_current))):
+            raise HttpFixtureInvalid("readonly original history cannot act as a live worker fence")
+        if read_only:
+            self._require_read_only()
         if original_command is not None:
             original_command = HttpFixtureCommandAuthority.model_validate(original_command.model_dump(mode="json"))
             if phase != "setup":
                 raise HttpFixtureInvalid("a setup command cannot adopt an independently dispatched cleanup")
-        parent = self.access.require_scope(scope)
-        command = self._expected(scope, phase, read_only=read_only)
+        parent, command = self._expected(scope, phase, read_only=read_only, require_current=require_current)
         with session_scope() as session:
-            if read_only:
-                # The caller may already hold the project's write fence in a
-                # different session. Immutable reads must not reacquire it.
+            # Inspection cannot authorize dispatch. The later claim rechecks the
+            # original records under its write fence; reads must not stall renewal.
+            def require_actor():
                 NativeBuildRepository._actor(session, parent["project_id"], self.actor_id, lock=False)
-                self._parent(session, parent)
-            else:
-                self._lock(session, parent)
-            self.access.require_scope(scope)
+
+            require_actor()
+            self._parent(session, parent)
+            if not read_only:
+                self.access.require_scope(scope)
+            elif require_current is not None:
+                require_current()
             reserved, completed = self._records(session, parent, scope, phase, command)
-            if reserved is None:
-                if read_only:
-                    NativeBuildRepository._actor(session, parent["project_id"], self.actor_id, lock=False)
-                return None
-            if original_command is not None:
-                pin = reserved.get("canonical_command")
-                if (reserved["schema"] != FIXTURE_CANONICAL_DISPATCH_SCHEMA or type(pin) is not dict
-                        or any(pin.get(key) != value for key, value in original_command.model_dump(mode="json").items())):
-                    raise HttpFixtureInvalid("selected setup cannot adopt another command's original dispatch")
-            if completed is None:
-                if read_only:
-                    self.access.require_scope(scope)
-                    NativeBuildRepository._actor(session, parent["project_id"], self.actor_id, lock=False)
-                return HttpFixturePhaseRecord(command, None)
-            execution = self.artifacts.read(parent, scope, phase, command, completed["artifact_ref"], completed["artifact_hash"])
-            receipt = self.verifier.verify(command, execution, environment_id=scope.environment_id, inventory_hash=scope.inventory_hash)
-            if completed["receipt_digest"] != acceptance_digest(receipt) or completed["status"] != execution.result.status:
-                raise HttpFixtureInvalid("fixture stored outcome differs from the original native response")
-            self.access.require_scope(scope)
-            if read_only:
-                NativeBuildRepository._actor(session, parent["project_id"], self.actor_id, lock=False)
-            return HttpFixturePhaseRecord(command, execution)
+            if reserved is not None and original_command is not None:
+                self._require_original_setup_pin(reserved, original_command)
+            execution = None
+            if reserved is not None and completed is not None:
+                if require_current is not None:
+                    require_current()
+                execution, _ = self._read_verified_result(parent, scope, phase, command, completed)
+            if read_only or reserved is not None:
+                # The command already verified its parent before the read. Recheck it
+                # after the journal, even for an empty result; never reuse a live decision.
+                verified = self.access.require_scope(scope)
+                if read_only and verified != parent:
+                    raise HttpFixtureInvalid("fixture journal parent differs from the original saved plan")
+            require_actor()
+            return None if reserved is None else HttpFixturePhaseRecord(command, execution)
 
     def claim(self, scope, phase, command, *, require_current):
-        with self._read_session():
+        with self._read_session(), fixture_phase("journal_claim"):
             return self._claim(scope, phase, command, require_current=require_current)
 
     def _claim(self, scope, phase, command, *, require_current):
-        require_current()
-        parent = self.access.require_scope(scope)
-        if command != self._expected(scope, phase):
-            raise HttpFixtureInvalid("fixture dispatch command is outside the original manifest")
-        preflight = getattr(self.access, "require_dispatch", None)
-        if callable(preflight):
-            # Native access must verify its exact live epoch before any claim is
-            # staged. Runner still rechecks immediately around the HTTP request.
-            preflight(scope, phase, command, require_work=require_current)
-            require_current()
-        with session_scope() as session:
+        current = work_poll(require_current)
+        current()
+        original_preflight = getattr(self.access, "require_original_dispatch", None)
+        if callable(original_preflight):
+            receipt = self._setup_receipt(scope, phase)
+            with fixture_phase("journal_preflight"):
+                parent = original_preflight(scope, phase, command, setup_receipt=receipt, require_work=require_current)
+            current()
+        else:
+            parent, expected = self._expected(scope, phase)
+            if command != expected:
+                raise HttpFixtureInvalid("fixture dispatch command is outside the original manifest")
+            preflight = getattr(self.access, "require_dispatch", None)
+            if callable(preflight):
+                with fixture_phase("journal_preflight"):
+                    preflight(scope, phase, command, require_work=require_current)
+                current()
+        current_scope = getattr(self.access, "require_dispatch_scope", self.access.require_scope)
+        with fixture_phase("journal_claim_transaction"), session_scope() as session:
             plan = self._lock(session, parent)
-            self.access.require_scope(scope)
-            require_current()
+            current_scope(scope)
+            current()
             if self.work_fence is not None:
-                self.work_fence.require(session, scope, phase, command)
+                self.work_fence.require(session, scope, phase, command, parent=parent)
             if self.consent_fence is not None:
                 self.consent_fence.require(session, scope, phase, command)
             if self.command_fence is not None:
@@ -278,7 +374,7 @@ class PostgresHttpFixtureDispatchJournal:
             if self.work_fence is not None:
                 self.work_fence.claim(session, value)
                 session.flush()
-                self.work_fence.require(session, scope, phase, command)
+                self.work_fence.require(session, scope, phase, command, parent=parent)
             if self.consent_fence is not None:
                 self.consent_fence.claim(session, value)
                 session.flush()
@@ -289,27 +385,28 @@ class PostgresHttpFixtureDispatchJournal:
                 session.flush()
                 verify_dispatch_command(session, value)
                 self.command_fence.require(session, scope, phase, command)
-            self.access.require_scope(scope)
-            require_current()
+            current_scope(scope)
+            current()
 
     def complete(self, scope, phase, command, execution, *, require_current):
-        with self._read_session():
+        with self._read_session(), fixture_phase("journal_complete"):
             return self._complete(scope, phase, command, execution, require_current=require_current)
 
     def _complete(self, scope, phase, command, execution, *, require_current):
-        require_current()
-        parent = self.access.require_scope(scope)
-        if command != self._expected(scope, phase):
+        current = work_poll(require_current)
+        current()
+        parent, expected = self._expected(scope, phase)
+        if command != expected:
             raise HttpFixtureInvalid("fixture result command is outside the original manifest")
         receipt = self.verifier.verify(command, execution, environment_id=scope.environment_id, inventory_hash=scope.inventory_hash)
         ref, digest = self.artifacts.put(parent, scope, phase, command, execution)
-        require_current()
-        with session_scope() as session:
+        current()
+        with fixture_phase("journal_complete_transaction"), session_scope() as session:
             self._lock(session, parent)
             self.access.require_scope(scope)
-            require_current()
+            current()
             if self.work_fence is not None:
-                self.work_fence.require(session, scope, phase, command)
+                self.work_fence.require(session, scope, phase, command, parent=parent)
             if self.consent_fence is not None:
                 self.consent_fence.require(session, scope, phase, command)
             if self.command_fence is not None:
@@ -345,7 +442,7 @@ class PostgresHttpFixtureDispatchJournal:
             session.flush()
             self._records(session, parent, scope, phase, command)
             if self.work_fence is not None:
-                self.work_fence.require(session, scope, phase, command)
+                self.work_fence.require(session, scope, phase, command, parent=parent)
                 self.work_fence.complete(session, reserved)
             if self.consent_fence is not None:
                 self.consent_fence.require(session, scope, phase, command)
@@ -354,4 +451,4 @@ class PostgresHttpFixtureDispatchJournal:
                 self.command_fence.require(session, scope, phase, command)
                 self.command_fence.complete(session, reserved)
             self.access.require_scope(scope)
-            require_current()
+            current()

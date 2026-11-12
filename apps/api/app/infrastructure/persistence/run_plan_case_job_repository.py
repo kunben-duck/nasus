@@ -98,7 +98,7 @@ class RunPlanCaseJobRepository(RunPlanCasePreparationRepository):
             patch={"project_id": project_id, "tool_id": command.tool_id, "status": command.status},
             query_keys=[["run-plan-case-execution", project_id, command.id], ["tool-invocation", command.id]], snapshot_hint=True), session=session)
 
-    def finish(self, invocation_id, command_digest, status, *, history=None, require_access=None):
+    def finish(self, invocation_id, command_digest, status, *, history=None, require_access=None, verify_history=None):
         if status not in {"completed", "failed"}:
             raise RunPlanCaseExecutionInvalid("case finalization cannot invent cancellation or reopen an original job")
         with session_scope() as session:
@@ -134,6 +134,8 @@ class RunPlanCaseJobRepository(RunPlanCasePreparationRepository):
             row.revision += 1
             row.result_payload = ToolResult(invocation_id=row.id, status=status, summary=row.summary).model_dump()
             self._event(session, row)
+            if verify_history is not None:
+                verify_history()
             if require_access is not None:
                 require_access()
             return status

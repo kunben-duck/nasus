@@ -2581,7 +2581,7 @@ def test_governance_approval_cannot_promote_an_unknown_inventory_release():
 def test_build_message_creates_project():
     conversation = client.post(
         "/v1/conversations",
-        json={"space_type": "build", "space_id": "build", "title": "Build"},
+        json={"space_type": "build", "space_id": f"build-{uuid4().hex}", "title": "Build"},
     )
     conversation_id = conversation.json()["id"]
 
@@ -2598,7 +2598,7 @@ def test_build_message_creates_project():
 def test_build_message_without_project_name_requests_clarification():
     conversation = client.post(
         "/v1/conversations",
-        json={"space_type": "build", "space_id": "build", "title": "Build"},
+        json={"space_type": "build", "space_id": f"build-{uuid4().hex}", "title": "Build"},
     )
     conversation_id = conversation.json()["id"]
     before = len(client.get("/v1/projects").json())
@@ -2619,7 +2619,7 @@ def test_build_message_without_project_name_requests_clarification():
 def test_build_clarification_follow_up_can_continue_project_creation():
     conversation = client.post(
         "/v1/conversations",
-        json={"space_type": "build", "space_id": "build", "title": "Build"},
+        json={"space_type": "build", "space_id": f"build-{uuid4().hex}", "title": "Build"},
     )
     conversation_id = conversation.json()["id"]
 
@@ -2643,7 +2643,7 @@ def test_build_clarification_follow_up_can_continue_project_creation():
 def test_build_message_creates_project_from_chinese_name():
     conversation = client.post(
         "/v1/conversations",
-        json={"space_type": "build", "space_id": "build", "title": "Build"},
+        json={"space_type": "build", "space_id": f"build-{uuid4().hex}", "title": "Build"},
     )
     conversation_id = conversation.json()["id"]
 
@@ -2660,7 +2660,7 @@ def test_build_message_creates_project_from_chinese_name():
 def test_build_message_creates_project_from_chinese_curly_quoted_starting_point():
     conversation = client.post(
         "/v1/conversations",
-        json={"space_type": "build", "space_id": "build", "title": "Build"},
+        json={"space_type": "build", "space_id": f"build-{uuid4().hex}", "title": "Build"},
     )
     conversation_id = conversation.json()["id"]
 
@@ -5101,7 +5101,7 @@ def test_development_live_planner_provider_failure_falls_back_to_deterministic_w
     original = client.get("/v1/settings").json()
     conversation = client.post(
         "/v1/conversations",
-        json={"space_type": "build", "space_id": "build", "title": "Build"},
+        json={"space_type": "welcome", "space_id": f"planner-fallback-{uuid4().hex}", "title": "Planner fallback"},
     ).json()
 
     try:
@@ -5113,7 +5113,10 @@ def test_development_live_planner_provider_failure_falls_back_to_deterministic_w
             api_key="sk-planner-9999",
         )
 
+        provider_calls = []
+
         async def failing_call_custom(*, custom_model, custom_api_key, system_prompt, user_message, context_snapshot, history_snapshot):
+            provider_calls.append(user_message)
             raise RuntimeError("planner provider unavailable")
 
         with patch.object(store.llm, "_call_custom", new=failing_call_custom):
@@ -5123,6 +5126,7 @@ def test_development_live_planner_provider_failure_falls_back_to_deterministic_w
             )
 
         assert response.status_code == 200
+        assert provider_calls
         body = response.json()
         assert body["agent_goal"]["title"] == "Create project Deterministic Planner Guard"
         assert any(
@@ -5138,7 +5142,7 @@ def test_production_planner_provider_failure_blocks_deterministic_write_plan():
     project_name = "Blocked Planner Write"
     conversation = client.post(
         "/v1/conversations",
-        json={"space_type": "build", "space_id": "build", "title": "Build"},
+        json={"space_type": "welcome", "space_id": f"planner-guard-{uuid4().hex}", "title": "Planner write guard"},
     ).json()
     existing_goal_ids = {
         goal["id"]
@@ -5154,7 +5158,10 @@ def test_production_planner_provider_failure_blocks_deterministic_write_plan():
             api_key="sk-planner-production-9999",
         )
 
+        provider_calls = []
+
         async def failing_call_custom(*, custom_model, custom_api_key, system_prompt, user_message, context_snapshot, history_snapshot):
+            provider_calls.append(user_message)
             raise RuntimeError("planner provider unavailable")
 
         with (
@@ -5167,6 +5174,7 @@ def test_production_planner_provider_failure_blocks_deterministic_write_plan():
             )
 
         assert response.status_code == 200
+        assert provider_calls
         body = response.json()
         assert body["clarification"]["reason"] == (
             "planner_provider_unavailable:provider_fallback"
@@ -5178,6 +5186,99 @@ def test_production_planner_provider_failure_blocks_deterministic_write_plan():
         )
         detail = client.get(f"/v1/conversations/{conversation['id']}").json()
         assert {goal["id"] for goal in detail["agent_goals"]} == existing_goal_ids
+        assert not any(item["tool_id"] == "project.create" for item in detail["tool_invocations"])
+    finally:
+        restore_model_route(original, "chat")
+
+
+@pytest.mark.parametrize("allow_fallback", [True, False], ids=["development", "strict"])
+def test_build_explicit_name_provider_failure_only_creates_canonical_project_shell(allow_fallback):
+    from apps.api.app.infrastructure.persistence.build_authorization_models import BuildAuthorizationRecord
+    from apps.api.app.infrastructure.persistence.build_plan_models import BuildPlanRecord
+    from apps.api.app.infrastructure.persistence.db_models import (
+        AgentGoalRecord, RawAssetChunkRecord, RawAssetRecord, ToolInvocationRecord, VersionRecord,
+    )
+    from apps.api.app.infrastructure.persistence.image_publication_models import (
+        ImagePublicationHeadRecord, ImagePublicationRecord, ImagePublicationReviewRecord,
+    )
+    from apps.api.app.infrastructure.persistence.image_revision_models import ImageRevisionRecord
+    from apps.api.app.infrastructure.persistence.source_snapshot_models import (
+        SourceBindingRecord, SourceManifestRecord, SourceRevisionRecord,
+    )
+
+    original = client.get("/v1/settings").json()
+    project_name = "Explicit Intake Guard " + uuid4().hex
+    conversation = client.post("/v1/conversations", json={
+        "space_type": "build", "space_id": f"build-provider-guard-{uuid4().hex}", "title": "Build intake guard",
+    }).json()
+    before = {project["id"] for project in client.get("/v1/projects").json()}
+    try:
+        save_tested_model_config(display_name="Unavailable intake provider", provider_kind="openai_compatible",
+            base_url="https://api.example.com/v1", model_name="intake-model", api_key="sk-intake-test")
+        provider_prompts = []
+
+        async def failing_call_custom(*, custom_model, custom_api_key, system_prompt, user_message, context_snapshot, history_snapshot):
+            provider_prompts.append(system_prompt)
+            raise RuntimeError("intake provider unavailable")
+
+        with (
+            patch.object(store.planner, "allow_deterministic_write_fallback", allow_fallback),
+            patch.object(store.llm, "_call_custom", new=failing_call_custom),
+        ):
+            response = post_conversation_message(f"/v1/conversations/{conversation['id']}/messages",
+                json={"content": f"Help me create a new project called {project_name}"})
+
+        assert response.status_code == 200
+        assert provider_prompts and all("Extract explicit user-provided fields" in prompt for prompt in provider_prompts)
+        body = response.json()
+        intake = body["build_intake"]
+        project_id = intake["project_id"]
+        assert intake["project_name"] == project_name and intake["stage"] == "sources"
+        assert intake["goal_id"] is None and intake["capture_started"] is False
+        assert intake["optional_decided"] is False
+        assert all(intake[key] == "" for key in ("code", "code_ref", "requirements", "tests"))
+        assert body.get("agent_goal") is None
+        projects = client.get("/v1/projects").json()
+        assert {project["id"] for project in projects} - before == {project_id}
+        project = next(project for project in projects if project["id"] == project_id)
+        assert project["name"] == project_name and project["status"] == project["system_image_status"] == "draft"
+        detail = client.get(f"/v1/conversations/{conversation['id']}").json()
+        assert detail["project_id"] == project_id and not detail["agent_goals"]
+        assert [item["tool_id"] for item in detail["tool_invocations"]] == ["project.create"]
+        command = detail["tool_invocations"][0]
+        assert command["status"] == "completed" and command["input_payload"]["name"] == project_name
+        assert command["result"]["object_refs"] == [f"project:{project_id}"]
+        audit = client.get(f"/v1/audit-events?tool_invocation_id={command['id']}").json()
+        assert {"tool.invocation.created", "tool.invocation.executing", "tool.invocation.completed"}.issubset(
+            {event["action"] for event in audit})
+        with SessionLocal() as session:
+            persisted = session.scalars(select(ToolInvocationRecord).where(
+                ToolInvocationRecord.conversation_id == conversation["id"])).all()
+            assert [(item.id, item.tool_id, item.status) for item in persisted] == [(command["id"], "project.create", "completed")]
+            # Canonical project creation seeds empty placeholders, not captured sources.
+            placeholders = session.scalars(select(RawAssetRecord).where(
+                RawAssetRecord.project_id == project_id)).all()
+            slug = project_name.lower().replace(" ", "-")
+            assert {(item.source_type, item.source_uri) for item in placeholders} == {
+                ("code", f"git://{slug}"),
+                ("us_doc", f"docs://{slug}/historical-us"),
+                ("test_asset", f"tests://{slug}/regression"),
+            }
+            assert len(placeholders) == 3
+            for item in placeholders:
+                assert item.ingestion_status == "pending"
+                assert item.permission_status == "not_checked"
+                assert item.content_hash == "" and item.evidence_refs == []
+                assert item.file_count == item.byte_count == 0
+                assert all(getattr(item, field) is None for field in (
+                    "version_id", "tracked_ref", "content_ref", "registered_at",
+                    "registered_from_invocation_id", "credential_ref", "permission_checked_at",
+                    "ingest_started_at", "last_ingested_at", "failure_reason",
+                ))
+            for model in (RawAssetChunkRecord, SourceBindingRecord, SourceRevisionRecord, SourceManifestRecord,
+                    BuildPlanRecord, BuildAuthorizationRecord, ImageRevisionRecord, ImagePublicationReviewRecord,
+                    ImagePublicationRecord, ImagePublicationHeadRecord, VersionRecord, AgentGoalRecord):
+                assert session.scalar(select(model).where(model.project_id == project_id).limit(1)) is None, model.__tablename__
     finally:
         restore_model_route(original, "chat")
 

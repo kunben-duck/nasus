@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -12,10 +13,12 @@ from apps.api.app.application.platform.actor_context import current_user
 from apps.api.app.application.platform.http_fixture_job_receipts import HttpFixtureJobReceiptAccess
 from apps.api.app.application.platform.tool_handlers.http_fixture_jobs import HttpFixtureJobToolHandler
 from apps.api.app.application.platform.tool_models import ToolInvocation, ToolResult
+from apps.api.app.application.quality_loop.http_fixture_history import HttpFixtureHistoryItem
 from apps.api.app.application.quality_loop.http_fixture_jobs import HttpFixtureJobApplicationService, HttpFixtureJobTarget
 from apps.api.app.application.quality_loop.http_fixtures import HttpFixtureOutcomeUnknown
 from apps.api.app.domain.quality_loop.acceptance_specification import acceptance_digest
 from apps.api.app.domain.quality_loop.http_fixture_command import FIXTURE_COMMAND_TOOL, FIXTURE_CANCEL_TOOL, FIXTURE_QUERY_TOOL
+from apps.api.app.domain.quality_loop.http_fixture_observation import HttpFixtureObservationChanged
 from apps.api.app.domain.quality_loop.http_fixtures import HttpFixtureInvalid
 from apps.api.app.domain.system_image.source_access import SourceAccessDenied
 from apps.api.app.infrastructure.persistence import http_fixture_job_repository as adapter
@@ -139,6 +142,45 @@ def test_failed_preparation_can_end_without_fabricating_an_intent(job_specimen):
     assert (Intent, v.command.id) not in v.rows and len(v.outbox) == 1
 
 
+@pytest.mark.parametrize("fault", [None, "stopped", "expired", "foreign-intent", "revoked"])
+def test_worker_poll_audits_the_original_intent_once_without_weakening_live_checks(job_specimen, monkeypatch, fault):
+    v = job_specimen
+    calls, locks = [], v.session.locks[:]
+    verify = v.job_repository._verify
+
+    def checked(session, row):
+        calls.append("intent")
+        return verify(session, row)
+
+    def current(*args):
+        calls.append("actor")
+        if fault == "revoked":
+            raise PermissionError("original actor revoked")
+
+    monkeypatch.setattr(type(v.job_repository), "_verify", staticmethod(checked))
+    monkeypatch.setattr(adapter.PostgresHttpFixtureWorkRepository, "_actor_current", staticmethod(current))
+    if fault == "stopped":
+        v.command.status = "cancelled"
+    elif fault == "expired":
+        v.session.now += timedelta(seconds=901)
+    elif fault == "foreign-intent":
+        row = v.rows[(Intent, v.command.id)]
+        row.payload["grant_digest"] = acceptance_digest("other-grant")
+        row.grant_digest = row.payload["grant_digest"]
+        row.content_hash = acceptance_digest(row.payload)
+
+    def poll():
+        v.job_repository.require_running(v.inputs.selection, v.authority, v.inputs.consent.actor_id)
+
+    if fault is None:
+        poll()
+    else:
+        with pytest.raises(PermissionError if fault == "revoked" else HttpFixtureInvalid):
+            poll()
+    assert calls == ["intent"] + (["actor"] if fault in {None, "revoked"} else [])
+    assert v.session.locks == locks and not v.outbox
+
+
 @pytest.mark.parametrize("confirmed_at", [None, 1, "not-a-timestamp"])
 def test_invalid_cancellation_clock_is_a_typed_rejection_without_a_terminal_write(job_specimen, confirmed_at):
     v = job_specimen
@@ -222,6 +264,80 @@ def test_original_observation_states_cannot_upgrade_unknown_or_business_coverage
         assert v.command.status == "running" and not v.outbox
 
 
+@pytest.mark.parametrize("fault", [None, "unknown", "missing-archive", "revoked", "cancelled"])
+def test_retry_can_acknowledge_exact_durable_output_without_fresh_effect_permission(job_specimen, monkeypatch, fault):
+    v = job_specimen
+    history = observed_phase(v, monkeypatch, unknown=fault == "unknown")
+    v.session.now += timedelta(seconds=901)
+    if fault == "cancelled":
+        v.command.status = "cancelled"
+    else:
+        with pytest.raises(HttpFixtureInvalid, match="fresh original confirmation"):
+            v.job_repository.require_running(v.inputs.selection, v.authority, v.inputs.consent.actor_id)
+    actor = UserProfile(id=v.inputs.consent.actor_id, name="Original actor", email="actor@example.test", role="project_admin")
+    resolutions, operations = [], []
+
+    def resolve(command, *, historical=False):
+        assert command == v.authority.invocation_id
+        operations.append("historical" if historical else "live")
+        if not historical:
+            raise PermissionError("original permission expired")
+        return v.inputs.selection, actor, v.authority
+
+    def current(access):
+        assert access.actor_id == actor.id
+        if fault == "revoked":
+            raise SourceAccessDenied("original sources revoked")
+
+    def original_inputs(selection, *, live):
+        assert selection == v.inputs.selection and live is False
+        resolutions.append(selection)
+        return v.inputs
+
+    def original_history(inputs, *, require_current):
+        require_current()
+        assert inputs is v.inputs
+        if fault == "missing-archive":
+            return (("setup", HttpFixturePhaseRecord(history[0][1].command, None)),)
+        return history
+
+    monkeypatch.setattr(v.job_repository, "execution", resolve)
+    monkeypatch.setattr(v.job_repository, "has_archived_result", lambda authority: authority == v.authority)
+    finish = v.job_repository.finish
+
+    def isolated_finish(authority, status, *, require_current, **options):
+        def outside_transaction():
+            # The real guard's independent PG connection cannot see the write
+            # until this transaction commits; the in-memory specimen can.
+            local_status = v.command.status
+            v.command.status = "running"
+            try:
+                require_current()
+            finally:
+                v.command.status = local_status
+        return finish(authority, status, require_current=outside_transaction, **options)
+
+    monkeypatch.setattr(v.job_repository, "finish", isolated_finish)
+    grant = SimpleNamespace(authorization=SimpleNamespace(scope=lambda _: v.inputs.access_scope, require_current=current),
+        execution_inputs=original_inputs)
+    execution = SimpleNamespace(grants=grant, read_resolved_history=original_history,
+        execute=lambda *_args, **_options: pytest.fail("recovery cannot dispatch or acquire a lease"))
+    jobs = HttpFixtureJobApplicationService(execution, v.job_repository, None)
+    run = lambda: asyncio.run(jobs.run(v.authority.invocation_id, recover_archived=True))
+    if fault is None:
+        assert run() == run() == "completed"
+        assert v.command.status == "completed" and len(v.outbox) == 1
+    elif fault == "cancelled":
+        assert run() == "cancelled" and not operations and not v.outbox
+    else:
+        errors = {"unknown": PermissionError, "missing-archive": HttpFixtureInvalid, "revoked": SourceAccessDenied}
+        with pytest.raises(errors[fault]):
+            run()
+        assert v.command.status == "running" and not v.outbox
+    assert resolutions == ([] if fault in {"cancelled", "revoked"} else [v.inputs.selection])
+    assert operations == ([] if fault == "cancelled" else ["historical"] + (["live"] if fault == "unknown" else []))
+
+
 @pytest.mark.parametrize("change", ["missing_archive", "result_digest", "command", "duplicate_phase", "omitted_phase"])
 def test_original_job_state_rejects_changed_or_incomplete_evidence(job_specimen, monkeypatch, change):
     v = job_specimen
@@ -296,8 +412,12 @@ def application_specimen(native_grant):
         assert selection == chosen and command_authority == authority and current_user().id == actor.id
         calls.append("execute")
         if state["fault"] is not None: raise state["fault"]
-    execution = SimpleNamespace(grants=v.service, execute=execute,
-        read=lambda *_args, **options: options["require_current"]() or (("setup", None),))
+    def history(inputs, *, require_current):
+        require_current()
+        assert inputs.selection == chosen
+        calls.append("history")
+        return (("setup", None),)
+    execution = SimpleNamespace(grants=v.service, execute=execute, read_resolved_history=history)
     repository = SimpleNamespace(command=command, execution=lambda _: (chosen, actor, authority), require_running=current,
         bind=bind, finish=finish, state=lambda *_: {"original": True}, cancel=cancelled,
         preparation_state=lambda *_: None,
@@ -308,13 +428,74 @@ def application_specimen(native_grant):
     return SimpleNamespace(jobs=jobs, selected=chosen, authority=authority, actor=actor, calls=calls, state=state, source=v)
 
 
-def test_dispatch_pins_original_command_before_workflow_and_run_replays_archive(application_specimen):
+def test_dispatch_pins_original_command_before_workflow_and_run_replays_archive(application_specimen, monkeypatch):
     v = application_specimen
     asyncio.run(v.jobs.dispatch(v.selected, v.authority.invocation_id))
     assert v.calls.index("bind") < v.calls.index("workflow-start")
+    resolutions = []
+    resolve = v.jobs.grants.execution_inputs
+
+    def original(selection, *, live):
+        resolutions.append((selection, live))
+        return resolve(selection, live=live)
+
+    monkeypatch.setattr(v.jobs.grants, "execution_inputs", original)
     assert asyncio.run(v.jobs.run(v.authority.invocation_id)) == "completed"
-    assert v.calls.count("execute") == 1 and v.calls.index("execute") < v.calls.index("finish:completed")
+    assert v.calls.count("execute") == 1 and v.calls.index("execute") < v.calls.index("history") < v.calls.index("finish:completed")
     assert asyncio.run(v.jobs.run(v.authority.invocation_id)) == "completed" and v.calls.count("execute") == 1
+    assert resolutions == [(v.selected, False)]
+
+
+def test_bound_job_history_uses_the_already_verified_original_inputs(application_specimen, monkeypatch):
+    v = application_specimen
+    resolutions = []
+    resolve = v.jobs.grants.execution_inputs
+
+    def original(selection, *, live):
+        resolutions.append((selection, live))
+        return resolve(selection, live=live)
+
+    monkeypatch.setattr(v.jobs.grants, "execution_inputs", original)
+    result = v.jobs.read(HttpFixtureJobTarget(project_id=v.selected.project_id, invocation_id=v.authority.invocation_id))
+    assert result == {"original": True} and v.calls == ["history"]
+    assert resolutions == [(v.selected, False)]
+
+
+@pytest.mark.parametrize("fault", [None, "status", "digest", "selection", "scope"])
+def test_observation_job_reuses_one_verified_grant_but_rechecks_original_command_and_access(
+        application_specimen, monkeypatch, fault):
+    v = application_specimen
+    inputs, grant, recipe = v.jobs.grants.history_execution_inputs(v.selected)
+    original = HttpFixtureHistoryItem(project_id=v.selected.project_id, invocation_id=v.authority.invocation_id,
+        tool_id=FIXTURE_COMMAND_TOOL, stage="execute", status="running", request_digest=v.authority.request_digest,
+        recipe_id=grant.recipe_id, recipe_artifact_hash=grant.recipe_artifact_hash, run_plan_id=inputs.parent.run_plan_id,
+        run_plan_artifact_hash=inputs.parent.run_plan_artifact_hash, case_id=recipe["case_id"], attempt_id=grant.attempt_id,
+        operation=v.selected.operation, original_execution_id=v.authority.invocation_id,
+        grant_id=v.selected.grant_id, grant_digest=v.selected.grant_digest)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("the observation already verified this grant in the current read")
+
+    monkeypatch.setattr(v.jobs.grants, "execution_inputs", forbidden)
+    if fault == "status":
+        v.state["status"] = "completed"
+    elif fault == "digest":
+        original = original.model_copy(update={"request_digest": acceptance_digest("changed command")})
+    elif fault == "selection":
+        changed = v.selected.model_copy(update={"grant_digest": acceptance_digest("changed grant")})
+        monkeypatch.setattr(v.jobs.repository, "command", lambda _: (changed, "running", v.authority))
+    elif fault == "scope":
+        scope = deepcopy(inputs.access_scope)
+        scope.fingerprint = acceptance_digest("changed visibility")
+        inputs = replace(inputs, access_scope=scope)
+
+    if fault is None:
+        assert v.jobs.read_observation_job(original, inputs) == {"original": True}
+        assert v.calls == ["history"]
+    else:
+        with pytest.raises(SourceAccessDenied if fault == "scope" else HttpFixtureObservationChanged):
+            v.jobs.read_observation_job(original, inputs)
+        assert v.calls == []
 
 
 def test_unknown_effect_or_cancelled_worker_never_becomes_completion(application_specimen):

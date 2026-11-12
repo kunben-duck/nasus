@@ -24,6 +24,14 @@ canonical 撤回测试 1 passed，历史完整但 current=false。固定 exweb �
 运行，原生 build/owned target/Temporal 全链也新开独立验证；尚未取得终态。
 各批句柄、加载版本和验证边界见实施记录，不把进度点或旧失败重分类为通过。
 
+2026-11-10 后续切片：脚本详情首次读取仅重放原归档；验证模型原回复后，仍独立核验当前
+用例准入、审批头和来源权限。固定 exweb 的 PostgreSQL／私有 MinIO 对照通过
+`test_fixed_exweb_script_case_admission_consumes_original_pins`：原响应和已读取对象的完整
+摘要集合一致；相对上一版，历史输入仍验证两次，实时输入准备由两次降至一次。
+比较禁写、不发起新的模型或目标请求；不能据此推断端到端延迟或 exweb 业务覆盖。
+真实撤权和撤回用例也已通过；`output/exweb-v1-script-admission-read-pg-minio.log` 总计
+3 passed / 890.70 秒，隔离测试进程退出 0。
+
 ## 完整来源库存的选择读取
 
 用例生成、脚本生成和 RunPlan 的来源读取改用 application 的完整来源成员
@@ -39,6 +47,16 @@ canonical 撤回测试 1 passed，历史完整但 current=false。固定 exweb �
 3 passed / 63.64 秒，日志 `image-source-inventory-current-exweb-final-postgres-20261013.log`。
 该验证不执行目标或外部模型，协议资料不是独立业务 gold；未测 p95/容量。
 最新原生全链、旧失败复验及完整门禁状态见[实施记录](./implementation-progress.md)。
+
+## 发布引用的已验证画像头
+
+发布 pin／历史只消费画像头，改为 `frozen_header`，仍走完整归档、画像成员和实时来源
+权限验证；不向调用方复制整份图，不缓存可变发布头或扩大已有读作用域。私有 PG/MinIO
+对照在只读事务内比较完整输出、原对象字节摘要和 SQL／对象读取次数；仅允许分配减少。
+同快照提交撤权仍禁止读取画像头，原发布头变化仍阻止 `require_current=True` 的 pin。
+应用／边界回归 203 项通过；私有 PG/MinIO 两组分别 15 项与 2 项通过，见
+`output/exweb-publication-header-private-minio.log` 和 `output/exweb-publication-current-head-private-minio.log`。
+这些是完整性和分配对照，不是正式 exweb 派发结果或端到端耗时指标。
 
 ## Fixture 阶段的拥有作用域
 
@@ -250,6 +268,30 @@ exweb 业务通过。当前已启动的原生专项最初使用了会被隔离�
 business checkout/begin/commit2370→1187。每侧 live checkout/begin/rollback均1次、
 commit0次。live ACL查询12,250→6,128是重复完整父链展开消除后的结果，每次实际授权仍
 fresh；报告明确无ACL缓存或跨请求缓存，不能据此删去任何实际检查。
+
+2026-11-09 继续消除原生授权中 recipe 和环境记录各自展开同一完整 RunPlan 的重复。
+`read_with_native_environment` 先核验原环境及其父计划，再用该计划核验原 recipe 归档；
+项目、计划 ID、工件摘要、fixture 和原环境 pin 仍须精确匹配。每次 live 使用仍独立重查
+当前输入、PG consent 与来源权限，不缓存可变头或权限。预检复用同一次原环境读取已经
+核验的归档发出健康查询，健康检查之后重新读取完整原计划和原环境；独立的 PG、Redis、
+目标健康和工作租约检查保持不变。
+
+同名 opt-in 探针的新报告为 `nasus.fixture-parent-read-reuse.v2`。control 保留 `read_with_plan`
+的旧优化，只关闭新配对读取，衡量本轮改动而不是累计收益。原 exweb worker 输入专项仍
+比较旧展开算法，并额外断言每次历史读取只展开一个原计划、live 路径独立展开两次。
+两种对照都不得用作原生业务覆盖、容量或 p95 验收。
+
+`output/fixture-grant-paired-parent-protocol-20261109.json` 是新探针的隔离 PG／MinIO
+协议夹具对照：完整 HTTP 响应和各独立对象原字节一致、业务事实写入为 0。两次读数
+13.668→7.345 秒、对象读取 1246→628、返回对象字节 1,955,592→990,337、business
+SQL 4734→2572。每侧的 ACL 查询是实时执行，不以缓存或已核验归档代替授权。
+这不是固定 exweb 来源对照，也不是原生运行性能验收。
+
+固定 exweb 对照 `output/exweb-fixture-paired-parent-postgres-20261109.log` 已通过
+（1 passed / 1143.88 秒）。两侧完整输入摘要与 151 个不同归档对象的原字节相同。
+相比历史展开算法，历史路径计划读取 5→1、对象读取 4798→1040；live 路径计划读取
+9→2、对象读取 8688→2079，独立 PG live 许可检查仍为 1 次。这是累计读取优化的对照，
+不是仅测本轮变化的延迟百分比，也没有派发目标请求。
 
 只有一对、顺序固定且本机负载未受控；模型/目标执行transport不作为业务gold。报告
 `target_executed=false`、`capacity_or_p95_acceptance=false`。39秒仍远高于可接受读取

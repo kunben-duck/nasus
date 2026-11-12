@@ -17,7 +17,19 @@
 .fixture-operation-fields button { justify-self: start; }
 .case-execution-fields fieldset { grid-column: 1 / -1; min-width: 0; display: grid; gap: 12px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
 .case-execution-fields fieldset legend { max-width: 100%; overflow-wrap: anywhere; }
+.case-setup-picker { display: grid; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.case-setup-picker p { margin: 0; }
 .run-plan-case-panel .small-btn { max-width: 100%; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); font: inherit; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
 .run-plan-case-panel .small-btn:hover:not(:disabled), .run-plan-case-panel .small-btn.primary { border-color: var(--blue); background: var(--surface-3); }
 .run-plan-case-panel .small-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+.case-observation-counts, .case-observation-list { list-style: none; padding: 0; }
+.case-observation-counts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.case-observation-counts li { padding: 4px 8px; border-radius: 6px; background: var(--surface-3); }
+.case-observation-list > li { border-top: 1px solid var(--border); padding: 8px 0; overflow-wrap: anywhere; }
+.case-observation-list summary { cursor: pointer; }
+.case-observation-list summary strong { margin-inline-start: 8px; }
+.case-observation-list p { margin-block: 4px; }
+.case-history-lookup summary { cursor: pointer; }
+.case-history-lookup form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-block: 10px; }
+.case-history-lookup label { display: grid; flex: 1 1 200px; min-width: 0; gap: 4px; }
 @media (max-width: 600px) { .fixture-operation-fields { grid-template-columns: minmax(0, 1fr); } }

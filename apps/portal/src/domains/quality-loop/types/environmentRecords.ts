@@ -4,7 +4,7 @@ export interface EnvironmentRecordRequest {
 }
 export interface EnvironmentInstance { container_id: string; image_id: string; started_at: string; user: string }
 export interface EnvironmentInventory {
-  schema: 'nasus.owned-target-environment.v1'; project_id: string; environment_id: string
+  schema: 'nasus.owned-target-environment.v1' | 'nasus.owned-target-environment.v2'; profile?: 'nasus.python312-django-pg.v1'; project_id: string; environment_id: string
   operator_policy_digest: string; artifact_hash: string; target: EnvironmentInstance
   dependency_instances: (EnvironmentInstance & { role: 'pg' | 'redis' })[]; network_id: string
   namespace_origin: 'http://127.0.0.1:8080'; native_artifact_attested: true; isolation_attested: true

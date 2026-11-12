@@ -78,7 +78,7 @@ def assert_script_parent_read(v, command, original, monkeypatch):
     after, production, after_objects = measure_parent_read(v, reader, monkeypatch)
     assert before == after == original and before_objects == after_objects and before_objects
     assert control["historical_inputs"] == control["current_inputs"] == 3
-    assert production["historical_inputs"] == production["current_inputs"] == 2
+    assert production["historical_inputs"] == 2 and production["current_inputs"] == 1
     assert production["sql"] < control["sql"] and production["objects"] < control["objects"]
     assert len(v["script_calls"]) == calls == 1
     assert after["metadata"]["invocation_id"] == command["id"]

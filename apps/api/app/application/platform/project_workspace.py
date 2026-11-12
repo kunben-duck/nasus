@@ -41,6 +41,13 @@ class ProjectWorkspaceApplicationService:
             if project.id in visible_ids
         ]
 
+    def get_project(self, project_id: str) -> Any:
+        self._authorization.require_project_access(project_id)
+        project = self._read_model.get_project(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        return project
+
     async def create_project(self, payload: ProjectCreateRequest) -> Any:
         name = payload.name.strip()
         if not name:
@@ -281,7 +288,7 @@ class ProjectWorkspaceApplicationService:
     def list_versions(self, project_id: str) -> list[VersionSummary]:
         return self._workspace(project_id).versions
 
-    async def create_version(self, project_id: str, payload: VersionCreateRequest) -> VersionSummary:
+    async def create_version(self, project_id: str, payload: VersionCreateRequest, *, idempotency_key: str | None = None) -> VersionSummary:
         name = payload.name.strip()
         if not name:
             raise ValueError("name is required")
@@ -291,12 +298,23 @@ class ProjectWorkspaceApplicationService:
         invocation = await self._tool_invocations.create_tool_invocation(
             ToolInvocationRequest(
                 tool_id="version.create",
-                input={"project_id": project_id, "name": name},
+                input={"project_id": project_id, "name": name,
+                       **({"image_binding": payload.image_binding.model_dump(mode="json")} if payload.image_binding is not None else {})},
                 initiator_surface="api",
                 initiator_actor="user",
+                idempotency_key=idempotency_key,
             )
         )
         if invocation.status != "completed" or invocation.result is None:
+            from ..quality_loop.version_delivery_errors import DELIVERY_ERROR_STATUS
+            from .errors import PlatformApplicationError
+            code = invocation.result.followup_reason if invocation.result else None
+            if code in DELIVERY_ERROR_STATUS:
+                raise PlatformApplicationError(code, invocation.summary, DELIVERY_ERROR_STATUS[code])
+            if code == "authorization_denied":
+                raise PlatformApplicationError(code, invocation.summary, 403)
+            if invocation.status in {"pending", "running"}:
+                raise PlatformApplicationError("version_creation_pending", "Version creation is still running; retry the same key.", 409)
             raise RuntimeError(invocation.summary)
         version_id = _object_ref_id(invocation.result.object_refs, "version")
         if version_id is None:

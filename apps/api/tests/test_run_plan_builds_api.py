@@ -80,6 +80,7 @@ def base_evidence_api(tmp_path, monkeypatch, request):
         "test_fixed_exweb_grant_input_reads_preserve_complete_originals_and_independent_live_checks",
         "test_fixed_exweb_journal_scope_reuses_complete_verified_environment_parent",
         "test_fixed_exweb_journal_operation_reuses_immutable_proof_without_skipping_original_reads",
+        "test_fixed_exweb_case_shared_parent_reads_every_original_fixture_archive",
     }
     exweb = {}
     if real:

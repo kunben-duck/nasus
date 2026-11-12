@@ -75,6 +75,13 @@ class ImageRevisionQueryApplicationService:
         self.authorization.require_current(scope)
         return result
 
+    def frozen_header(self, project_id, image_revision_id) -> ImageRevisionSummary:
+        """Verify the whole frozen image without copying it for a header-only reader."""
+        scope = self.authorization.scope(project_id)
+        header, _ = self._verified_payload(project_id, image_revision_id, scope, copy_payload=False)
+        self.authorization.require_current(scope)
+        return header
+
     def frozen_document_members(self, project_id, image_revision_id):
         scope = self.authorization.scope(project_id)
         header, payload = self._verified_payload(project_id, image_revision_id, scope, copy_payload=False)

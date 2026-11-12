@@ -8,14 +8,17 @@ from ...domain.quality_loop.native_environment import (
     ENVIRONMENT_SCHEMA, OWNER_LABEL, NativeEnvironmentInvalid, NativeEnvironmentObservation, OwnedEnvironment, _require,
 )
 from .native_maven_build import NativeBuildFailure, bounded_command
+from ...domain.quality_loop.environment_profiles import JAVA_ENVIRONMENT, environment_profile
 
 
+MAX_INSPECT_BYTES = 256 * 1024
 # Environment variables and trailing JVM arguments can contain credentials.
 CONTAINER_FORMAT = ('{"Id":{{json .Id}},"Name":{{json .Name}},"Image":{{json .Image}},'
     '"Running":{{json .State.Running}},"StartedAt":{{json .State.StartedAt}},'
     '"User":{{json .Config.User}},"Labels":{{json .Config.Labels}},'
     '"Path":{{json .Path}},"Args":{{if and (eq .Path "java") (ge (len .Args) 2)}}'
-    '{{json (slice .Args 0 2)}}{{else}}[]{{end}},"HostConfig":{'
+    '{{json (slice .Args 0 2)}}{{else if and (eq .Path "python") (eq (len .Args) 4)}}'
+    '{{json (slice .Args 0 4)}}{{else}}[]{{end}},"HostConfig":{'
     '"ReadonlyRootfs":{{json .HostConfig.ReadonlyRootfs}},"CapDrop":{{json .HostConfig.CapDrop}},'
     '"CapAdd":{{json .HostConfig.CapAdd}},"Privileged":{{json .HostConfig.Privileged}},'
     '"SecurityOpt":{{json .HostConfig.SecurityOpt}},"NetworkMode":{{json .HostConfig.NetworkMode}},'
@@ -49,8 +52,9 @@ def _object(body):
 class OwnedTargetEnvironmentInspector:
     def __init__(self, spec: OwnedEnvironment, *, command=bounded_command):
         self.spec, self.command = spec, command
+        self.profile = environment_profile(spec.profile)
 
-    def _command(self, args, require_work, max_bytes=256 * 1024):
+    def _command(self, args, require_work, max_bytes=MAX_INSPECT_BYTES):
         callback_failed = False
         def current():
             nonlocal callback_failed
@@ -71,8 +75,13 @@ class OwnedTargetEnvironmentInspector:
         require_work()
         return body
 
-    def _container(self, ident, require_work):
-        return _object(self._command(["container", "inspect", "--format", CONTAINER_FORMAT, ident], require_work))
+    def _containers(self, require_work):
+        ids = [self.spec.container_id, *(item.container_id for item in self.spec.dependencies)]
+        body = self._command(["container", "inspect", "--format", CONTAINER_FORMAT, *ids],
+            require_work, MAX_INSPECT_BYTES * len(ids))
+        lines = body.splitlines()
+        _require(len(lines) == len(ids) and all(0 < len(line) <= MAX_INSPECT_BYTES for line in lines))
+        return [_object(line) for line in lines]
 
     def _network(self, require_work):
         return _object(self._command(["network", "inspect", "--format", NETWORK_FORMAT, self.spec.network_id], require_work))
@@ -100,9 +109,9 @@ class OwnedTargetEnvironmentInspector:
             and type(host["Tmpfs"][destination]) is str and len(host["Tmpfs"][destination]) <= 256
             and "rw" in host["Tmpfs"][destination].split(","))
         if role == "app":
-            _require(host["ReadonlyRootfs"] is True and value["Path"] == "java"
-                and type(value["Args"]) is list and value["Args"][:2] == ["-jar", "/app/target.jar"])
-            jars = [item for item in mounts if item["Destination"] == "/app/target.jar"]
+            _require(host["ReadonlyRootfs"] is True and value["Path"] == self.profile.executable
+                and type(value["Args"]) is list and value["Args"] == list(self.profile.arguments))
+            jars = [item for item in mounts if item["Destination"] == self.profile.artifact_path]
             _require(len(jars) == 1 and jars[0]["Type"] == "bind" and jars[0]["RW"] is False
                 and all(item is jars[0] or item["Type"] == "tmpfs" and item["Destination"] == "/tmp" for item in mounts))
         else:
@@ -110,13 +119,10 @@ class OwnedTargetEnvironmentInspector:
                 and item["Destination"] == destination and item["RW"] is True for item in mounts))
 
     def _snapshot(self, require_work):
-        target = self._container(self.spec.container_id, require_work)
+        target, *dependencies = self._containers(require_work)
         self._check_container(target, ident=self.spec.container_id, image=self.spec.image_id, role="app", user="65534:65534")
-        dependencies = []
-        for item in self.spec.dependencies:
-            value = self._container(item.container_id, require_work)
+        for item, value in zip(self.spec.dependencies, dependencies):
             self._check_container(value, ident=item.container_id, image=item.image_id, role=item.role, user=item.user)
-            dependencies.append(value)
         network = self._network(require_work)
         _require(network["Id"] == self.spec.network_id and network["Name"] == self.spec.prefix
             and network["Internal"] is True and network["Attachable"] is False and network["Driver"] == "bridge"
@@ -130,8 +136,8 @@ class OwnedTargetEnvironmentInspector:
         require_work()
         try:
             before = self._snapshot(require_work)
-            output = self._command(["exec", self.spec.container_id, "sha256sum", "/app/target.jar"], require_work, 256)
-            _require(output.decode("ascii", errors="strict").strip() == artifact_hash[7:] + "  /app/target.jar")
+            output = self._command(["exec", self.spec.container_id, "sha256sum", self.profile.artifact_path], require_work, 256)
+            _require(output.decode("ascii", errors="strict").strip() == artifact_hash[7:] + "  " + self.profile.artifact_path)
             after = self._snapshot(require_work)
             _require(before == after)
         except (KeyError, TypeError, UnicodeError, AttributeError):
@@ -151,5 +157,7 @@ class OwnedTargetEnvironmentInspector:
             "dependency_health_verified": False,
             "fixtures_verified": False, "locators_verified": False, "business_coverage_verified": False,
             "automated_count": 0, "executed_on_target_count": 0, "passed_count": 0}
+        if self.spec.profile != JAVA_ENVIRONMENT:
+            inventory.update(schema="nasus.owned-target-environment.v2", profile=self.spec.profile)
         require_work()
         return NativeEnvironmentObservation(inventory, acceptance_digest(inventory), datetime.now(timezone.utc).isoformat())

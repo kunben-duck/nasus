@@ -7,6 +7,18 @@ export interface AgentMemoryContextView {
   checkpoint_count: number
   working_memory: Record<string, unknown>
   conversation_memory: Record<string, unknown>
+  context_budget?: {
+    input_limit: number
+    estimated_input_tokens: number
+    counting_method: string
+    summary: {
+      format_version: number
+      checkpoint_id?: string | null
+      coverage_end?: string | null
+      job_status: string
+      degraded_reason?: string | null
+    }
+  } | null
   retrieved_context: {
     query: string
     refs: string[]

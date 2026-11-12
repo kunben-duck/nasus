@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
 from .db_models import (
@@ -72,10 +72,13 @@ class ConversationRepository:
                     ConversationRecord.project_id == project_id
                 )
             elif initiator_id is not None:
-                statement = statement.where(
-                    ConversationRecord.project_id.is_(None),
-                    ConversationRecord.initiator_id == initiator_id,
-                )
+                statement = statement.where(ConversationRecord.initiator_id == initiator_id)
+                if space_type != "build":
+                    statement = statement.where(ConversationRecord.project_id.is_(None))
+                else:
+                    # Intake attaches a new project without changing the
+                    # owner or identity of the original private Build chat.
+                    statement = statement.order_by(ConversationRecord.project_id.is_(None))
             else:
                 return None
             row = session.scalar(statement.order_by(ConversationRecord.id).limit(1))
@@ -104,7 +107,7 @@ class ConversationRepository:
         for row in message_rows:
             messages_by_conversation.setdefault(row.conversation_id, []).append(self._to_message(row))
         for items in messages_by_conversation.values():
-            items.sort(key=lambda item: item.created_at)
+            items.sort(key=lambda item: (item.created_at, item.id))
 
         goals_by_conversation: dict[str, list[AgentGoal]] = {}
         for row in goal_rows:
@@ -164,7 +167,7 @@ class ConversationRepository:
 
         messages = sorted(
             (self._to_message(row) for row in message_rows),
-            key=lambda item: item.created_at,
+            key=lambda item: (item.created_at, item.id),
         )
         return self._to_conversation(
             conversation,
@@ -192,7 +195,10 @@ class ConversationRepository:
             record.initiator_id = conversation.initiator_id
             record.status = conversation.status
             record.last_message_at = conversation.last_message_at
-            record.latest_summary_checkpoint_id = conversation.latest_summary_checkpoint_id
+            current_checkpoint = session.get(ConversationSummaryCheckpointRecord, record.latest_summary_checkpoint_id) if record.latest_summary_checkpoint_id else None
+            # A message writer can hold a snapshot older than an async compaction commit.
+            if not current_checkpoint or current_checkpoint.memory_payload.get("format_version") != 2:
+                record.latest_summary_checkpoint_id = conversation.latest_summary_checkpoint_id
             record.merged_into_conversation_id = conversation.merged_into_conversation_id
             record.archived_at = conversation.archived_at
             record.related_conversation_ids = conversation.related_conversation_ids
@@ -552,6 +558,10 @@ class ConversationRepository:
                 return None
             payload = dict(row.input_payload or {})
             payload.update(input_updates or {})
+            if row.status == "waiting_confirmation" and (input_updates or {}).get("confirmed_by_user") is True:
+                # Freshness checks and preparation journals use this same PG clock.
+                # Only an explicit confirmation claim records a new confirmation time.
+                payload["confirmed_at"] = session.scalar(select(func.clock_timestamp())).isoformat()
             row.input_payload = payload
             row.status = "running"
             row.revision = int(row.revision or 0) + 1
@@ -740,6 +750,7 @@ class ConversationRepository:
             record.message_range_start = checkpoint.message_range_start
             record.message_range_end = checkpoint.message_range_end
             record.summary_text = checkpoint.summary_text
+            record.memory_payload = checkpoint.memory_payload
             record.summary_object_refs = checkpoint.summary_object_refs
             record.summary_token_count = checkpoint.summary_token_count
             record.created_by = checkpoint.created_by
@@ -1088,6 +1099,7 @@ class ConversationRepository:
             message_range_start=row.message_range_start,
             message_range_end=row.message_range_end,
             summary_text=row.summary_text,
+            memory_payload=row.memory_payload or {},
             summary_object_refs=row.summary_object_refs or [],
             summary_token_count=row.summary_token_count,
             created_by=row.created_by,  # type: ignore[arg-type]

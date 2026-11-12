@@ -149,6 +149,49 @@ def test_actual_json_roundtrip_preserves_archive_digest_and_original_byte_checks
     assert state["parser_calls"] == state["commits"] == 1
 
 
+@pytest.mark.parametrize("fault", [None, "pin", "archive", "revoked"])
+def test_case_locator_read_still_checks_original_record_archive_source_and_live_access(monkeypatch, fault):
+    service, query, state = service_specimen()
+    metadata = service.record(query, invocation_id="command", recorded_at=datetime.now(timezone.utc).isoformat())
+    original = service.read(query.project_id, metadata["record_id"])
+    saved = service.locators.plans.read(query.project_id, query.run_plan_id)
+    calls = []
+    read, verify = service.artifacts.read, service.locators.inventory.verify
+
+    def archive(*args):
+        calls.append("archive")
+        result = read(*args)
+        if fault == "archive":
+            result["parents"]["plan_digest"] = acceptance_digest("unrelated")
+        if fault == "revoked":
+            state["denied"] = True
+        return result
+
+    def inventory(*args, **kwargs):
+        calls.append("source")
+        return verify(*args, **kwargs)
+
+    def parent(project, plan_id, digest, *, access):
+        calls.append("plan")
+        assert (project, plan_id, digest) == (query.project_id, query.run_plan_id, query.run_plan_artifact_hash)
+        assert access.actor_id == "reviewer"
+        if fault == "pin":
+            return {**saved, "metadata": {**saved["metadata"], "artifact_hash": acceptance_digest("other")}}
+        return deepcopy(saved)
+
+    monkeypatch.setattr(service.artifacts, "read", archive)
+    monkeypatch.setattr(service.locators.inventory, "verify", inventory)
+    monkeypatch.setattr(service.locators.plans, "read", lambda *_: pytest.fail("case locator recompiled the already verified parent"))
+    observed = lambda: service.read_for_case(query.project_id, metadata["record_id"], case_plan=parent)
+    if fault is None:
+        assert observed() == original
+    else:
+        with pytest.raises(SourceAccessDenied if fault == "revoked" else RunPlanIntegrityError):
+            observed()
+    assert calls == (["plan"] if fault == "pin" else ["plan", "archive"] if fault == "archive"
+        else ["plan", "archive", "source"])
+
+
 def test_rehashed_tool_receipt_cannot_replace_the_independent_archive():
     service, query, state = service_specimen()
     metadata = service.record(query, invocation_id="command", recorded_at=datetime.now(timezone.utc).isoformat())

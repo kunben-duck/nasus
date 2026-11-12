@@ -37,6 +37,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from apps.api.app.domain.quality_loop.native_environment import OWNER_LABEL, OwnedDependency, OwnedEnvironment
 from apps.api.app.infrastructure.runner.owned_target_environment import OwnedTargetEnvironmentInspector
+from scripts.exweb_http_executor_sources import EXECUTOR_SOURCE_PATHS
 from scripts.exweb_isolation_probe import IsolationProbeFailure, isolation_observations
 SOURCE_ROOT = "src/main/java/com/huawei/finance/front/one/"
 
@@ -395,10 +396,8 @@ def _runner_http_observations(client, args, deployment, checks, evidence, *, env
         if include_closed_read:
             steps.extend(request_steps("closed", "GET", path + "/{{session}}", [(None, 404)]))
         execute_steps(label, steps, protocol="nasus.runner-http-execution.v2")
-    sources = [ROOT / "apps/api/app/infrastructure/runner/owned_target_http.py", *(ROOT / "apps/runner/src" / name for name in (
-        "owned-http-cli.mjs", "owned-http-cohort.mjs", "http-job.mjs", "http-bindings.mjs", "http-executor.mjs", "http-transport.mjs", "strict-json.mjs", "execution-receipt.mjs", "docker-http-transport.mjs"))]
-    result = {"node_version": version, "executor_sources": [{"path": str(item.relative_to(ROOT)), "content_hash": digest(item.read_bytes())}
-        for item in sources], "cases": cases, "fixture_session_id": ident,
+    result = {"node_version": version, "executor_sources": [{"path": path, "content_hash": digest((ROOT / path).read_bytes())}
+        for path in EXECUTOR_SOURCE_PATHS], "cases": cases, "fixture_session_id": ident,
         "transport": "configured_owned_target_http_port", "public_runner_api_used": False,
         "inventory": inventory.inventory, "inventory_hash": inventory.inventory_hash,
         "nasus_runplan_verified": False, "execution_authorized": False, "release_authorized": False}

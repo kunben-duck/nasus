@@ -271,6 +271,14 @@ def test_conversation_listing_does_not_hide_unexpected_authorization_failures(mo
         service.can_access_conversation(facts.conversations["conversation-1"])
 
 
+def test_build_chat_stays_private_after_binding_to_a_shared_project():
+    member = _user("member-1", "project_admin")
+    service, _bindings, _facts = _service(member)
+    service.grant_role(project_id="project-1", user_id=member.id, role="project_admin", created_by="admin-1")
+    assert service.can_access_conversation(ConversationAccessScope("build-own", "project-1", member.id, "build"))
+    assert not service.can_access_conversation(ConversationAccessScope("build-other", "project-1", "other-user", "build"))
+
+
 def test_sqlalchemy_access_read_model_queries_authorization_facts_by_id() -> None:
     init_database()
     suffix = "project_access_adapter"

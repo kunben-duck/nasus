@@ -30,7 +30,7 @@ export function useConversation(
   useConversationEvents({ conversationId, enabled, existingOnly, canReadWorkspace: options.canReadWorkspace })
   const activeTurn = snapshotQuery.data?.active_turn
   const turn = useConversationTurn({ conversationId, activeTurn, queryClient })
-  const turnIsActive = Boolean(activeTurn && !['completed', 'interrupted', 'failed'].includes(activeTurn.status))
+  const turnIsActive = Boolean(activeTurn && !['completed', 'delegated', 'interrupted', 'failed'].includes(activeTurn.status))
 
   return {
     conversation: snapshotQuery.isError ? undefined : snapshotQuery.data as ConversationSession | undefined,

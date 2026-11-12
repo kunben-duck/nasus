@@ -7,9 +7,10 @@ from ...domain.quality_loop.native_build import (
     MAX_ARTIFACT_BYTES, MAX_BUILD_LOG_BYTES, NativeBuildOutput, build_receipt,
 )
 from ...domain.shared.native_build_source import byte_digest
+from ...domain.quality_loop.build_profiles import PYTHON_BUILD
 from ...domain.system_image.source_snapshots import snapshot_digest
 from ...domain.system_image.image_revision import require_digest
-from ..runner.native_maven_build import runtime_jar_inventory
+from ..runner.native_python_build import python_archive, runtime_inventory
 
 
 class NativeBuildArtifacts:
@@ -27,14 +28,17 @@ class NativeBuildArtifacts:
 
     def put(self, build_id, request, output):
         receipt = build_receipt(request, output)
-        if output.runtime_inventory != runtime_jar_inventory(output.artifact):
+        if request.adapter == PYTHON_BUILD and output.artifact != python_archive(request.source):
+            raise ValueError("Python archive differs from the captured source")
+        if output.runtime_inventory != runtime_inventory(request.adapter, output.artifact):
             raise ValueError("native runtime inventory differs from actual artifact bytes")
         prefix = self._prefix(build_id, request)
         with self.storage.write_session():
             refs = {}
             for name, body in (("artifact", output.artifact), ("log", output.log)):
                 key = prefix + "/" + name + "/" + byte_digest(body)[7:]
-                saved = self.storage.put_bytes(key, body, content_type="application/java-archive" if name == "artifact" else "text/plain")
+                content_type = "application/zip" if request.adapter == PYTHON_BUILD else "application/java-archive"
+                saved = self.storage.put_bytes(key, body, content_type=content_type if name == "artifact" else "text/plain")
                 if saved.content_hash != byte_digest(body) or saved.storage_ref != self._ref(key):
                     raise ValueError("native build object storage differs")
                 refs[name] = saved.storage_ref
@@ -73,7 +77,9 @@ class NativeBuildArtifacts:
                     raise ValueError("native build object bytes differ")
                 bodies[name] = body
             output = NativeBuildOutput(request.digest, bodies["artifact"], bodies["log"], receipt["toolchain"],
-                                       runtime_jar_inventory(bodies["artifact"]))
+                                       runtime_inventory(request.adapter, bodies["artifact"]), request.adapter)
+            if request.adapter == PYTHON_BUILD and output.artifact != python_archive(request.source):
+                raise ValueError("Python archive differs from the captured source")
             if receipt != build_receipt(request, output):
                 raise ValueError("native build receipt differs from fixed source and actual output")
         return {"receipt": receipt, "artifact": output.artifact, "log": output.log}

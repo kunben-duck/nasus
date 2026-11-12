@@ -30,11 +30,13 @@ def observation_specimen(history_specimen, monkeypatch):
         "phases": [{"phase": "setup", "claim_id": claim, "state": "not_dispatched"}],
         "cancellation_requested": False, "cancellation_delivered": False, **{key: False for key in FALSE_AUTHORITIES}}
     v.observation_reads = []
-    def read(target):
-        assert target.model_dump(mode="json") == v.target.model_dump(mode="json")
-        v.observation_reads.append(HttpFixtureHistoryTarget.model_validate(target.model_dump(mode="json")))
+    original_selection = deepcopy(v.job["selection"])
+    def read(original, inputs):
+        target = HttpFixtureHistoryTarget(project_id=original.project_id, invocation_id=original.invocation_id)
+        assert target == v.target and inputs.selection.model_dump(mode="json") == original_selection
+        v.observation_reads.append(target)
         return deepcopy(v.job)
-    monkeypatch.setattr(v.jobs, "read", read)
+    monkeypatch.setattr(v.jobs, "read_observation_job", read)
     v.observations = v.jobs.observations
     return v
 
@@ -58,6 +60,33 @@ def test_original_observation_is_independent_of_local_session_and_never_renews_o
     assert not any(token in str(result.model_dump(mode="json")) for token in
         ("idempotency_key", "input_payload", "artifact_ref", "base_url", "setup_steps"))
     for key in FALSE_AUTHORITIES: assert getattr(result, key) is False
+
+
+@pytest.mark.parametrize("ident,original_reads", [
+    ("002-execute", ["002-execute", "002-execute"]),
+    ("003-cancel", ["003-cancel", "002-execute", "003-cancel", "002-execute"]),
+])
+def test_observation_reads_each_distinct_command_once_per_verification_boundary(observation_specimen, ident, original_reads):
+    v = observation_specimen
+    v.history_state["queries"].clear()
+    result = v.observations.read(HttpFixtureHistoryTarget(project_id=v.target.project_id, invocation_id=ident))
+    assert result.selected.invocation_id == ident and result.execution.invocation_id == v.target.invocation_id
+    assert result.job == v.job and v.observation_reads == [v.target]
+    assert [command for command, _ in v.history_state["queries"]] == original_reads
+
+
+@pytest.mark.parametrize("ident", ["002-execute", "003-cancel"])
+def test_observation_phase_inventory_uses_inputs_verified_with_the_original_history(observation_specimen, monkeypatch, ident):
+    v = observation_specimen
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("phase inventory cannot reopen the original grant already verified by history")
+
+    monkeypatch.setattr(v.jobs.grants, "execution_inputs", unexpected)
+    result = v.observations.read(HttpFixtureHistoryTarget(project_id=v.target.project_id, invocation_id=ident))
+    assert result.state == "not_dispatched" and result.job == v.job
+    assert result.expected_phases[0].claim_id == v.job["phases"][0]["claim_id"]
+    assert v.observation_reads == [v.target]
 
 
 @pytest.mark.parametrize("stage", ["grant", "execute"])
@@ -141,22 +170,38 @@ def test_original_observation_rejects_changed_or_partial_journal(observation_spe
 
 def test_concurrent_command_change_requires_same_id_reinspection_not_new_attempt(observation_specimen, monkeypatch):
     v = observation_specimen
-    read = v.jobs.read
-    def transition(target):
-        value = read(target)
+    read = v.jobs.read_observation_job
+    def transition(original, inputs):
+        value = read(original, inputs)
         v.history_state["rows"][1]["command"]["status"] = "failed"
         return value
-    monkeypatch.setattr(v.jobs, "read", transition)
+    monkeypatch.setattr(v.jobs, "read_observation_job", transition)
     with pytest.raises(HttpFixtureObservationChanged): v.observations.read(v.target)
+    assert v.observation_reads == [v.target]
+
+
+def test_cancel_observation_independently_rechecks_the_original_execution(observation_specimen, monkeypatch):
+    v = observation_specimen
+    read = v.jobs.read_observation_job
+
+    def transition(original, inputs):
+        value = read(original, inputs)
+        v.history_state["rows"][1]["command"]["status"] = "failed"
+        return value
+
+    monkeypatch.setattr(v.jobs, "read_observation_job", transition)
+    control = HttpFixtureHistoryTarget(project_id=v.target.project_id, invocation_id="003-cancel")
+    with pytest.raises(HttpFixtureObservationChanged):
+        v.observations.read(control)
     assert v.observation_reads == [v.target]
 
 
 def test_acl_revocation_after_journal_read_hides_everything(observation_specimen, monkeypatch):
     v = observation_specimen
-    read = v.jobs.read
-    def revoked(target):
-        value = read(target); v.state["revoked"] = True; return value
-    monkeypatch.setattr(v.jobs, "read", revoked)
+    read = v.jobs.read_observation_job
+    def revoked(original, inputs):
+        value = read(original, inputs); v.state["revoked"] = True; return value
+    monkeypatch.setattr(v.jobs, "read_observation_job", revoked)
     with pytest.raises(SourceAccessDenied): v.observations.read(v.target)
 
 

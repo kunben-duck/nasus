@@ -4,6 +4,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel
 
+from ..quality_loop.version_delivery_models import VersionImageBindingInput
+
 
 class ProjectCreateRequest(BaseModel):
     name: str
@@ -36,6 +38,7 @@ class VersionSummary(BaseModel):
 
 class VersionCreateRequest(BaseModel):
     name: str
+    image_binding: Optional[VersionImageBindingInput] = None
 
 
 class ProjectRoleBinding(BaseModel):

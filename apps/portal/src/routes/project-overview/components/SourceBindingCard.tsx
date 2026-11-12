@@ -67,9 +67,9 @@ export function SourceBindingCard({
       </div>
       {onTrackedRefChange ? (
         <label className="source-tracked-ref-field">
-          <span>{t('Git branch or tag')}</span>
+          <span>{t('Git branch, tag, or commit')}</span>
           <input className="source-field-control" type="text" value={trackedRef ?? ''}
-            aria-label={t('Git branch or tag')}
+            aria-label={t('Git branch, tag, or commit')}
             placeholder={t('refs/heads/main')}
             data-testid="source-code-tracked-ref"
             onChange={(event) => onTrackedRefChange(event.target.value)} />

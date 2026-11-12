@@ -10,6 +10,60 @@
   padding-top: clamp(132px, 20vh, 168px);
 }
 
+.build-hero.has-conversation {
+  padding-top: 64px;
+  padding-bottom: 32px;
+}
+
+.build-conversation {
+  width: var(--build-hero-width);
+  max-width: 100%;
+  display: grid;
+  gap: 16px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.build-message-list {
+  max-height: 52vh;
+  overflow-y: auto;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 4px;
+}
+
+.build-message-content { display: grid; gap: 20px; }
+.build-message-list::-webkit-scrollbar { display: none; }
+.build-message { min-width: 0; overflow-wrap: anywhere; line-height: 1.65; }
+.build-message > strong { display: block; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+.build-message.user { justify-self: end; max-width: 90%; padding: 10px 16px; border-radius: 18px; background: var(--surface-2); }
+.build-message p { margin: 4px 0 10px; }
+.build-project-context { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.build-project-context a { color: var(--blue); }
+.build-intake-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.build-intake-actions button, .build-upload-button, .build-confirmation button {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.build-intake-actions .build-confirm { border-color: var(--blue); }
+.build-upload-button { position: relative; }
+.build-upload-button input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+.build-intake-actions button:disabled, .build-confirmation button:disabled { opacity: .5; cursor: not-allowed; }
+.build-progress { border: 1px solid var(--border); border-radius: 16px; padding: 16px; background: var(--surface); }
+.build-progress p, .build-progress li { color: var(--muted); line-height: 1.6; overflow-wrap: anywhere; }
+.build-progress details { margin-top: 12px; }
+.build-progress summary { cursor: pointer; }
+.build-progress pre { overflow-x: auto; font-size: 11px; }
+.build-confirmation { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 12px; }
+.build-confirmation button { margin-top: 12px; }
+
 .collapse-button {
   position: fixed;
   top: 16px;
@@ -307,11 +361,7 @@
 
 .composer-actions {
   margin-top: auto;
-}
-
-.composer-left {
-  display: flex;
-  gap: 8px;
+  justify-content: flex-end;
 }
 
 .composer-right {
@@ -498,6 +548,50 @@
 
 .source-chip-row .build-skill-card i {
   display: none;
+}
+
+.build-shortcut-panel {
+  width: var(--build-hero-width);
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.build-shortcut-panel h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.build-shortcut-panel p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.build-shortcut-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.build-shortcut-form label {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.build-shortcut-form button {
+  white-space: nowrap;
+}
+
+@media (max-width: 480px) {
+  .build-shortcut-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .tool-chip {

@@ -11,7 +11,7 @@ from apps.api.app.domain.system_image.source_access import SourceAccessDenied, S
 from apps.api.tests.test_image_revision import candidate, header
 
 
-OPERATIONS = ("documents", "sources", "objects", "members", "relationships", "source_members", "evidence", "verify", "document")
+OPERATIONS = ("header", "documents", "sources", "objects", "members", "relationships", "source_members", "evidence", "verify", "document")
 
 
 def reader():
@@ -57,6 +57,8 @@ def reader():
 
 def select(service, operation):
     args = ("project", "image")
+    if operation == "header":
+        return service.frozen_header(*args)
     if operation == "documents":
         return service.frozen_document_members(*args)[1]
     if operation == "sources":
@@ -117,11 +119,12 @@ def test_selected_reads_still_recheck_live_source_access(operation):
         assert state.authority > before and state.artifacts == 1
 
 
-def test_partial_output_still_requires_complete_original_membership():
+@pytest.mark.parametrize("operation", ("objects", "header"))
+def test_partial_output_still_requires_complete_original_membership(operation):
     service, payload, state = reader()
     payload["members"][-1]["object_hash"] = "sha256:" + "0" * 64
     with pytest.raises(ImageRevisionIntegrityError):
-        select(service, "objects")
+        select(service, operation)
     assert state.artifacts == 1 and service._current_verified_reads() is None
 
 

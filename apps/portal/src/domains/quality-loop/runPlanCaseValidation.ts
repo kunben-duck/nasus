@@ -1,13 +1,19 @@
 import { canonicalDigest } from '../../shared/utils/canonicalDigest'
 import { exactKeys, utc } from './environmentRecordValidation'
 import { generationDigest, generationEqual } from './testDesignGenerationValidation'
-import { requireRunPlan } from './runPlanValidation'
+import { planSelection, requestKeys, requireRunPlan, runPlanArtifactSchema } from './runPlanValidation'
 import { scriptProtocol } from './automationScriptValidation'
 import type { ToolInvocation } from '../platform/types'
 import type { RunPlanArchive } from './types/runPlans'
+import type { FixtureHistoryItem } from './types/httpFixtureHistory'
 import type { CaseCommandAttempt, CaseCommandStage, CaseExecutionFields, CaseExecutionSelection } from './types/runPlanCaseJobs'
 
 export const caseTools = { execute: 'quality.run_plan.execute_http', cancel: 'quality.run_plan.cancel_http' } as const
+export type CaseSetupPlan = Pick<RunPlanArchive['metadata'], 'project_id' | 'run_plan_id' | 'artifact_hash'>
+export function matchesCaseSetupReference(item: FixtureHistoryItem, plan: CaseSetupPlan, caseId: string) {
+  return item.project_id === plan.project_id && item.run_plan_id === plan.run_plan_id && item.run_plan_artifact_hash === plan.artifact_hash
+    && item.case_id === caseId && item.stage === 'execute' && item.operation === 'setup' && item.status === 'completed'
+}
 export const caseSelectionKeys = ['project_id', 'run_id', 'run_plan_id', 'run_plan_artifact_hash', 'plan_digest', 'timeout_ms',
   'build_binding_id', 'build_binding_artifact_hash', 'environment_record_id', 'environment_record_artifact_hash',
   'locator_record_id', 'locator_record_artifact_hash', 'fixture_setups'] as const
@@ -73,6 +79,39 @@ export async function requireCaseCommand(value: ToolInvocation, stage: CaseComma
   }
   if (value.result) requireRunPlan(value.result.invocation_id === value.id && value.result.status === value.status)
   return value
+}
+export async function readCaseCommandSelection(value: ToolInvocation, commandId: string, projectId: string) {
+  const body = value?.input_payload
+  requireRunPlan(value?.id === commandId && caseId(commandId) && value.tool_id === caseTools.execute
+    && ['running', 'completed', 'failed', 'cancelled'].includes(value.status)
+    && body && typeof body === 'object' && !Array.isArray(body)
+    && caseId(body.confirmed_actor_id) && caseId(body.idempotency_key))
+  const input = Object.fromEntries(Object.entries(body).filter(([key]) => !coordinator.has(key)))
+  requireCaseSelection(input)
+  requireRunPlan(input.project_id === projectId)
+  // Read under the current server session; the original confirming actor is history, not a new permission.
+  await requireCaseCommand(value, 'execute', { commandId, requestKey: body.idempotency_key,
+    requestHash: await canonicalDigest(input) }, input, body.confirmed_actor_id)
+  return input
+}
+export async function verifyHistoricalCasePlan(value: unknown, input: CaseExecutionSelection): Promise<RunPlanArchive> {
+  const v = value as RunPlanArchive, m = v?.metadata, a = v?.artifact, p = a?.plan, request = a?.request
+  exactKeys(v, ['metadata', 'artifact', 'historical_not_live', 'current_use'])
+  exactKeys(request, requestKeys)
+  requireRunPlan(m && a && p && m.status === 'prepared' && p.status === 'prepared'
+    && a.schema === runPlanArtifactSchema(p.schema) && p.schema === request.policy_revision
+    && request.project_id === input.project_id && p.project_id === input.project_id
+    && p.plan_digest === input.plan_digest && request.plan_digest === input.plan_digest
+    && generationEqual(p.selection, planSelection(request))
+    && m.execution_authorized === false && p.execution_authorized === false
+    && v.historical_not_live === true && typeof v.current_use?.inputs_current === 'boolean'
+    && v.current_use.target_verified === false && v.current_use.execution_authorized === false
+    && ['project_id', 'run_plan_id', 'invocation_id', 'actor_id', 'recorded_at'].every((key) => generationEqual(a[key as keyof typeof a], m[key]))
+    && await canonicalDigest(a) === input.run_plan_artifact_hash && await canonicalDigest(request) === m.request_hash)
+  const { plan_digest, ...unsigned } = p
+  requireRunPlan(await canonicalDigest(unsigned) === plan_digest)
+  requireCaseParent(input, v)
+  return v
 }
 export async function caseJob(plan: RunPlanArchive, input: CaseExecutionSelection, ordinal: number) {
   requireCaseParent(input, plan)

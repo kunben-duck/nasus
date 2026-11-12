@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from .ports import ProjectVersionWorkspacePort, QualityLoopContextReadPort
 from .quality_models import ReleaseReadiness, USItem
+from .version_delivery_models import VersionDeliveryReadModel
 from ..platform.project_models import ProjectCard, VersionSummary
 from ..platform.tool_models import ToolInvocation
 from ..system_image.ports import SystemImageOperationsPort
@@ -39,6 +40,7 @@ class ProjectVersionUseCaseResult:
     evidence_refs: list[str] = field(default_factory=list)
     requires_followup: bool = False
     assistant_message: str | None = None
+    version_delivery: VersionDeliveryReadModel | None = None
 
 
 class ProjectVersionApplicationError(ValueError):
@@ -63,10 +65,12 @@ class ProjectVersionApplicationService:
         workspace: ProjectVersionWorkspacePort,
         system_image: SystemImageOperationsPort,
         context_queries: QualityLoopContextReadPort,
+        version_delivery=None,
     ) -> None:
         self._workspace = workspace
         self._system_image = system_image
         self.context_queries = context_queries
+        self.version_delivery = version_delivery
 
     def create_project_record(self, name: str) -> ProjectCard:
         project_id = f"proj_{_slugify(name)}_{uuid4().hex[:10]}"
@@ -87,6 +91,8 @@ class ProjectVersionApplicationService:
         return project
 
     def create_version_record(self, project_id: str, name: str) -> VersionSummary:
+        if self.version_delivery is not None:
+            self.version_delivery.require_legacy_creation(project_id)
         versions = self._workspace.list_versions(project_id)
         version = VersionSummary(
             id=f"ver_{_slugify(name)}_{project_id[-6:]}_{len(versions) + 1}",
@@ -125,6 +131,8 @@ class ProjectVersionApplicationService:
         """
 
         versions = self._workspace.list_versions(project_id)
+        if self.version_delivery is not None and self.version_delivery.requires_explicit_version(project_id):
+            raise ProjectVersionApplicationError("Select an explicit delivery iteration; automatic Version selection is disabled.")
         if versions:
             return versions[0]
 
@@ -162,15 +170,25 @@ class ProjectVersionApplicationService:
             raise ProjectVersionApplicationError("project_id is required to create a version")
 
         version_name = str(invocation.input_payload.get("name") or "New Version")
-        version = self.create_version_record(project_id, version_name)
+        delivery = None
+        if self.version_delivery is not None:
+            version, delivery = self.version_delivery.create(project_id, invocation)
+        else:
+            if invocation.input_payload.get("image_binding") is not None:
+                raise ProjectVersionApplicationError("Image-pinned Version creation is unavailable")
+            version = self.create_version_record(project_id, version_name)
         return ProjectVersionUseCaseResult(
             summary=f"Created version {version.name}",
             assistant_message=(
+                f"Version **{version.name}** is pinned to the published image. "
+                "Implementation, test execution, and release approval have not been completed."
+            ) if delivery and delivery.enabled else (
                 f"The version branch **{version.name}** is active. "
                 "US board, risk pulse, and asset pack generation are now available in Version Space."
             ),
             object_refs=[f"version:{version.id}"],
-            next_tools=["quality.scenario.generate"],
+            next_tools=[] if delivery and delivery.enabled else ["quality.scenario.generate"],
+            version_delivery=delivery,
         )
 
     def connect_project_assets(self, invocation: ToolInvocation) -> ProjectVersionUseCaseResult:
@@ -384,7 +402,14 @@ class ProjectVersionApplicationService:
         if version_id:
             matched = next((item for item in versions if item.id == version_id), None)
             if matched is not None:
+                if self.version_delivery is not None:
+                    try:
+                        self.version_delivery.require_legacy_write(project_id, version_id)
+                    except ValueError as exc:
+                        raise ProjectVersionApplicationError(str(exc)) from exc
                 return matched
+        if self.version_delivery is not None and self.version_delivery.requires_explicit_version(project_id):
+            raise ProjectVersionApplicationError("A valid explicit version_id is required for this delivery-enabled project.")
         if versions:
             return versions[0]
         return self.active_or_create_quality_version(project_id)

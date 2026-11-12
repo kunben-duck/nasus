@@ -206,7 +206,7 @@ for (const revoke of ['source', 'project']) {
       }, { times: 1 })
       await dialog.getByRole('button', { name: 'Inspect frozen evidence', exact: true }).first().click()
       await expect(dialog.getByRole('alert')).toContainText('Previous content is hidden')
-      expect(denied).toBe(403)
+      await expect.poll(() => denied, { message: 'The original evidence request must be denied after revocation' }).toBe(403)
       await expect(dialog.getByRole('list', { name: 'Frozen image records' })).toHaveCount(0)
       await expect(dialog.getByRole('combobox', { name: 'Frozen candidate revision' })).toHaveCount(0)
       await expect(dialog.getByRole('region', { name: 'Archived source code' })).toHaveCount(0)

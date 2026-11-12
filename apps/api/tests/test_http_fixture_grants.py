@@ -31,7 +31,8 @@ def grant_specimen():
     request = HttpFixtureGrantRequest(project_id=metadata["project_id"], recipe_id=metadata["record_id"],
         recipe_artifact_hash=metadata["artifact_hash"], attempt_id="attempt", operation="setup", timeout_ms=30000)
     state = {"role": "project_admin", "actor": "admin", "denied": False, "current": True,
-        "source_scope": acceptance_digest("acl"), "grants": {}, "live_calls": [], "issues": 0, "expired": False}
+        "source_scope": acceptance_digest("acl"), "grants": {}, "live_calls": [], "issues": 0, "expired": False,
+        "plan_reads": 0, "invalidate_before_commit": False}
 
     def current(_access):
         if state["denied"]:
@@ -47,6 +48,7 @@ def grant_specimen():
     def read_plan(project, ident):
         current(None)
         assert (project, ident) == (recipe_request.project_id, recipe_request.run_plan_id)
+        state["plan_reads"] += 1
         value = deepcopy(plan)
         value["current_use"]["inputs_current"] = state["current"]
         if "base_url" in state:
@@ -58,17 +60,20 @@ def grant_specimen():
     recipes = SimpleNamespace(read=read_recipe, authorization=auth,
         plans=SimpleNamespace(read=read_plan), verified_read_session=nullcontext)
 
-    def issue(value, scope, source_scope_digest, *, actor_id, invocation_id, require_access):
+    def issue(value, scope, source_scope_digest, *, actor_id, invocation_id, require_access, verify_inputs):
         require_access()
         ident = grant_identity(invocation_id)
         if ident in state["grants"]:
+            verify_inputs()
             return grant_metadata(state["grants"][ident])
         issued = datetime.now(timezone.utc)
         payload = {"schema": GRANT_SCHEMA, "project_id": value.project_id, "record_id": ident,
             "invocation_id": invocation_id, "actor_id": actor_id, "recorded_at": issued.isoformat(),
             "expires_at": (issued + timedelta(seconds=GRANT_SECONDS)).isoformat(), "request": value.model_dump(mode="json"),
             "scope": asdict(scope), "source_scope_digest": source_scope_digest}
-        require_access()
+        if state["invalidate_before_commit"]:
+            state["current"] = False
+        verify_inputs()
         state["grants"][ident] = payload
         state["issues"] += 1
         return grant_metadata(payload)
@@ -78,6 +83,7 @@ def grant_specimen():
         if state["expired"]:
             raise PermissionError("original grant expired")
         assert state["grants"][ident]["actor_id"] == kwargs["actor_id"]
+        return grant_metadata(state["grants"][ident])
 
     repository = SimpleNamespace(issue=issue, read=lambda project, ident: deepcopy(state["grants"][ident]), require_live=live)
     service = HttpFixtureGrantApplicationService(recipes, repository)
@@ -96,6 +102,22 @@ def test_original_scoped_permission_is_neither_execution_nor_fixture_evidence():
     assert service.require_operation(request.project_id, metadata["record_id"], scope, "setup") == metadata
     assert len(state["live_calls"]) == 1
     assert not hasattr(service, "runner")
+
+
+def test_issue_reads_full_parents_once_in_transaction_and_rechecks_on_return():
+    service, request, state, metadata = grant_specimen()
+    assert state["plan_reads"] == 3
+    assert service.issue(request, invocation_id="grant-command") == metadata
+    assert state["plan_reads"] == 6 and state["issues"] == 1
+
+
+def test_grant_commit_rejects_late_review_change_without_granting_another_attempt():
+    service, request, state, _ = grant_specimen()
+    state["invalidate_before_commit"] = True
+    another = request.model_copy(update={"attempt_id": "late-review-change"})
+    with pytest.raises(RunPlanChanged):
+        service.issue(another, invocation_id="another-grant-command")
+    assert state["issues"] == 1 and grant_identity("another-grant-command") not in state["grants"]
 
 
 def test_combined_recipe_parent_is_reused_but_each_operation_checks_fresh_inputs(monkeypatch):

@@ -7,7 +7,10 @@ from threading import Event
 from typing import Protocol
 from uuid import uuid4
 
+from .execution_work_guard import ExecutionWorkGuard, work_poll
 from .generation_work_lease import run_with_generation_lease
+from .http_fixture_diagnostics import fixture_phase
+from .run_plan_case_inputs import PreparedFixtureBoundCaseInputs, PreparedRunPlanCaseInputs
 from .runner_port import AutomationRunnerCommand, FixtureBoundHttpCommand, AutomationRunnerResult, RunnerArtifact, OwnedTargetHttpExecution
 from .worker_threads import run_worker_thread
 from ...domain.quality_loop.acceptance_specification import acceptance_digest
@@ -29,10 +32,14 @@ MAX_CASE_ARCHIVE_BYTES = 80 * 1024 * 1024
 class RunPlanCaseJournalPort(Protocol):
     def acquire(self, scope, roster, owner_id, *, require_current): ...
     def require(self, lease, *, require_current): ...
+    def require_poll(self, lease, *, require_current): ...
     def renew(self, lease, *, require_current): ...
+    def renew_poll(self, lease, *, require_current): ...
     def inspect(self, scope, roster, *, require_access): ...
     def claim(self, lease, case, *, require_current): ...
-    def complete(self, lease, claim, *, artifact_ref, artifact_hash, observation, require_current): ...
+    def complete(self, lease, claim, *, artifact_ref, artifact_hash, observation, require_current):
+        """Verify full evidence and current ownership within the commit boundary."""
+        ...
 
 
 class RunPlanCaseArtifactPort(Protocol):
@@ -160,45 +167,67 @@ class RunPlanCaseExecutionApplicationService:
 
     def _execute(self, plan, scope, lease, require_work, require_current, fixture_inputs=None):
         roster, commands = execution_roster(plan, scope), self._verified_commands(plan, scope, fixture_inputs)
-        initial = self.read(plan, scope, require_access=require_work, fixture_inputs=fixture_inputs)
+        read_access = work_poll(require_work)
+        initial = self.read(plan, scope, require_access=read_access, fixture_inputs=fixture_inputs)
         if initial["state"]["state"] in {"outcome_unknown", "cancelled", "observed"}:
             return initial
         observed_ids = {item["case_id"] for item in initial["observations"]}
+        stage_case = getattr(self.runner, "stage_owned_case_http", None)
+        run_owned = (stage_case if callable(stage_case) and isinstance(scope, FixtureBoundRunPlanCaseScope)
+            and isinstance(require_work, ExecutionWorkGuard) else self.runner.execute_owned_http)
         for case in roster:
             if case["case_id"] in observed_ids:
                 continue
-            require_work()
+            read_access()
             try:
                 # The journal owns its transaction/lease fence; do not reenter it from its guard.
-                claim = self.journal.claim(lease, case, require_current=require_current)
+                with fixture_phase("case_dispatch_claim"):
+                    claim = self.journal.claim(lease, case, require_current=require_current)
             except RunPlanCaseAlreadyClaimed:
-                return self.read(plan, scope, require_access=require_work, fixture_inputs=fixture_inputs)
-            require_work()
+                return self.read(plan, scope, require_access=read_access, fixture_inputs=fixture_inputs)
+            # The Runner port fully rechecks this work at native dispatch and result handoff.
+            read_access()
             job, command = commands[case["case_id"]]
             try:
-                execution = self.runner.execute_owned_http(command, environment_id=scope.environment_id,
+                execution = run_owned(command, environment_id=scope.environment_id,
                     artifact_hash=scope.target_artifact_hash, inventory_hash=scope.inventory_hash,
                     require_work=require_work)
                 archive = self._archive(plan, scope, job, command, execution)
             except Exception:
                 # No fake Runner result or automatic retry after a committed claim.
                 require_work()
-                return self.read(plan, scope, require_access=require_work, fixture_inputs=fixture_inputs)
-            require_work()
+                return self.read(plan, scope, require_access=read_access, fixture_inputs=fixture_inputs)
+            read_access()
             ref, digest = self.artifacts.put(scope.project_id, archive)
-            require_work()
+            read_access()
             if digest != acceptance_digest(archive):
                 raise RunPlanCaseExecutionInvalid("native case archive write returned a different digest")
             provisional = {"artifact_ref": ref, "artifact_hash": digest,
                 "observation_digest": archive["observation"]["observation_digest"], "status": archive["observation"]["status"]}
             observed = self._read_archive(plan, scope, job, command, provisional)
-            require_work()
-            self.journal.complete(lease, claim, artifact_ref=ref, artifact_hash=digest,
-                observation=observed, require_current=require_current)
-        return self.read(plan, scope, require_access=require_work, fixture_inputs=fixture_inputs)
+            read_access()
+            # Private bytes are not observable until the journal re-verifies
+            # the full original inputs, live authority and lease at commit.
+            with fixture_phase("case_result_commit"):
+                self.journal.complete(lease, claim, artifact_ref=ref, artifact_hash=digest,
+                    observation=observed, require_current=require_current)
+        return self.read(plan, scope, require_access=read_access, fixture_inputs=fixture_inputs)
 
     async def execute(self, plan, scope: RunPlanCaseScope, *, require_current, renew_seconds=15, fixture_inputs=None):
         """The caller verifies the exact independently confirmed command and prerequisites."""
+        return await self._execute_with_scope(plan, scope, require_current=require_current,
+            renew_seconds=renew_seconds, fixture_inputs=fixture_inputs)
+
+    async def execute_prepared(self, prepared, *, require_current, renew_seconds=15):
+        """Bind the freshly verified preparation; recheck fully before any dispatch."""
+        if not isinstance(prepared, PreparedRunPlanCaseInputs) or not isinstance(require_current, ExecutionWorkGuard):
+            raise RunPlanCaseExecutionInvalid("case work binding requires prepared original inputs and a live authority guard")
+        fixture_inputs = prepared.fixture_inputs if isinstance(prepared, PreparedFixtureBoundCaseInputs) else None
+        return await self._execute_with_scope(prepared.plan, prepared.scope, require_current=require_current,
+            renew_seconds=renew_seconds, fixture_inputs=fixture_inputs, original_preparation_verified=True)
+
+    async def _execute_with_scope(self, plan, scope, *, require_current, renew_seconds, fixture_inputs,
+                                  original_preparation_verified=False):
         plan, scope, fixture_inputs = deepcopy(plan), restore_case_scope(asdict(scope)), deepcopy(fixture_inputs)
         roster, stopped = execution_roster(plan, scope), Event()
         self._verified_commands(plan, scope, fixture_inputs)
@@ -213,22 +242,58 @@ class RunPlanCaseExecutionApplicationService:
                 raise RunPlanCaseWorkLost("original case worker stopped during authorization")
 
         journal = self.journal
+        check = work_poll(require_current)
+        journal_poll = getattr(journal, "require_poll", None)
+        renew_poll = getattr(journal, "renew_poll", None)
+        split_checks = isinstance(require_current, ExecutionWorkGuard) and callable(journal_poll)
+
+        def authority():
+            if stopped.is_set():
+                raise RunPlanCaseWorkLost("original case worker stopped; no more dispatch or commit")
+            check()
+            if stopped.is_set():
+                raise RunPlanCaseWorkLost("original case worker stopped during authorization")
+
+        def poll(lease):
+            journal_poll(lease, require_current=authority)
 
         class Heartbeat:
             def require_lease(self, lease):
-                current()
-                journal.require(lease, require_current=current)
-                current()
+                if split_checks:
+                    poll(lease)
+                else:
+                    current()
+                    journal.require(lease, require_current=current)
+                    current()
 
             def renew_lease(self, lease):
-                journal.renew(lease, require_current=current)
+                if split_checks and callable(renew_poll):
+                    renew_poll(lease, require_current=authority)
+                else:
+                    journal.renew(lease, require_current=authority if split_checks else current)
 
         try:
-            lease = await run_worker_thread(lambda: journal.acquire(scope, roster, uuid4().hex,
-                require_current=current), on_cancel=stopped.set)
+            def acquire():
+                if split_checks and not original_preparation_verified:
+                    current()
+                return journal.acquire(scope, roster, uuid4().hex,
+                    require_current=authority if split_checks else current)
+
+            with fixture_phase("case_work_binding"):
+                lease = await run_worker_thread(acquire, on_cancel=stopped.set)
 
             async def operation(require_work):
-                return await run_worker_thread(lambda: self._execute(plan, scope, lease, require_work, current,
+                transaction_guard = current
+                if split_checks:
+                    require_lease = require_work
+
+                    def full_work():
+                        current()
+                        require_lease()
+
+                    require_work = ExecutionWorkGuard(full_work, require_lease)
+                    transaction_guard = ExecutionWorkGuard(current, authority)
+                return await run_worker_thread(lambda: self._execute(plan, scope, lease, require_work, transaction_guard,
                     **({"fixture_inputs": fixture_inputs} if fixture_inputs is not None else {})),
                     on_cancel=stopped.set)
 

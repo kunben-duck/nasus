@@ -117,7 +117,7 @@ class ImagePublicationApplicationService:
     def _pin(self, project_id, publication_id, *, require_current):
         scope = self.authorization.scope(project_id)
         value = self.repository.publication(project_id, publication_id)
-        header, _ = self.images.frozen_snapshot(project_id, value["image_revision_id"])
+        header = self.images.frozen_header(project_id, value["image_revision_id"])
         if (not header.code_member_count or header.artifact_hash != value["image_artifact_hash"]
                 or header.manifest_id != value["manifest_id"] or header.manifest_hash != value["manifest_hash"]):
             raise PublicationIntegrityError("Publication does not match the immutable image")
@@ -250,7 +250,7 @@ class ImagePublicationApplicationService:
         baseline, head = self.repository.target(project_id, baseline_id)
         page = self.repository.history(project_id, baseline_id, after_sequence=after_sequence, limit=limit)
         for item in ([head] if head else []) + page["items"]:
-            header, _ = self.images.frozen_snapshot(project_id, item["image_revision_id"])
+            header = self.images.frozen_header(project_id, item["image_revision_id"])
             if header.artifact_hash != item["image_artifact_hash"]:
                 raise PublicationIntegrityError("Publication image digest mismatch")
         self.authorization.require_current(scope)

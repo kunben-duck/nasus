@@ -98,7 +98,8 @@ class ToolInvocationApplicationService:
         require_receipt_access(self._read_resources, invocation)
 
     def _require_batch_read_access(self, invocations: List[ToolInvocation]) -> None:
-        if not any(item.tool_id in RESOURCE_RECEIPT_TOOLS for item in invocations):
+        if not any(item.tool_id in RESOURCE_RECEIPT_TOOLS or
+                   item.tool_id == "version.create" and item.input_payload.get("image_binding") for item in invocations):
             return
         current = getattr(self._read_resources, "require_batch_access", None)
         if not callable(current):

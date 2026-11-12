@@ -9,7 +9,9 @@ export function reduceConversationStreamingEvent(
 ): ConversationSession | undefined {
   if (event.event_type === 'conversation.message.started') {
     const message = asConversationMessage(event.payload.message)
-    return message ? { ...conversation, messages: upsertById(conversation.messages, message) } : conversation
+    // SSE replay must not reset content or status already loaded from a snapshot.
+    if (!message || conversation.messages.some((item) => item.id === message.id)) return conversation
+    return { ...conversation, messages: upsertById(conversation.messages, message) }
   }
 
   if (event.event_type === 'conversation.message.delta') {
@@ -18,7 +20,8 @@ export function reduceConversationStreamingEvent(
     const sequence = Number(event.payload.sequence ?? 0)
     const delta = String(event.payload.delta ?? '')
     const current = conversation.messages.find((item) => item.id === messageId)
-    if (!current || current.stream_id !== streamId || sequence <= (current.sequence_max ?? 0)) return conversation
+    if (!current || current.status !== 'streaming' || current.stream_id !== streamId
+      || sequence <= (current.sequence_max ?? 0)) return conversation
     const blocks = current.blocks.length > 0
       ? current.blocks.map((block, index) => index === 0 ? { ...block, text: `${block.text}${delta}` } : block)
       : [{ type: 'text' as const, text: delta }]
@@ -28,7 +31,12 @@ export function reduceConversationStreamingEvent(
 
   if (['conversation.message.completed', 'conversation.message.interrupted', 'conversation.message.failed'].includes(event.event_type)) {
     const message = asConversationMessage(event.payload.message)
-    return message ? { ...conversation, messages: upsertById(conversation.messages, message) } : conversation
+    if (!message) return conversation
+    const current = conversation.messages.find((item) => item.id === message.id)
+    if (current && (['completed', 'interrupted', 'failed'].includes(current.status ?? '')
+      || current.stream_id !== message.stream_id
+      || (message.sequence_max ?? 0) < (current.sequence_max ?? 0))) return conversation
+    return { ...conversation, messages: upsertById(conversation.messages, message) }
   }
 
   if (event.event_type === 'conversation.turn.accepted') {

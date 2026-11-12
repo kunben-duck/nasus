@@ -8,18 +8,25 @@ logger = logging.getLogger(__name__)
 PHASES = frozenset({
     "prepare_access", "prepare_original_command", "prepare_current_authority",
     "prepare_inputs", "prepare_binding", "prepare_final_authority",
-    "grant_recipe_parent", "grant_environment_record", "grant_live_permission",
+    "grant_recipe_parent", "grant_environment_record", "grant_paired_parents", "grant_live_permission",
     "workflow_delivery", "workflow_start",
     "bind_canonical", "bind_live_permission", "bind_existing_intent", "bind_preparation",
     "bind_prior_effects", "bind_intent_persistence", "bind_preparation_receipt",
     "bind_intent_verification", "bind_event_persistence", "bind_current_authority",
-    "worker_command", "worker_original_command", "worker_access", "worker_execute",
+    "worker_command", "worker_original_command", "worker_access", "worker_execute", "worker_archive_recovery",
     "worker_archive_inputs", "worker_archive_history", "worker_commit",
     "execution_inputs", "execution_runtime", "execution_operation",
     "runtime_current", "runtime_binding", "runtime_command_fence", "runtime_acquire", "runtime_final_authority",
+    "journal_inspect", "journal_setup_cohort", "journal_claim", "journal_preflight", "journal_claim_transaction",
+    "journal_preflight_parent_before", "journal_preflight_live_health", "journal_preflight_parent_after",
+    "journal_complete", "journal_complete_transaction",
+    "runner_target_before", "runner_dispatch_proof", "runner_subprocess", "runner_target_after", "runner_result_proof",
+    "runner_case_private_staging",
     "work_acquire", "work_require", "work_renew", "work_initial_authority", "work_original_scope",
     "work_transaction_lock", "work_locked_authority", "work_registered_parent", "work_final_scope",
     "work_final_authority", "work_live_lease",
+    "case_input_preparation", "case_work_binding", "case_dispatch_claim", "case_result_commit",
+    "case_finalization", "case_finish_archive_verification",
 })
 FAILURE_TYPES = frozenset({
     "HttpFixtureInvalid", "HttpFixtureWorkBusy", "HttpFixtureWorkLost", "HttpFixtureOutcomeUnknown",
@@ -27,6 +34,8 @@ FAILURE_TYPES = frozenset({
     "SourceAccessDenied", "SourceAccessStale", "StaleSourceAccessScope", "PermissionError", "KeyError",
     "ValueError", "TypeError", "OperationalError", "DBAPIError", "ClientError",
     "RPCError", "TimeoutError", "CancelledError",
+    "NativeEnvironmentInvalid", "NativeBuildFailure",
+    "RunPlanCaseExecutionInvalid", "RunPlanCaseConsentExpired", "RunPlanCaseWorkLost", "RunPlanCaseWorkBusy", "RunPlanCaseAlreadyClaimed",
 })
 
 

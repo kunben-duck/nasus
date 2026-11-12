@@ -85,6 +85,24 @@ def test_project_history_discovers_all_stages_and_waiting_confirmation_without_l
             assert getattr(item, key) is False and getattr(page, key) is False
 
 
+def test_original_execution_history_reuses_one_verified_grant_parent(history_specimen, monkeypatch):
+    v = history_specimen
+    before, reads = v.state["reads"], []
+    original = v.service.recipes.read
+
+    def recipe(*args):
+        reads.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(v.service.recipes, "read", recipe)
+    item = v.history.read(v.target)
+    assert v.state["reads"] - before == len(reads) == 1
+    assert item.stage == "execute" and item.run_plan_id == v.saved["metadata"]["run_plan_id"]
+    selected, inputs = v.history.read_execution_with_inputs(v.target)
+    assert selected == item and inputs.selection.grant_id == item.grant_id
+    assert v.state["reads"] - before == len(reads) == 2 and v.state["live"] == 0
+
+
 @pytest.mark.parametrize("status", ["pending", "waiting_confirmation", "waiting_approval", "running", "completed", "failed", "cancelled"])
 def test_all_original_lifecycle_statuses_remain_discoverable_without_reopening(history_specimen, status):
     v = history_specimen
@@ -204,12 +222,40 @@ def test_sql_counts_and_pages_the_full_project_after_visibility_without_lifecycl
     query = statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
     sql = str(query)
     assert "UNION ALL" in sql and sql.count("tool_invocations.tool_id =") == 3
+    assert sql.count("CAST(NULL AS JSON)") == 2
     assert "visible_fixture_commands AS" in sql and "NOT (EXISTS" in sql and "binding_id NOT IN" in sql
     assert sql.index("visible_fixture_commands AS") < sql.index("count(*) AS total")
     assert "original_fixture_commands.manifest_id" in sql and "invalid_total" in sql
     assert "tool_invocations.status =" not in sql and "LIMIT 3" in sql
     assert "LEFT OUTER JOIN quality_http_fixture_grants" in sql and "LEFT OUTER JOIN tool_invocations" in sql
     assert "FOR UPDATE" not in sql and "actor_id =" not in sql
+
+
+@pytest.mark.parametrize("cancellation", [False, True])
+def test_composed_job_repository_decodes_history_without_calling_the_write_row_builder(monkeypatch, cancellation):
+    from apps.api.app.infrastructure.persistence import http_fixture_history_repository as adapter
+    from apps.api.app.infrastructure.persistence.http_fixture_job_repository import HttpFixtureJobRepository
+
+    execution = {"id": "execution", "tool_id": FIXTURE_COMMAND_TOOL, "status": "completed",
+        "input_payload": {"project_id": "project", "operation": "setup"}}
+    selected = ({"id": "control", "tool_id": FIXTURE_CANCEL_TOOL, "status": "completed",
+        "input_payload": {"project_id": "project", "invocation_id": execution["id"]}} if cancellation else execution)
+    original = execution if cancellation else {}
+    row = SimpleNamespace(total=1, invalid_total=0, invocation_id=selected["id"], tool_id=selected["tool_id"],
+        status=selected["status"], input_payload=selected["input_payload"], recipe_id="recipe",
+        recipe_artifact_hash="sha256:" + "a" * 64, original_id=original.get("id"), original_tool=original.get("tool_id"),
+        original_status=original.get("status"), original_input=original.get("input_payload"))
+
+    @contextmanager
+    def session():
+        yield SimpleNamespace(execute=lambda _: SimpleNamespace(all=lambda: [row]))
+
+    monkeypatch.setattr(adapter, "session_scope", session)
+    repo = HttpFixtureJobRepository()
+    expected = {"command": selected, "execution": execution if cancellation else None,
+        "recipe_id": row.recipe_id, "recipe_artifact_hash": row.recipe_artifact_hash}
+    assert repo.read_history("project", selected["id"], binding_ids=("source",)) == expected
+    assert repo.list_history(HttpFixtureHistoryQuery(project_id="project"), binding_ids=("source",))["items"] == [expected]
 
 
 def test_database_outage_has_no_partial_inventory_or_private_sql_leak(monkeypatch):

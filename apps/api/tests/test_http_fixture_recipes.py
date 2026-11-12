@@ -96,12 +96,14 @@ def test_valid_plan_wrapped_in_another_project_is_rejected():
 
 def service_specimen():
     request, saved, _ = specimen()
-    state = {"archives": {}, "prior": None, "commits": 0, "writes": 0, "denied": False, "role": "qa_lead"}
+    state = {"archives": {}, "prior": None, "commits": 0, "writes": 0, "denied": False, "role": "qa_lead",
+        "plan_reads": 0, "archive_reads": 0}
     def current(_access):
         if state["denied"]: raise SourceAccessDenied("source revoked")
     def read_plan(project, ident):
         current(None)
         assert (project, ident) == (request.project_id, request.run_plan_id)
+        state["plan_reads"] += 1
         return deepcopy(saved)
     auth = SimpleNamespace(scope=lambda project: SimpleNamespace(actor_id="reviewer", effective_project_role=state["role"]),
         require_current=current)
@@ -111,13 +113,17 @@ def service_specimen():
         digest = acceptance_digest(payload)
         state["archives"][digest] = deepcopy(payload)
         return "s3://private/" + digest, digest
-    artifacts = SimpleNamespace(put=put, read=lambda project, ref, digest: deepcopy(state["archives"][digest]))
+    def read_archive(project, ref, digest):
+        state["archive_reads"] += 1
+        return deepcopy(state["archives"][digest])
+    artifacts = SimpleNamespace(put=put, read=read_archive)
     def committed(value, *, actor_id, invocation_id, require_access):
         assert value == request and actor_id == "reviewer" and invocation_id == "command"
         require_access()
         return deepcopy(state["prior"])
-    def record(value, payload, ref, metadata, *, require_access):
+    def record(value, payload, ref, metadata, *, require_access, verify_archive):
         require_access()
+        verify_archive()
         state["prior"], state["ref"] = deepcopy(metadata), ref
         state["commits"] += 1
         return deepcopy(metadata)
@@ -141,6 +147,14 @@ def test_replay_restores_original_archive_without_second_write_or_dispatch():
         record_id=metadata["record_id"]), receipt)))
     assert state["writes"] == state["commits"] == 1
     assert not hasattr(service, "runner")
+
+
+def test_registration_verifies_the_new_archive_once_inside_commit_and_replay_uses_one_parent():
+    service, request, state, metadata = registered_specimen()
+    assert (state["plan_reads"], state["archive_reads"]) == (2, 1)
+    assert service.record(request, invocation_id="command", recorded_at="ignored historical time") == metadata
+    assert (state["plan_reads"], state["archive_reads"]) == (3, 2)
+    assert state["writes"] == state["commits"] == 1
 
 
 def test_combined_read_returns_the_exact_verified_plan_without_another_traversal(monkeypatch):
@@ -194,6 +208,7 @@ def test_revocation_after_archive_does_not_commit_recipe(monkeypatch):
     monkeypatch.setattr(service.artifacts, "put", revoke)
     with pytest.raises(SourceAccessDenied): service.record(request, invocation_id="command", recorded_at=datetime.now(timezone.utc).isoformat())
     assert state["writes"] == 1 and state["commits"] == 0 and state["prior"] is None
+    assert state["archive_reads"] == 0
 
 
 @pytest.mark.parametrize("key,value", [("recipe_bytes_verified", 1), ("execution_authorized", 0), ("passed_count", False),

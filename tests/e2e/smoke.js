@@ -1,4 +1,4 @@
-const { chromium } = require('@playwright/test')
+const { chromium, expect } = require('@playwright/test')
 const { spawn } = require('node:child_process')
 const fsSync = require('node:fs')
 const fs = require('node:fs/promises')
@@ -156,6 +156,7 @@ async function main() {
   const browser = await chromium.launch({ headless: true })
   const page = await browser.newPage()
   const systemImageResponses = []
+  const failedResponses = []
   const pageErrors = []
   const projectName = `Smoke Quality Hub ${Date.now()}`
   const fixture = await createSourceFixture()
@@ -165,6 +166,9 @@ async function main() {
       pageErrors.push(error.message)
     })
     page.on('response', async (response) => {
+      if (response.status() >= 400) {
+        failedResponses.push({ path: new URL(response.url()).pathname, status: response.status() })
+      }
       if (!response.url().includes('/system-image') || response.request().method() !== 'GET') return
       const payload = await response.json().catch(() => null)
       systemImageResponses.push({
@@ -219,18 +223,26 @@ async function main() {
     await page.goto(`${portalUrl}/build`, { waitUntil: 'domcontentloaded' })
     await expectVisible(page.getByRole('heading', { name: /Build quality projects with Nasus/i }), 'build shell loaded')
 
-    const buildSseOpenCount = await page.evaluate(() => window.__nasusSmokeSseOpenUrls.length)
     await page.getByTestId('build-agent-input').fill(`Help me create a new project called ${projectName}`)
     await page.getByTestId('build-agent-submit').click()
-    await page.waitForURL(/\/projects\//, { timeout: 15000 })
+    const buildConversation = page.getByTestId('build-conversation')
+    const imageLink = buildConversation.getByRole('link', { name: 'View system image', exact: true })
+    await expectVisible(imageLink, 'created project entry visible in Build conversation')
+    await expect(page.getByRole('button', { name: 'New build conversation', exact: true })).toBeEnabled({ timeout: 15000 })
+    await expect(buildConversation.locator('.build-project-context').getByText(projectName, { exact: true })).toBeVisible()
+    await expect(page).toHaveURL(`${portalUrl}/build`)
+    await expect(page.getByTestId('agent-workspace')).toHaveCount(0)
+    console.log('ok: completed project creation stays on Build')
+
+    // Project creation stays conversational; entry into the project is explicit.
+    await expect(imageLink).toHaveAttribute('href', /^\/projects\/[^/]+\/knowledge$/)
+    const imageHref = await imageLink.getAttribute('href')
+    await imageLink.click()
+    await expect(page).toHaveURL(new URL(imageHref, portalUrl).href)
+    await page.getByRole('button', { name: 'Agent workspace', exact: true }).click()
+    await expect(page).toHaveURL(new URL(imageHref.replace(/\/knowledge$/, ''), portalUrl).href)
     await expectVisible(page.getByTestId('agent-workspace'), 'project workspace opened')
     await expectVisible(page.getByText(projectName).first(), 'created project visible')
-    await page.waitForFunction(
-      (previousCount) => window.__nasusSmokeSseOpenUrls.length > previousCount,
-      buildSseOpenCount,
-      { timeout: 15_000 },
-    )
-
     await page.getByTestId('agent-card-system-image-builder').click()
     await expectVisible(page.getByTestId('source-binding-panel'), 'required and optional source inputs visible')
     await page.getByTestId('source-code-input').fill(fixture.codeDir)
@@ -247,8 +259,19 @@ async function main() {
       if (!response.ok) throw new Error(`Smoke read failed: ${response.status} ${relative}`)
       return response.json()
     }
-    const conversation = await authorizedRead(`/v1/conversations?space_type=project&space_id=${projectId}`)
+    const conversation = await authorizedRead(`/v1/conversations?space_type=project&project_id=${encodeURIComponent(projectId)}`)
+    expect(conversation).toHaveLength(1)
+    expect(conversation[0]).toMatchObject({ project_id: projectId, space_type: 'project', space_id: projectId })
     const conversationId = conversation[0].id
+    // Empty streams may wait for a heartbeat; verify the exact project stream after real activity.
+    await page.waitForFunction(
+      (id) => window.__nasusSmokeSseOpenUrls.some((url) => (
+        new URL(url, window.location.href).pathname === `/v1/conversations/${id}/events`
+      )),
+      conversationId,
+      { timeout: 15_000 },
+    )
+    console.log('ok: project conversation SSE connected')
     const before = await authorizedRead(`/v1/conversations/${conversationId}`)
     if (before.agent_goals.length !== 1) throw new Error('The guided entry must create exactly one fixed goal')
     const goal = before.agent_goals[0]
@@ -292,9 +315,9 @@ async function main() {
       throw new Error('Structural completion must retain the same paused goal')
     }
     await expectVisible(page.getByTestId('system-image-strip').getByText(/Sources indexed\s*3\/3/i).first(), 'source groups indexed')
-    const canonicalAgentEvents = await page.evaluate(() => (
+    const canonicalAgentEvents = await page.evaluate((id) => (
       window.__nasusSmokeSseEvents ?? []
-    ).filter(({ eventType }) => eventType.startsWith('agent.step.')))
+    ).filter(({ eventType, payload }) => eventType.startsWith('agent.step.') && payload?.conversation_id === id), conversationId)
     if (!canonicalAgentEvents.some(({ eventType }) => eventType === 'agent.step.thinking.delta')) {
       throw new Error(`canonical agent thinking event was not observed: ${JSON.stringify(canonicalAgentEvents.map(({ eventType, payload }) => ({ eventType, eventId: payload?.event_id })))}`)
     }
@@ -310,6 +333,14 @@ async function main() {
     await expectVisible(page.getByTestId('quality-asset-panel'), 'quality loop panel is available')
 
     console.log('smoke: success')
+  } catch (error) {
+    const diagnostics = await page.evaluate(() => ({
+      path: window.location.pathname,
+      sseOpenPaths: (window.__nasusSmokeSseOpenUrls ?? []).map((url) => new URL(url, window.location.href).pathname),
+      alerts: Array.from(document.querySelectorAll('[role="alert"]'), (node) => node.textContent),
+    })).catch(() => null)
+    console.error('smoke failure diagnostics:', JSON.stringify({ ...diagnostics, failedResponses, pageErrors }, null, 2))
+    throw error
   } finally {
     await browser.close()
     await fs.rm(fixture.root, { recursive: true, force: true })

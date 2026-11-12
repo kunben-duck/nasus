@@ -76,6 +76,10 @@ class RunPlanLocatorApplicationService:
 
     def _inputs(self, query):
         saved = self.plans.read(query.project_id, query.run_plan_id)
+        return self._original_plan(query, saved)
+
+    @staticmethod
+    def _original_plan(query, saved):
         metadata = saved["metadata"]
         if (metadata["project_id"] != query.project_id or metadata["run_plan_id"] != query.run_plan_id
                 or metadata["artifact_hash"] != query.run_plan_artifact_hash):

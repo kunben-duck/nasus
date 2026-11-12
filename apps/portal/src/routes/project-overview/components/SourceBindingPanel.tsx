@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { SystemImageData } from '../../../domains/system-image/types'
 import type { SourceBindingValues } from './sourceBindingDefaults'
 import type { SourceBindingKey } from './sourceBindingCards'
@@ -7,6 +8,7 @@ import { useI18n } from '../../../shared/i18n/I18nProvider'
 import { SourceVisibilityNotice } from '../../../shared/ui/SourceVisibilityNotice'
 
 export function SourceBindingPanel({
+  focusSource,
   systemImage,
   values,
   error,
@@ -16,6 +18,7 @@ export function SourceBindingPanel({
   uploadingSourceKey,
   onSubmit,
 }: {
+  focusSource?: SourceBindingKey | 'all'
   systemImage?: SystemImageData
   values: SourceBindingValues
   error: string | null
@@ -26,6 +29,14 @@ export function SourceBindingPanel({
   onSubmit: () => void
 }) {
   const { t, tx } = useI18n()
+  const panelRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!focusSource || !panelRef.current) return
+    const card = sourceBindingCards.find((item) => item.key === focusSource)
+    const input = card && panelRef.current.querySelector<HTMLInputElement>(`[data-testid="${card.testId}"]`)
+    if (input) input.focus()
+    else panelRef.current.focus()
+  }, [focusSource])
   const sourceByType = sourceMapByType(systemImage)
   const missing = systemImage?.build_state.missing_source_types ?? []
   const ready = systemImage?.build_state.status === 'ready'
@@ -33,7 +44,7 @@ export function SourceBindingPanel({
   if (systemImage?.visibility?.mode === 'source_filtered') return <SourceVisibilityNotice limited />
 
   return (
-    <div className="source-binding-panel" data-testid="source-binding-panel">
+    <div className="source-binding-panel" data-testid="source-binding-panel" ref={panelRef} tabIndex={-1}>
       <div className="source-binding-header">
         <div>
           <span className="eyebrow">{t('Source bindings')}</span>

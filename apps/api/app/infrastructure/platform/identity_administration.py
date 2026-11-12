@@ -159,7 +159,9 @@ class SQLAlchemyIdentityAdministrationAdapter:
             email=row.email,
             display_name=row.display_name,
             role=row.role,
-            status=row.status,
+            # Legacy disabled accounts remain denied by authentication. Normalize
+            # the read projection only; never reactivate or rewrite their identity.
+            status="suspended" if row.status == "disabled" else row.status,
             avatar_preset=row.avatar_preset,
             avatar_image=bool(row.avatar_object_ref or row.avatar_url),
             created_at=row.created_at,

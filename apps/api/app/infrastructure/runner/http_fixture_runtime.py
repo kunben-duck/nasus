@@ -3,6 +3,7 @@ import os
 
 from ...application.quality_loop.http_fixture_execution import HttpFixtureWorkerRuntime
 from ...application.quality_loop.http_fixture_diagnostics import fixture_phase
+from ...application.quality_loop.execution_work_guard import ExecutionWorkGuard
 from ...application.quality_loop.http_fixture_commands import HttpFixtureCommandAuthority
 from ...application.quality_loop.http_fixture_journal_access import NativeSavedRunPlanHttpFixtureAccess
 from ...application.quality_loop.http_fixtures import HttpFixtureLifecycleApplicationService
@@ -28,20 +29,23 @@ class OwnedHttpFixtureRuntimeFactory:
         return NativeSavedRunPlanHttpFixtureAccess(self.plans, inputs.parent, inputs.manifest,
             self.environment_records, inputs.native_environment, environment_health=self.environment_health)
 
+    def _require_live_permission(self, inputs):
+        if (inputs.access_scope.actor_id != inputs.consent.actor_id
+                or inputs.access_scope.fingerprint != inputs.consent.source_scope_digest):
+            raise HttpFixtureInvalid("fixture worker is not the original consenting actor and source scope")
+        with fixture_phase("grant_live_permission"):
+            value = self.grants.repository.require_live(inputs.scope.project_id, inputs.consent.grant_id,
+                actor_id=inputs.consent.actor_id, scope=inputs.scope, operation=inputs.selection.operation,
+                source_scope_digest=inputs.consent.source_scope_digest)
+        if value["grant_digest"] != inputs.selection.grant_digest:
+            raise HttpFixtureInvalid("fixture worker permission was replaced")
+
     def _current(self, inputs, require_current, *, live):
         def current():
             require_current()
             self.grants.authorization.require_current(inputs.access_scope)
             if live:
-                if (inputs.access_scope.actor_id != inputs.consent.actor_id
-                        or inputs.access_scope.fingerprint != inputs.consent.source_scope_digest):
-                    raise HttpFixtureInvalid("fixture worker is not the original consenting actor and source scope")
-                with fixture_phase("grant_live_permission"):
-                    value = self.grants.repository.require_live(inputs.scope.project_id, inputs.consent.grant_id,
-                        actor_id=inputs.consent.actor_id, scope=inputs.scope, operation=inputs.selection.operation,
-                        source_scope_digest=inputs.consent.source_scope_digest)
-                if value["grant_digest"] != inputs.selection.grant_digest:
-                    raise HttpFixtureInvalid("fixture worker permission was replaced")
+                self._require_live_permission(inputs)
             self.grants.authorization.require_current(inputs.access_scope)
             require_current()
         return current
@@ -56,6 +60,13 @@ class OwnedHttpFixtureRuntimeFactory:
         if runner is None:
             runner = ConfiguredOwnedTargetHttpRunner(node_executable=os.environ.get("NASUS_HTTP_FIXTURE_NODE", ""))
         command_options = {}
+        renewal_current = current
+        commands = None
+
+        def require_bound_command():
+            if commands is not None:
+                commands.require(inputs, command_authority)
+
         if command_authority is not None:
             command_authority = HttpFixtureCommandAuthority.model_validate(command_authority.model_dump(mode="json"))
             commands = self.commands if self.commands is not None else HttpFixtureCommandRepository()
@@ -64,18 +75,34 @@ class OwnedHttpFixtureRuntimeFactory:
             original_current = current
             def command_current():
                 original_current()
-                commands.require(inputs, command_authority)
+                require_bound_command()
                 original_current()
+            def renewal_command():
+                original_current()
+                require_bound_command()
             current = command_current
+            renewal_current = renewal_command
             with fixture_phase("runtime_command_fence"):
                 command_options["command_fence"] = commands.fence(inputs, command_authority)
         journal = PostgresHttpFixtureDispatchJournal(access, artifacts, actor_id=inputs.consent.actor_id)
         repository = PostgresHttpFixtureWorkRepository(journal)
         with fixture_phase("runtime_acquire"):
             lease = repository.acquire(inputs.scope, inputs.selection.operation, owner_id, require_current=current)
+        parent_pin = inputs.parent.model_dump(mode="json")
         journal = PostgresHttpFixtureDispatchJournal(access, artifacts, actor_id=inputs.consent.actor_id,
             work_fence=repository.fence(lease), consent_fence=PostgresHttpFixtureConsentFence(
                 self.grants.repository, inputs.consent), **command_options)
+
+        def poll_authority(value):
+            # Keep all live fences, but bracket them only once per poll.
+            require_current()
+            self.grants.authorization.require_current(inputs.access_scope)
+            self._require_live_permission(inputs)
+            require_bound_command()
+            repository.require_ownership(value, parent_pin)
+            self.grants.authorization.require_current(inputs.access_scope)
+            require_current()
+
         # The lifecycle checks this port immediately around every side effect;
         # the journal additionally fences the original consent in its transaction.
         class FencedRunner:
@@ -85,6 +112,8 @@ class OwnedHttpFixtureRuntimeFactory:
                     current()
                     original()
                     current()
+                if isinstance(original, ExecutionWorkGuard):
+                    require_work = ExecutionWorkGuard(require_work, original.poll)
                 return runner.execute_owned_http(command, **{**options, "require_work": require_work})
         class FencedRepository:
             def require(self, value):
@@ -92,17 +121,34 @@ class OwnedHttpFixtureRuntimeFactory:
                 repository.require(value)
                 current()
 
+            def require_poll(self, value):
+                poll_authority(value)
+
             def renew(self, value, *, require_current):
                 def renewed_current():
-                    current()
+                    renewal_current()
                     require_current()
-                repository.renew(value, require_current=renewed_current)
+                renew_owner = getattr(repository, "renew_ownership", None)
+                if callable(renew_owner):
+                    renew_owner(value, parent_pin, require_current=renewed_current)
+                else:
+                    repository.renew(value, require_current=renewed_current)
         with fixture_phase("runtime_final_authority"):
             current()
         return HttpFixtureWorkerRuntime(HttpFixtureLifecycleApplicationService(FencedRunner(), journal,
             OwnedHttpFixtureObservationVerifier()), FencedRepository(), lease)
 
+    def history_with_original_recheck(self, inputs, *, require_current, original_setup, verify_original):
+        if (inputs.selection.operation != "setup" or not isinstance(original_setup, HttpFixtureCommandAuthority)
+                or not callable(verify_original)):
+            raise HttpFixtureInvalid("stable fixture history needs the exact original setup and command recheck")
+        return self._history(inputs, require_current=require_current, original_setup=original_setup,
+            include_cleanup=True, verify_original=verify_original)
+
     def history(self, inputs, *, require_current, original_setup=None, include_cleanup=False):
+        return self._history(inputs, require_current=require_current, original_setup=original_setup, include_cleanup=include_cleanup)
+
+    def _history(self, inputs, *, require_current, original_setup=None, include_cleanup=False, verify_original=None):
         if type(include_cleanup) is not bool:
             raise HttpFixtureInvalid("fixture history requires an explicit cleanup inventory selection")
         if original_setup is not None:
@@ -111,12 +157,18 @@ class OwnedHttpFixtureRuntimeFactory:
         current()
         journal = PostgresHttpFixtureDispatchJournal(self._access(inputs), HttpFixtureExecutionArtifacts(self.storage),
             actor_id=inputs.access_scope.actor_id)
+        if inputs.selection.operation == "cleanup" and original_setup is None:
+            return journal.inspect_cleanup_history(inputs.scope, require_current=current)
+        if original_setup is not None and include_cleanup and inputs.selection.operation == "setup":
+            options = {"verify_original": verify_original} if verify_original is not None else {}
+            return journal.inspect_original_setup_cohort(inputs.scope, original_setup=original_setup,
+                require_current=current, **options)
         phases = ("setup",) if inputs.selection.operation == "setup" and not include_cleanup else (
             "setup", *("cleanup:" + binding for binding in fixture_bindings(inputs.manifest)))
         result = []
         for phase in phases:
             current()
-            options = {"read_only": True}
+            options = {"read_only": True, "require_current": current}
             if phase == "setup" and original_setup is not None:
                 options["original_command"] = original_setup
             result.append((phase, journal.inspect(inputs.scope, phase, **options)))

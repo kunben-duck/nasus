@@ -1,16 +1,20 @@
 """Real PG/MinIO worker composition; HTTP/build/health transports are specimens."""
 import asyncio
 import importlib
+import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import inspect, literal, select, text, update, delete
+from sqlalchemy import inspect, insert, literal, select, text, update, delete
 from sqlalchemy.exc import DBAPIError
 
 from apps.api.app.main import app
@@ -41,6 +45,7 @@ from apps.api.app.infrastructure.runner.owned_target_environment import OwnedTar
 from apps.api.app.infrastructure.runner.owned_target_health import OwnedTargetHealthInspector
 from apps.api.app.infrastructure.workflow.http_fixture_runtime import reconcile_http_fixtures_once
 from apps.api.tests.test_http_bindings import specimen
+from apps.api.tests.test_http_fixture_actor_reads_postgres import readonly_transactions
 from apps.api.tests.test_http_fixtures import Runner, manifest
 from apps.api.tests.test_owned_target_environment import Commands, spec
 from apps.api.tests.test_owned_target_health import HealthCommands
@@ -52,18 +57,63 @@ from apps.api.tests.test_run_plans_api import select_binding_scripts
 from apps.api.tests.test_semantic_evaluations_api import completed, invoke, confirm
 
 
+def journal_rows(session, model, condition):
+    table = model.__table__
+    query = select(table).where(condition).order_by(*table.primary_key.columns)
+    return [dict(row) for row in session.execute(query).mappings()]
+
+
 def journal_snapshot(project_id):
     models = (HttpFixtureDispatchRecord, HttpFixtureResultRecord, HttpFixtureDispatchOwnershipRecord,
         HttpFixtureDispatchConsentRecord, HttpFixtureWorkLeaseRecord, HttpFixtureCommandRecord, HttpFixtureDispatchCommandRecord)
     with session_scope() as session:
-        result = {model.__tablename__: [deepcopy({c.name: getattr(row, c.name) for c in model.__table__.columns})
-            for row in session.scalars(select(model).where(model.project_id == project_id)).all()] for model in models}
+        result = {model.__tablename__: journal_rows(session, model, model.project_id == project_id) for model in models}
         identifiers = [value["claim_id"] for value in result[HttpFixtureDispatchRecord.__tablename__]]
         identifiers.extend(value["invocation_id"] for value in result[HttpFixtureCommandRecord.__tablename__])
         for model in (AuditEventRecord, SSEEventOutboxRecord):
-            result[model.__tablename__] = [deepcopy({c.name: getattr(row, c.name) for c in model.__table__.columns})
-                for row in session.scalars(select(model).where(model.entity_id.in_(identifiers))).all()]
+            result[model.__tablename__] = journal_rows(session, model, model.entity_id.in_(identifiers))
         return result
+
+
+def test_journal_snapshot_compares_persisted_audit_metadata():
+    audit = AuditEventRecord.__table__
+    with session_scope() as session:
+        assert session.get_bind().dialect.name == "postgresql"
+        assert session.scalar(text("SELECT current_database()")).startswith("nasus_test_")
+        session.execute(text("CREATE TEMP TABLE audit_events ON COMMIT DROP AS SELECT * FROM public.audit_events WITH NO DATA"))
+        session.execute(insert(audit), {"id": "audit-snapshot-specimen", "entity_id": "command-specimen",
+            "metadata": {"status": "original"}})
+        condition = AuditEventRecord.entity_id == "command-specimen"
+        before = journal_rows(session, AuditEventRecord, condition)
+        assert before[0]["metadata"] == {"status": "original"}
+        assert journal_rows(session, AuditEventRecord, condition) == before
+        session.execute(update(audit).where(condition).values(metadata={"status": "changed"}))
+        after = journal_rows(session, AuditEventRecord, condition)
+        assert after == [{**before[0], "metadata": {"status": "changed"}}]
+
+
+@contextmanager
+def readonly_history_api_queries(jobs, monkeypatch):
+    active = ContextVar("fixture_history_api_read_scope", default=False)
+    guarded = []
+
+    def wrap(name, operation):
+        @wraps(operation)
+        def read(*args, **kwargs):
+            token = active.set(True)
+            try:
+                guarded.append(name)
+                return operation(*args, **kwargs)
+            finally:
+                active.reset(token)
+        return read
+
+    # Authentication still updates the access-session heartbeat before entering these use cases.
+    with monkeypatch.context() as scoped, readonly_transactions(when=active.get):
+        scoped.setattr(jobs.history, "list", wrap("list", jobs.history.list))
+        scoped.setattr(jobs.history, "read", wrap("detail", jobs.history.read))
+        scoped.setattr(jobs.observations, "read", wrap("observation", jobs.observations.read))
+        yield guarded
 
 
 @pytest.fixture
@@ -160,11 +210,13 @@ def test_project_history_pg_discovers_pending_and_cancelled_originals_without_ef
         assert len(result) == total and len({item["invocation_id"] for item in result}) == total
         return {item["invocation_id"]: item for item in result}
     before = journal_snapshot(v["project_id"])
-    pending = pages()
-    assert pending[execute_id]["status"] == pending[waiting_grant.json()["id"]]["status"] == "waiting_confirmation"
-    pending_observation = v["client"].get(base + "/" + execute_id + "/observation", headers=v["headers"])
-    assert pending_observation.status_code == 200 and pending_observation.json()["state"] == "not_confirmed"
-    assert pending_observation.json()["job"] is None and pending_observation.json()["expected_phases"] == []
+    with readonly_history_api_queries(jobs, monkeypatch) as guarded:
+        pending = pages()
+        assert pending[execute_id]["status"] == pending[waiting_grant.json()["id"]]["status"] == "waiting_confirmation"
+        pending_observation = v["client"].get(base + "/" + execute_id + "/observation", headers=v["headers"])
+        assert pending_observation.status_code == 200 and pending_observation.json()["state"] == "not_confirmed"
+        assert pending_observation.json()["job"] is None and pending_observation.json()["expected_phases"] == []
+    assert set(guarded) == {"list", "detail", "observation"}
     assert journal_snapshot(v["project_id"]) == before and not fixture.runner.commands and not delivered
     # Confirm only the original execute command; the transport double starts no target activity.
     assert confirm(v, waiting_execute.json()).status_code == 200
@@ -174,18 +226,20 @@ def test_project_history_pg_discovers_pending_and_cancelled_originals_without_ef
     assert confirm(v, control.json()).status_code == 200
     assert delivered == [("start", execute_id), ("cancel", execute_id)]
     before = journal_snapshot(v["project_id"])
-    history = pages()
-    assert history[execute_id]["status"] == "cancelled"
-    assert history[control.json()["id"]]["original_execution_id"] == execute_id
-    assert history[control.json()["id"]]["stage"] == "cancel" and history[control.json()["id"]]["status"] == "completed"
-    response = v["client"].get(base + "/" + execute_id, headers=v["headers"])
-    assert response.status_code == 200 and response.json() == history[execute_id]
-    observed = v["client"].get(base + "/" + control.json()["id"] + "/observation", headers=v["headers"])
-    assert observed.status_code == 200 and observed.headers["cache-control"] == "private, no-store", observed.text
-    assert observed.json()["execution"] == history[execute_id]
-    assert observed.json()["selected"] == history[control.json()["id"]]
-    assert observed.json()["state"] == "not_dispatched" and observed.json()["job"]["phases"][0]["state"] == "not_dispatched"
-    assert observed.json()["business_coverage_verified"] is False and observed.json()["baseline_restored"] is False
+    with readonly_history_api_queries(jobs, monkeypatch) as guarded:
+        history = pages()
+        assert history[execute_id]["status"] == "cancelled"
+        assert history[control.json()["id"]]["original_execution_id"] == execute_id
+        assert history[control.json()["id"]]["stage"] == "cancel" and history[control.json()["id"]]["status"] == "completed"
+        response = v["client"].get(base + "/" + execute_id, headers=v["headers"])
+        assert response.status_code == 200 and response.json() == history[execute_id]
+        observed = v["client"].get(base + "/" + control.json()["id"] + "/observation", headers=v["headers"])
+        assert observed.status_code == 200 and observed.headers["cache-control"] == "private, no-store", observed.text
+        assert observed.json()["execution"] == history[execute_id]
+        assert observed.json()["selected"] == history[control.json()["id"]]
+        assert observed.json()["state"] == "not_dispatched" and observed.json()["job"]["phases"][0]["state"] == "not_dispatched"
+        assert observed.json()["business_coverage_verified"] is False and observed.json()["baseline_restored"] is False
+    assert set(guarded) == {"list", "detail", "observation"}
     assert not fixture.runner.commands and journal_snapshot(v["project_id"]) == before
     assert v["client"].get(base, headers=v["member_headers"]).status_code == 403
     with actor_scope(fixture.actor):
@@ -325,10 +379,22 @@ def test_public_fixture_tool_dispatch_and_cancel_keep_original_pg_commands(compo
     initial = read(original)
     assert initial["status"] == "running" and [item["state"] for item in initial["phases"]] == ["not_dispatched"]
     assert not runner.commands
-    with actor_scope(fixture.actor):
-        assert asyncio.run(jobs.run(original)) == "completed"
-        assert asyncio.run(jobs.run(original)) == "completed"
-    observed = read(original)
+    resolutions = []
+    resolve = jobs.grants.execution_inputs
+
+    def original_inputs(selection, *, live):
+        resolutions.append((selection, live))
+        return resolve(selection, live=live)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(jobs.grants, "execution_inputs", original_inputs)
+        with actor_scope(fixture.actor):
+            assert asyncio.run(jobs.run(original)) == "completed"
+            assert asyncio.run(jobs.run(original)) == "completed"
+        assert resolutions == [(fixture.chosen, True), (fixture.chosen, False)]
+        resolutions.clear()
+        observed = read(original)
+        assert resolutions == [(fixture.chosen, False)]
     assert observed["status"] == "completed" and observed["phases"][0]["state"] == "observed"
     assert observed["phases"][0]["result_status"] == "failed" and len(runner.commands) == 1
     assert runner.commands[0].steps[-1]["value_json"] == '"EXPLICIT_INDEPENDENT_EXPECTED"'
@@ -372,7 +438,77 @@ def test_public_fixture_tool_dispatch_and_cancel_keep_original_pg_commands(compo
         with actor_scope(fixture.actor): assert asyncio.run(jobs.run(cleanup)) == "completed"
         cleaned = read(cleanup)
         assert cleaned["status"] == "completed" and [item["state"] for item in cleaned["phases"]] == ["observed"]
+        assert [item["result_status"] for item in cleaned["phases"]] == ["passed"]
         assert runner.commands[-1].steps[0]["path"] == "/sessions/session_original/close" and len(runner.commands) == 2
+
+
+@pytest.mark.skipif(not os.getenv("TEST_TEMPORAL_ADDRESS"), reason="explicit actual Temporal opt-in is required")
+def test_temporal_retry_recovers_durable_fixture_without_a_live_grant(composed_fixture_execution, monkeypatch):
+    """Actual Temporal, PG and MinIO; HTTP response is an explicit specimen."""
+    from temporalio.client import Client
+    from temporalio.worker import Replayer, Worker
+    from apps.api.app import bootstrap
+    from apps.api.app.infrastructure.config.agent_runtime_config import TemporalGatewayConfig
+    from apps.api.app.infrastructure.workflow.http_fixture_runtime import TemporalHttpFixtureRuntime, build_http_fixture_activities
+    from apps.api.app.infrastructure.workflow.nasus_http_fixture_workflow import NasusHttpFixtureWorkflow
+
+    fixture = composed_fixture_execution
+    value, chosen, runner = fixture.v, fixture.chosen, fixture.runner
+    jobs = app.state.container.http_fixture_jobs
+    assert os.environ.get("NASUS_TEST_OBJECT_STORAGE_MODE") == "minio"
+    with session_scope() as session:
+        assert session.scalar(text("SELECT current_database()")).startswith("nasus_test_")
+    config = TemporalGatewayConfig(address=os.environ["TEST_TEMPORAL_ADDRESS"],
+        task_queue="nasus-test-fixture-archive-retry-" + uuid4().hex)
+    runtime = TemporalHttpFixtureRuntime(config=config)
+    monkeypatch.setenv("NASUS_AGENT_WORKFLOW_RUNTIME", "temporal")
+    monkeypatch.setattr(jobs, "workflow", runtime)
+    monkeypatch.setattr(bootstrap, "get_application_container", lambda: app.state.container)
+    saved, archival_reads = [], []
+    read = jobs.execution.read_resolved_history
+
+    def lost_acknowledgement(inputs, *, require_current):
+        archival_reads.append(inputs.selection)
+        if len(archival_reads) == 1:
+            assert inputs.selection == chosen and len(runner.commands) == 1
+            saved.append(journal_snapshot(value["project_id"]))
+            assert len(saved[0][HttpFixtureResultRecord.__tablename__]) == 1
+            future = datetime.now(timezone.utc) + timedelta(hours=1)
+            monkeypatch.setattr(HttpFixtureGrantRepository, "_clock", staticmethod(lambda: literal(future)))
+            raise RuntimeError("explicit loss after durable archive, before completion")
+        return read(inputs, require_current=require_current)
+
+    monkeypatch.setattr(jobs.execution, "read_resolved_history", lost_acknowledgement)
+
+    async def verify():
+        client = await asyncio.wait_for(Client.connect(config.address, namespace=config.namespace), 10)
+        async with Worker(client, task_queue=runtime.task_queue, workflows=[NasusHttpFixtureWorkflow],
+                activities=build_http_fixture_activities()):
+            pending = await asyncio.to_thread(invoke, value, FIXTURE_COMMAND_TOOL, chosen.model_dump(mode="json"), key=uuid4().hex)
+            assert pending.status_code == 200 and pending.json()["status"] == "waiting_confirmation", pending.text
+            response = await asyncio.to_thread(confirm, value, pending.json())
+            assert response.status_code == 200 and response.json()["status"] == "running", response.text
+            ident = response.json()["id"]
+            handle = client.get_workflow_handle("nasus-http-fixture:" + ident)
+            try:
+                assert await asyncio.wait_for(handle.result(), 900) == "completed"
+                history = await handle.fetch_history()
+                assert any(event.activity_task_started_event_attributes.attempt == 2 for event in history.events
+                    if event.HasField("activity_task_started_event_attributes"))
+                await Replayer(workflows=[NasusHttpFixtureWorkflow]).replay_workflow(history)
+                return ident
+            finally:
+                await runtime.cancel(ident)
+
+    ident = asyncio.run(verify())
+    assert archival_reads == [chosen, chosen] and len(runner.commands) == 1
+    after = journal_snapshot(value["project_id"])
+    for model in (HttpFixtureDispatchRecord, HttpFixtureResultRecord, HttpFixtureWorkLeaseRecord, HttpFixtureDispatchCommandRecord):
+        assert after[model.__tablename__] == saved[0][model.__tablename__]
+    response = value["client"].get(f"/v1/projects/{value['project_id']}/quality/http-fixture-executions/{ident}", headers=value["headers"])
+    assert response.status_code == 200 and response.json()["status"] == "completed", response.text
+    assert response.json()["phases"][0]["state"] == "observed"
+    assert response.json()["phases"][0]["result_status"] == "failed" and len(runner.commands) == 1
 
 
 def test_public_unbound_preparation_survives_transport_failure_and_recovers_same_command(composed_fixture_execution, monkeypatch):
@@ -400,7 +536,7 @@ def test_public_unbound_preparation_survives_transport_failure_and_recovers_same
         assert session.get(HttpFixturePreparationBindingRecord, ident) is None
     with monkeypatch.context() as readonly:
         def forbidden(*args, **kwargs): pytest.fail("unbound preparation must not open a target execution archive")
-        readonly.setattr(jobs.execution, "read", forbidden)
+        readonly.setattr(jobs.execution, "read_resolved_history", forbidden)
         response = v["client"].get(f"/v1/projects/{v['project_id']}/quality/http-fixture-executions/{ident}", headers=v["headers"])
     assert response.status_code == 200 and response.headers["Cache-Control"] == "private, no-store", response.text
     assert response.json()["schema"] == "nasus.http-fixture-job.v2" and response.json()["phase"] == "preparing"
@@ -445,7 +581,7 @@ def test_public_preparation_cancel_is_durable_before_rpc_and_never_creates_execu
         original = deepcopy(session.get(ToolInvocationRecord, ident).input_payload)
         preparation = deepcopy(session.get(HttpFixturePreparationRecord, ident).payload)
     def forbidden(*args, **kwargs): pytest.fail("preparation observation/cancel must not open target history")
-    monkeypatch.setattr(jobs.execution, "read", forbidden)
+    monkeypatch.setattr(jobs.execution, "read_resolved_history", forbidden)
     control = invoke(v, FIXTURE_CANCEL_TOOL, {"project_id": v["project_id"], "invocation_id": ident}, key=uuid4().hex)
     assert control.status_code == 200 and control.json()["status"] == "waiting_confirmation", control.text
     completed(confirm(v, control.json()))

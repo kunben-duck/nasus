@@ -9,6 +9,7 @@ import pytest
 
 from apps.api.app.application.quality_loop.http_fixture_grants import HttpFixtureGrantApplicationService, HttpFixtureGrantRequest
 from apps.api.app.application.quality_loop.http_fixture_journal_access import NativeSavedRunPlanHttpFixtureAccess, SavedRunPlanHttpFixtureAccess
+from apps.api.app.application.quality_loop.http_fixture_recipes import HttpFixtureRecipeApplicationService
 from apps.api.app.application.quality_loop.http_fixtures import HttpFixtureScope
 from apps.api.app.application.quality_loop.run_plan_observation_archives import RunPlanObservationArchiveParent
 from apps.api.app.domain.quality_loop.acceptance_specification import acceptance_digest
@@ -17,7 +18,7 @@ from apps.api.app.domain.quality_loop.http_fixture_grant import GRANT_SCHEMA, NA
 from apps.api.app.domain.quality_loop.http_fixture_recipe import RECIPE_PARENT_FIELDS, RECIPE_SCHEMA, recipe_identity, validate_recipe_archive
 from apps.api.app.domain.quality_loop.http_fixture_target import native_fixture_environment
 from apps.api.app.domain.quality_loop.http_fixtures import HttpFixtureInvalid
-from apps.api.app.domain.quality_loop.run_plan import RunPlanIntegrityError
+from apps.api.app.domain.quality_loop.run_plan import RunPlanChanged, RunPlanIntegrityError
 from apps.api.app.domain.system_image.source_access import SourceAccessDenied
 from apps.api.app.infrastructure.runner.owned_target_environment import OwnedTargetEnvironmentInspector
 from apps.api.app.infrastructure.persistence.http_fixture_native_grant_models import HttpFixtureNativeGrantRecord
@@ -30,7 +31,7 @@ from apps.api.tests.test_owned_target_environment import Commands, spec
 
 
 @pytest.fixture
-def native_grant(spec):
+def native_grant(spec, *, seal_archive=None):
     _, _, manifest, saved = saved_inputs()
     owned = replace(spec, project_id=saved["metadata"]["project_id"])
     plan = saved["artifact"]["plan"]
@@ -39,6 +40,8 @@ def native_grant(spec):
     plan["plan_digest"] = acceptance_digest({key: value for key, value in plan.items() if key != "plan_digest"})
     saved["metadata"].update(plan_digest=plan["plan_digest"], artifact_hash=acceptance_digest(saved["artifact"]))
     saved["current_use"] = {"inputs_current": True}
+    if seal_archive is not None:
+        seal_archive(saved)
     commands = Commands(owned)
     commands.body = selection["target_build"]["artifact_hash"][7:].encode() + b"  /app/target.jar\n"
     observed = OwnedTargetEnvironmentInspector(owned, command=commands).inspect(selection["target_build"]["artifact_hash"], require_work=lambda: None)
@@ -74,7 +77,7 @@ def native_grant(spec):
     plans = SimpleNamespace(read=lambda *args: deepcopy(saved), verified_read_session=nullcontext)
     recipes = SimpleNamespace(plans=plans, authorization=SimpleNamespace(scope=lambda _: access, require_current=current),
         read=lambda *args: {"archive": deepcopy(recipe), "metadata": deepcopy(recipe_metadata)}, verified_read_session=nullcontext)
-    def issue(request, scope, source_scope_digest, *, actor_id, invocation_id, require_access, native_environment=None):
+    def issue(request, scope, source_scope_digest, *, actor_id, invocation_id, require_access, verify_inputs, native_environment=None):
         require_access()
         issued = datetime.now(timezone.utc)
         payload = {"schema": NATIVE_GRANT_SCHEMA if native_environment else GRANT_SCHEMA, "project_id": request.project_id,
@@ -83,11 +86,13 @@ def native_grant(spec):
             "request": request.model_dump(mode="json"), "scope": asdict(scope), "source_scope_digest": source_scope_digest}
         if native_environment:
             payload["native_environment"] = deepcopy(native_environment)
+        verify_inputs()
         state["issued"][payload["record_id"]] = payload
         return grant_metadata(payload)
-    def live(*args, **kwargs):
+    def live(_project, ident, **kwargs):
         state["live"] += 1
         current(access)
+        return grant_metadata(state["issued"][ident])
     repository = SimpleNamespace(issue=issue, read=lambda project, ident: deepcopy(state["issued"][ident]), require_live=live)
     service = HttpFixtureGrantApplicationService(recipes, repository, environment_records=records)
     request = HttpFixtureGrantRequest(project_id=plan["project_id"], recipe_id=recipe_metadata["record_id"],
@@ -103,6 +108,7 @@ def test_native_consent_and_journal_use_the_instance_hash_not_the_operator_polic
     old = deepcopy((v.saved, v.environment, v.manifest))
     calls = len(v.commands.calls)
     value = v.service.issue(v.request, invocation_id="native-consent-command")
+    assert v.state["reads"] == 3
     scope = HttpFixtureScope(**value["scope"])
     assert value["schema"] == NATIVE_GRANT_SCHEMA
     assert scope.inventory_hash == v.environment["metadata"]["inventory_hash"]
@@ -117,6 +123,108 @@ def test_native_consent_and_journal_use_the_instance_hash_not_the_operator_polic
     with pytest.raises(HttpFixtureInvalid): SavedRunPlanHttpFixtureAccess(v.plans, parent, v.manifest).require_scope(scope)
     assert len(v.commands.calls) == calls and (v.saved, v.environment, v.manifest) == old
     assert all(value[key] is False for key in ("execution_authorized", "canonical_execution_committed", "fixtures_verified", "business_coverage_verified"))
+
+
+def paired_grant_reader(v):
+    recipe = v.service.recipes.read(v.request.project_id, v.request.recipe_id)
+    calls = []
+
+    def read_plan(*args):
+        calls.append("plan")
+        return deepcopy(v.saved)
+
+    def read_recipe(project, ref, digest):
+        assert (project, ref, digest) == (v.request.project_id, "recipe", v.request.recipe_artifact_hash)
+        calls.append("recipe_archive")
+        return deepcopy(recipe["archive"])
+
+    v.plans.read = read_plan
+    v.plans.authorization = v.service.authorization
+    v.service.recipes = HttpFixtureRecipeApplicationService(v.plans, SimpleNamespace(read=read_recipe),
+        SimpleNamespace(read=lambda *_: {"request": recipe["archive"]["request"], "metadata": recipe["metadata"], "artifact_ref": "recipe"}))
+
+    def read_environment(project, record):
+        assert (project, record) == (v.request.project_id, v.request.environment_record_id)
+        calls.append("environment")
+        return deepcopy(v.environment), v.plans.read(project, v.saved["metadata"]["run_plan_id"])
+
+    v.records.read_with_plan = read_environment
+    return calls
+
+
+def test_native_grant_resolves_one_verified_parent_per_call_without_caching_authority(native_grant):
+    v = native_grant
+    expected = v.service._resolved_inputs(v.request, current=True)
+    calls = paired_grant_reader(v)
+    assert v.service._resolved_inputs(v.request, current=True) == expected
+    assert calls == ["environment", "plan", "recipe_archive"]
+    assert v.service._resolved_inputs(v.request, current=True) == expected
+    assert calls == ["environment", "plan", "recipe_archive"] * 2
+
+
+@pytest.mark.parametrize("fault", [None, "expired", "different-grant", "type-drift", "source-revoked", "stale-review"])
+def test_live_worker_checks_one_complete_original_and_an_independent_pg_permission(native_grant, monkeypatch, fault):
+    from apps.api.app.application.quality_loop.http_fixture_execution import HttpFixtureExecutionSelection
+
+    v = native_grant
+    grant = v.service.issue(v.request, invocation_id="one-live-worker-proof")
+    chosen = HttpFixtureExecutionSelection(project_id=v.request.project_id, grant_id=grant["record_id"],
+        grant_digest=grant["grant_digest"], operation="setup")
+    calls = paired_grant_reader(v)
+    original_live = v.service.repository.require_live
+
+    def live(*args, **options):
+        assert args == (chosen.project_id, chosen.grant_id) and options["operation"] == "setup"
+        calls.append("live")
+        value = original_live(*args, **options)
+        if fault == "expired":
+            raise PermissionError("PG permission expired")
+        if fault == "source-revoked":
+            v.state["revoked"] = True
+        if fault == "different-grant":
+            return {**value, "grant_digest": acceptance_digest("other-grant")}
+        if fault == "type-drift":
+            return {**value, "automated_count": False}
+        return value
+
+    monkeypatch.setattr(v.service.repository, "require_live", live)
+    if fault == "stale-review":
+        v.saved["current_use"]["inputs_current"] = False
+    if fault is None:
+        original = v.service.execution_inputs(chosen, live=True)
+        assert original.consent.grant_digest == chosen.grant_digest and original.manifest == v.manifest
+    else:
+        errors = {"expired": PermissionError, "different-grant": RunPlanIntegrityError, "type-drift": RunPlanIntegrityError,
+            "source-revoked": SourceAccessDenied, "stale-review": RunPlanChanged}
+        with pytest.raises(errors[fault]):
+            v.service.execution_inputs(chosen, live=True)
+    assert calls == ["environment", "plan", "recipe_archive"] + ([] if fault == "stale-review" else ["live"])
+
+
+@pytest.mark.parametrize("fault", ["foreign_plan", "revoked", "missing_environment", "stale_review"])
+def test_native_grant_shared_parent_never_weakens_original_gates(native_grant, fault):
+    v = native_grant
+    calls = paired_grant_reader(v)
+    original = v.records.read_with_plan
+
+    def interrupted(*args):
+        view, saved = original(*args)
+        if fault == "foreign_plan":
+            saved["metadata"]["run_plan_id"] = "foreign"
+        elif fault == "revoked":
+            v.state["revoked"] = True
+        elif fault == "missing_environment":
+            view = None
+        else:
+            saved["current_use"]["inputs_current"] = False
+        return view, saved
+
+    v.records.read_with_plan = interrupted
+    with pytest.raises({"revoked": SourceAccessDenied, "stale_review": RunPlanChanged}.get(fault, RunPlanIntegrityError)):
+        v.service.issue(v.request, invocation_id="must-not-issue")
+    assert not v.state["issued"] and v.state["live"] == 0
+    if fault != "stale_review":
+        assert "recipe_archive" not in calls
 
 
 def native_journal_access(v):

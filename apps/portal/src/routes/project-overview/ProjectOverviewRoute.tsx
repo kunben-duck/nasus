@@ -1,11 +1,15 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import { ProjectRouteFrame } from '../project/ProjectRouteFrame'
 import { ProjectWorkspaceView } from './ProjectWorkspaceView'
 import type { AgentMode } from './ProjectWorkspaceTypes'
 
 export function ProjectOverviewRoute() {
-  const [agentMode, setAgentMode] = useState<AgentMode>('planning')
+  const [params] = useSearchParams()
+  const source = params.get('source')
+  const sourceEntry = source === 'code' || source === 'usDoc' || source === 'testAsset' || source === 'all' ? source : undefined
+  const [agentMode, setAgentMode] = useState<AgentMode>(sourceEntry ? 'sources' : 'planning')
 
   return (
     <ProjectRouteFrame>
@@ -15,6 +19,7 @@ export function ProjectOverviewRoute() {
           workspace={context.workspace}
           systemImage={context.systemImage}
           mode={agentMode}
+          sourceEntry={sourceEntry}
           setMode={setAgentMode}
           messages={context.messages}
           agentGoal={context.agentGoal}

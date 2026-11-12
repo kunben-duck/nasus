@@ -49,7 +49,11 @@ def reader(monkeypatch):
         yield None
 
     monkeypatch.setattr(journals, "session_scope", transaction_specimen)
-    monkeypatch.setattr(journal, "_lock", lambda *_args: None)
+    monkeypatch.setattr(journal, "_lock", lambda *_args: pytest.fail("fixture inspection is read-only"))
+    monkeypatch.setattr(journal, "_parent", lambda *_args: None)
+    def actor(_session, project_id, actor_id, *, lock):
+        assert (project_id, actor_id, lock) == (scope.project_id, "scope-actor-specimen", False)
+    monkeypatch.setattr(journals.NativeBuildRepository, "_actor", staticmethod(actor))
     monkeypatch.setattr(journal, "_records", lambda *_args: (None, None))
     return SimpleNamespace(access=access, scope=scope, images=images, journal=journal,
         work=PostgresHttpFixtureWorkRepository(journal), state=state)
@@ -58,11 +62,71 @@ def reader(monkeypatch):
 def test_journal_inspection_reuses_immutable_proof_but_not_live_original_reads(reader):
     v = reader
     assert v.journal.inspect(v.scope, "setup") is None
-    assert (v.state.reads, v.state.proofs) == (3, 1)
+    assert (v.state.reads, v.state.proofs) == (2, 1)
     assert v.images._current_verified_reads() is None
     assert all(not value.is_open for value in v.state.scopes)
     assert v.journal.inspect(v.scope, "setup") is None
-    assert (v.state.reads, v.state.proofs) == (6, 2)
+    assert (v.state.reads, v.state.proofs) == (4, 2)
+
+
+@pytest.mark.parametrize("status", ["absent", "reserved", "observed"])
+@pytest.mark.parametrize("revoke", [False, True])
+def test_readonly_journal_revalidates_original_scope_on_both_sides_of_the_read(reader, monkeypatch, status, revoke):
+    v = reader
+    steps, execution = [], object()
+    original = v.access.plans.read
+
+    def plan(*args):
+        steps.append("original_scope")
+        return original(*args)
+
+    def records(*_args):
+        steps.append("journal_records")
+        if revoke:
+            v.state.revoked_at = v.state.reads + 1
+        return (None if status == "absent" else {}, {} if status == "observed" else None)
+
+    def archive(*_args):
+        steps.append("original_result_archive")
+        return execution, None
+
+    monkeypatch.setattr(v.access.plans, "read", plan)
+    monkeypatch.setattr(v.journal, "_records", records)
+    monkeypatch.setattr(v.journal, "_read_verified_result", archive)
+    if revoke:
+        with pytest.raises(SourceAccessDenied):
+            v.journal.inspect(v.scope, "setup", read_only=True)
+    else:
+        result = v.journal.inspect(v.scope, "setup", read_only=True)
+        if status == "absent":
+            assert result is None
+        else:
+            assert result.execution is (execution if status == "observed" else None)
+    assert steps == ["original_scope", "journal_records",
+        *(["original_result_archive"] if status == "observed" else []), "original_scope"]
+    assert (v.state.reads, v.state.proofs) == (2, 1)
+    assert v.images._current_verified_reads() is None
+
+
+@pytest.mark.parametrize("revoked_before", ["records", "archive"])
+def test_readonly_journal_checks_current_access_before_protected_reads(reader, monkeypatch, revoked_before):
+    v = reader
+    reads = []
+
+    def current():
+        if ("archive" if reads else "records") == revoked_before:
+            raise SourceAccessDenied("source access changed before reading original fixture evidence")
+
+    def records(*_args):
+        reads.append("records")
+        return {}, {}
+
+    monkeypatch.setattr(v.journal, "_records", records)
+    monkeypatch.setattr(v.journal, "_read_verified_result", lambda *_: pytest.fail("revoked archive was read"))
+    with pytest.raises(SourceAccessDenied):
+        v.journal.inspect(v.scope, "setup", read_only=True, require_current=current)
+    assert reads == ([] if revoked_before == "records" else ["records"])
+    assert v.state.reads == 1 and v.images._current_verified_reads() is None
 
 
 def test_phase_port_shares_original_proof_across_journal_operations_only(reader):
@@ -71,20 +135,20 @@ def test_phase_port_shares_original_proof_across_journal_operations_only(reader)
         assert v.journal.inspect(v.scope, "setup") is None
         assert v.access.require_scope(v.scope) == v.access.parent.model_dump(mode="json")
         assert v.journal.inspect(v.scope, "setup") is None
-        assert (v.state.reads, v.state.proofs) == (7, 1)
+        assert (v.state.reads, v.state.proofs) == (5, 1)
         original = v.images._verified_read_scope.get()
         assert original.is_current
-        v.state.revoked_at = 8
+        v.state.revoked_at = 6
         with pytest.raises(SourceAccessDenied):
             v.access.require_scope(v.scope)
-        assert (v.state.reads, v.state.proofs) == (8, 1)
+        assert (v.state.reads, v.state.proofs) == (6, 1)
     assert not original.is_open and v.images._current_verified_reads() is None
     v.state.revoked_at = None
     assert v.journal.inspect(v.scope, "setup") is None
-    assert (v.state.reads, v.state.proofs) == (11, 2)
+    assert (v.state.reads, v.state.proofs) == (8, 2)
 
 
-@pytest.mark.parametrize("stage", [1, 2, 3])
+@pytest.mark.parametrize("stage", [1, 2])
 @pytest.mark.parametrize("failure", ["revoked_at", "error_at"])
 def test_every_original_guard_still_fails_and_closes_the_operation(reader, stage, failure):
     v = reader
@@ -96,7 +160,7 @@ def test_every_original_guard_still_fails_and_closes_the_operation(reader, stage
     assert v.state.reads == stage
     setattr(v.state, failure, None)
     assert v.journal.inspect(v.scope, "setup") is None
-    assert v.state.reads == stage + 3
+    assert v.state.reads == stage + 2
 
 
 @pytest.mark.parametrize("method", ["claim", "complete", "acquire", "require", "renew"])
@@ -134,7 +198,7 @@ def test_child_tasks_and_threads_do_not_inherit_a_parent_journal_proof(reader):
         with v.access.verified_read_session():
             assert v.journal.inspect(v.scope, "setup") is None
             parent = v.images._verified_read_scope.get()
-            assert parent.is_current and (v.state.reads, v.state.proofs) == (3, 1)
+            assert parent.is_current and (v.state.reads, v.state.proofs) == (2, 1)
 
             async def child():
                 assert v.images._current_verified_reads() is None
@@ -142,11 +206,11 @@ def test_child_tasks_and_threads_do_not_inherit_a_parent_journal_proof(reader):
                 assert v.images._current_verified_reads() is None
 
             await asyncio.create_task(child())
-            assert parent.is_current and (v.state.reads, v.state.proofs) == (6, 2)
+            assert parent.is_current and (v.state.reads, v.state.proofs) == (4, 2)
             assert await asyncio.to_thread(v.journal.inspect, v.scope, "setup") is None
-            assert parent.is_current and (v.state.reads, v.state.proofs) == (9, 3)
+            assert parent.is_current and (v.state.reads, v.state.proofs) == (6, 3)
             assert v.journal.inspect(v.scope, "setup") is None
-            assert (v.state.reads, v.state.proofs) == (12, 3)
+            assert (v.state.reads, v.state.proofs) == (8, 3)
         assert not parent.is_open and v.images._current_verified_reads() is None
         assert all(not value.is_open for value in v.state.scopes)
 

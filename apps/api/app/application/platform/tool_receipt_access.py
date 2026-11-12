@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .errors import PlatformApplicationError
+from .conversation_history_access import HISTORY_TOOLS
 from .run_plan_receipts import RUN_PLAN_RECEIPT_TOOLS
 from .run_plan_build_receipts import RUN_PLAN_BUILD_RECEIPT_TOOLS
 from .native_build_receipts import NATIVE_BUILD_RECEIPT_TOOLS
@@ -20,7 +21,9 @@ RESOURCE_RECEIPT_TOOLS = RUN_PLAN_RECEIPT_TOOLS | RUN_PLAN_BUILD_RECEIPT_TOOLS |
 
 
 def require_receipt_access(resources, invocation):
-    required = invocation.tool_id in RESOURCE_RECEIPT_TOOLS
+    required = (invocation.tool_id in RESOURCE_RECEIPT_TOOLS or invocation.tool_id in HISTORY_TOOLS
+        or invocation.tool_id in {"quality.requirement.revise", "query.quality.requirements"}
+        or invocation.tool_id == "version.create" and bool(invocation.input_payload.get("image_binding")))
     applies = getattr(resources, "applies", None)
     if (resources is None or callable(applies) and not applies(invocation)) and required:
         raise PlatformApplicationError("source_receipt_access_unavailable", "Original resource receipt authorization is unavailable.", 503)

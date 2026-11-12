@@ -12,6 +12,56 @@
 
 详细的产品特性、系统架构和开发指导已经拆分到 `docs/` 中维护，README 不再承载详细技术方案。
 
+## RealWorld 首个真实迭代闭环
+
+当前已实现 **M0 运行环境与失败回放、M1 对话建项目与画像绑定迭代**，不是 M2–M5 完整业务闭环交付。
+
+- 被测代码固定为 `c4ffein/realworld-django-ninja@87dd078c883a046f5ff20269df2fb004d8b5f83f`；规格固定为 `realworld-apps/realworld@25588846c314b15a5e427ffe816e6b4af7be68c7`。
+- 已注册 Python 3.12 / Django / zipapp 构建和 PG-only 环境规格，保留原 Java / Maven / PG+Redis 路径。正式构建仍经过原 ToolInvocation 确认、工作租约、私有归档和 Outbox；新增格式不会获得执行或发布授权。
+- `scripts/verify-realworld-loop.py --phase runtime` 独立验证原始、人工缺陷、修复三个提交。每版使用独立 PG 和内部网络，验证镜像 ID、源码与产物摘要、进程身份、真实 HTTP 断言和资源清理。报告包含固定规格文件、请求响应（密钥脱敏）、逐例断言和现有 Runner 的实际探测回执。
+- 真实回放结果：原始版 6/6 通过，缺陷版仅越权修改失败，修复版 6/6 通过。原始接口与规格若出现差异会报 `contract_mismatch`，不会降低断言。
+- `business_loop_verified` 始终为 `false`：M0 使用人工编写的诊断用例，不声称已经完成模型需求评审、独立人工审批、正式 RunPlan 逐例派发或缺陷关单。Hurl 仅作为规格来源归档，不作为脚本执行器。
+- M1 复用现有 Version：对话收集项目名、代码仓库与固定提交，可跳过需求文档及历史测试；采集、结构候选、人工审核和正式发布分别展示。创建迭代必须明确选择发布记录并确认，原始基线不随项目后续发布变化。聊天和按钮均走 `version.create`，支持刷新、原命令重试和按迭代查看绑定。
+- M2 需求修订评审、M3 正式链路适配、M4 缺陷生命周期、M5 版本门禁与完成事务尚待实现。Python 路由证据适配也需要在 M3 补齐，不能借用 Java 路由证据。默认 `--phase full` 明确返回未实现，不以诊断回放替代最终验收。
+
+### 复现 M1
+
+准备好下节的 RealWorld 代码仓库，以及本机开发使用的 PostgreSQL、MinIO 后运行：
+
+```bash
+npm run verify:realworld-m1
+```
+
+此命令通过真实消息 Turn、LangGraph PostgreSQL checkpoint 和正式工具调用，回放固定提交的代码采集、结构候选、独立审核账号批准、画像发布和对话创建迭代。验证普通问题不会丢失提案、刷新可恢复、重复确认不重复创建，并回读数据库中的画像摘要与代码 SHA；同时通过画像证据接口核对文章更新函数、作者权限校验与 Article 数据模型，记录来源修订、代码行号和片段摘要。使用一次性数据库和私有 MinIO bucket，结束后清理，不改动开发业务数据。
+
+报告位于 `output/realworld/m1-<时间>/report.json`，同时保存测试日志和 JUnit 结果。已在真实 RealWorld 代码上验证通过；这里的“真实”指代码、存储、解析和正式命令，不包含 live 模型语义评审、Temporal Worker 重启验收或完整质量闭环，报告明确保留 `live_model_verified=false` 和 `business_loop_verified=false`。
+
+开发页面从 Build 对话开始，发布审核仍在现有系统画像面板独立完成；发布后可回复 `创建迭代 Sprint 1，使用画像发布 <发布ID>`，核对后回复 `确认创建迭代`。迭代页也提供同一命令的图形入口。新建时需要当前发布头，历史读取则坚持原始绑定，不自动选择 `versions[0]`。首次绑定原子启用该项目的新链路，旧未绑定版本不自动补写画像。详细接口与事务边界见 [版本交付设计](docs/design/quality-loop/version-delivery.md)。
+
+### 复现 M0
+
+以下目录为独立验收仓库，不改动 Nasus 的业务数据或开发服务。只在首次准备时执行克隆及分支操作；不要在已经有工作的同名目录重复初始化。
+
+```bash
+git clone --no-checkout https://github.com/c4ffein/realworld-django-ninja.git .nasus/validation/realworld-django-ninja
+git clone --no-checkout https://github.com/realworld-apps/realworld.git .nasus/validation/realworld-spec
+git -C .nasus/validation/realworld-django-ninja switch -c codex/nasus-realworld-defect 87dd078c883a046f5ff20269df2fb004d8b5f83f
+git -C .nasus/validation/realworld-django-ninja am "$(pwd)/tests/fixtures/realworld/patches/0001-test-inject-article-ownership-defect-for-Nasus-accep.patch"
+git -C .nasus/validation/realworld-django-ninja switch -c codex/nasus-realworld-fix
+git -C .nasus/validation/realworld-django-ninja am "$(pwd)/tests/fixtures/realworld/patches/0002-fix-restore-ownership-validation-for-Nasus-regressio.patch"
+docker build -t nasus-realworld-runtime:local infra/targets/realworld
+docker pull postgres:16
+npm run verify:realworld-loop -- --phase runtime \
+  --image "$(docker image inspect nasus-realworld-runtime:local --format '{{.Id}}')" \
+  --pg-image "$(docker image inspect postgres:16 --format '{{.Id}}')"
+```
+
+`git am` 需要本地 Git 身份配置；重放补丁的 SHA 可以不同，校验器会核验祖先链、缺陷精确范围以及修复树与原始树一致。验收报告写入 `output/realworld/<时间>/report.json`，任何构建、环境、用例或清理失败均返回非零退出码。
+
+运行镜像使用 `infra/targets/realworld/requirements.lock` 锁定依赖版本；构建阶段不联网安装依赖，只在固定镜像中校验源码语法、Python 版本和已安装依赖。版本锁定不代表已完成供应链审计或跨平台字节级可重现构建，相关标志仍保持未验证。
+
+若要在现有构建面板使用该规格，需要由操作者配置 `NASUS_NATIVE_BUILD_PYTHON_IMAGE_ID` 和 `NASUS_NATIVE_BUILD_PYTHON_LOCK_HASH`（报告中的 `dependency_lock.hash`），产物路径使用 `target/*.pyz`。环境注册使用 `nasus.python312-django-pg.v1`，仍需明确注册当前目标实例及 PG，不自动接管诊断回放中已清理的资源。
+
 ## 项目定义
 
 ### 一句话定义
@@ -109,10 +159,20 @@ npm run dev:down
 `dev:up` 会在 Docker 中启动 PostgreSQL、MinIO 和 Temporal，执行
 Alembic migration，然后在宿主机启动 Playwright Runner、Temporal
 workflow worker、API 和 Portal。运行日志位于 `.nasus/dev/logs/`。
+`dev:status` 单独报告 `database_schema`；数据库可连接不代表已迁移到当前代码所需的版本。
 对于 Codex、CI 或需要单一终端持续监督全部宿主进程的调试会话，使用
 `npm run dev:foreground`；任一子进程退出时会输出日志并统一回收。
 单独调试 API 时使用 `npm run dev:api`，该命令同样加载统一开发环境并
 连接 PostgreSQL；不支持绕过 migration 继续写入历史 SQLite 状态文件。
+
+### 使用 exweb 试用
+
+在 `npm run dev:status` 确认 `database_schema: current` 后，打开
+[Build](http://localhost:5173/build)，选择「导入 Git 仓库」。使用
+`https://github.com/kunben-duck/exweb.git` 和固定提交
+`fe5827f6b76f77ef34918d8b452ee823142332dc`，避免分支更新改变试用输入。
+[试用与验收指南](./docs/design/system-image/exweb-acceptance-baseline.md)提供可选需求、用例和画像证据查看步骤。
+试用资料是草稿；正式执行和清理结果以[验收报告](./docs/design/system-image/exweb-native-runtime-validation.md#可复跑的正式验收命令)为准。
 
 浏览器回归使用同一 PostgreSQL 服务上的一次性测试数据库：
 
@@ -151,6 +211,10 @@ V1 候选完整验收入口：
 ```bash
 npm run verify:v1-release
 ```
+
+本机资源充足时可用 `NASUS_RELEASE_BACKEND_WORKERS=3 npm run verify:v1-release`。
+只并行后端 pytest；各片独立使用 PostgreSQL 和 MinIO，并核对完整收集清单与结果。
+其他门禁不变，默认仍为串行。
 
 ## 核心产品原则
 

@@ -11,6 +11,7 @@ from .replanning import AgentEvidenceObservationPort, AgentReplanDecision, Agent
 from .reply_ports import AgentReplyGenerationPort
 from .build_intent_entries import AgentBuildIntentEntryPort
 from .tool_catalog_encoding import CATALOG_ENCODING_INSTRUCTIONS
+from .planner_clarifications import CLARIFICATION_INSTRUCTIONS, parse_clarification
 from ...domain.agent.memory import AgentMemoryContext
 from ...domain.agent.plan_policy import (
     AgentPlanPolicy,
@@ -540,14 +541,7 @@ class LLMStructuredAgentPlanner:
     def _decision_from_payload(self, payload: dict[str, Any]) -> OrchestratorDecision | None:
         kind = payload.get("kind")
         if kind == "clarification":
-            return OrchestratorDecision(
-                kind="clarification",
-                clarification=ClarificationRequest(
-                    question=str(payload.get("question") or "I need more context before I can continue."),
-                    reason=str(payload.get("reason") or "planner_clarification"),
-                    missing_context=[str(item) for item in payload.get("missing_context", [])],
-                ),
-            )
+            return parse_clarification(payload)
 
         if kind == "direct_answer":
             return OrchestratorDecision(
@@ -666,7 +660,7 @@ class LLMStructuredAgentPlanner:
         memory_context: AgentMemoryContext,
         system_template: str,
     ) -> str:
-        return f"{memory_context.system_prompt}\n\n{CATALOG_ENCODING_INSTRUCTIONS}\n\n{system_template}"
+        return f"{memory_context.system_prompt}\n\n{CATALOG_ENCODING_INSTRUCTIONS}\n\n{CLARIFICATION_INSTRUCTIONS}\n\n{system_template}"
 
     @staticmethod
     def _replanner_system_prompt(

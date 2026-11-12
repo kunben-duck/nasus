@@ -7,10 +7,11 @@ from copy import deepcopy
 from ..system_image.source_snapshots import snapshot_digest
 from ..system_image.image_revision import require_digest
 from ..shared.native_build_source import FrozenNativeBuildSource, build_path, byte_digest
+from .build_profiles import JAVA_BUILD, PYTHON_BUILD, build_profile, validate_toolchain
 
 
 NATIVE_BUILD_SCHEMA = "nasus.native-build.v1"
-NATIVE_BUILD_ADAPTER = "nasus.offline-java21-maven3911.v1"
+NATIVE_BUILD_ADAPTER = JAVA_BUILD
 MAX_ARTIFACT_BYTES = 128 * 1024 * 1024
 MAX_BUILD_LOG_BYTES = 2 * 1024 * 1024
 
@@ -28,10 +29,13 @@ class NativeBuildRequest:
 
     def __post_init__(self):
         build_path(self.artifact_path)
-        if (self.adapter != NATIVE_BUILD_ADAPTER or not self.artifact_path.startswith("target/")
-                or not self.artifact_path.endswith(".jar") or "pom.xml" not in {item.path for item in self.source.files}
+        profile = build_profile(self.adapter)
+        if (not self.artifact_path.startswith("target/")
+                or not self.artifact_path.endswith(profile.suffix) or profile.definition not in {item.path for item in self.source.files}
                 or self.artifact_path in {item.path for item in self.source.files}):
-            raise ValueError("unsupported native Maven build input")
+            raise ValueError("unsupported native build input")
+        if self.adapter == PYTHON_BUILD and any(item.path == "__main__.py" for item in self.source.files):
+            raise ValueError("Python build entrypoint is reserved by the operator")
         if self.expected_artifact_hash is not None:
             require_digest(self.expected_artifact_hash)
 
@@ -48,22 +52,22 @@ class NativeBuildOutput:
     log: bytes = field(repr=False)
     toolchain: dict
     runtime_inventory: dict
+    adapter: str = NATIVE_BUILD_ADAPTER
 
     def __post_init__(self):
         require_digest(self.request_digest)
         if (type(self.artifact) is not bytes or not 1 <= len(self.artifact) <= MAX_ARTIFACT_BYTES
                 or type(self.log) is not bytes or not 1 <= len(self.log) <= MAX_BUILD_LOG_BYTES):
             raise ValueError("native build output exceeds its bound")
-        if (type(self.toolchain) is not dict or self.toolchain.get("maven") != "3.9.11"
-                or self.toolchain.get("java") != "21" or self.toolchain.get("network") != "none"
-                or self.toolchain.get("dependency_cache") != "operator_read_only"):
-            raise ValueError("native build output toolchain differs")
+        validate_toolchain(self.adapter, self.toolchain)
         require_digest(self.toolchain.get("image_id", ""))
         require_digest(self.toolchain.get("version_output_hash", ""))
+        if self.adapter == PYTHON_BUILD:
+            require_digest(self.toolchain.get("dependency_lock_hash", ""))
 
 
 def build_receipt(request, output):
-    if output.request_digest != request.digest:
+    if output.request_digest != request.digest or output.adapter != request.adapter:
         raise ValueError("native build output differs from the original request")
     digest = byte_digest(output.artifact)
     if request.expected_artifact_hash is not None and digest != request.expected_artifact_hash:

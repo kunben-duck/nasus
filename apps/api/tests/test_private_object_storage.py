@@ -31,3 +31,30 @@ def test_live_private_test_bucket_denies_anonymous_source_downloads():
         assert denied.value.response["Error"]["Code"] == "AccessDenied"
     finally:
         anonymous.close()
+
+
+@pytest.mark.skipif(os.getenv("NASUS_TEST_OBJECT_STORAGE_MODE") != "minio",
+    reason="requires the explicit disposable MinIO test bucket")
+def test_live_minio_reuses_write_connection_across_empty_source_files(caplog):
+    storage = ObjectStorage()
+    assert storage.config.bucket.startswith("nasus-test-")
+    objects = []
+    with storage.write_session():
+        for payload in (b"before", b"", b"", b"after", b"", b"last"):
+            objects.append((storage.put_bytes(f"empty-source-test/{uuid4().hex}", payload), payload))
+    with storage.read_session():
+        for stored, payload in objects:
+            assert storage.get_bytes(stored.storage_ref) == payload
+    assert "Failed to parse headers" not in caplog.text
+
+
+@pytest.mark.parametrize("size,expected", [("0", False), (0, False), ("10", True), (None, True)])
+def test_empty_continue_hook_is_limited_to_known_zero_length(size, expected):
+    from types import SimpleNamespace
+    from apps.api.app.infrastructure.storage.object_storage import _omit_empty_continue
+    headers = {"Expect": "100-continue", "X-Amz-Checksum-Crc32": "intact"}
+    if size is not None:
+        headers["Content-Length"] = size
+    _omit_empty_continue(SimpleNamespace(headers=headers))
+    assert ("Expect" in headers) is expected
+    assert headers["X-Amz-Checksum-Crc32"] == "intact"

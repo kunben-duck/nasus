@@ -24,6 +24,8 @@ from ...application.system_image.source_context_roots import SourceContextRootAp
 from ...application.system_image.context_invalidations import ContextInvalidationApplicationService
 from ...application.system_image.document_queries import DocumentQueryApplicationService
 from ...application.system_image.image_revision_queries import ImageRevisionQueryApplicationService
+from ...application.quality_loop.version_delivery import VersionDeliveryApplicationService
+from ...application.quality_loop.requirement_revisions import RequirementRevisionApplicationService
 from ...application.system_image.build_plans import BuildPlanApplicationService
 from ...application.system_image.structure_cancellations import StructureCancellationApplicationService
 from ...application.system_image.investigations import InvestigationApplicationService
@@ -305,6 +307,20 @@ def get_image_publication_application(request: Request) -> ImagePublicationAppli
 
 
 ImagePublicationApp = Annotated[ImagePublicationApplicationService, Depends(get_image_publication_application)]
+
+
+def get_version_delivery_application(request: Request) -> VersionDeliveryApplicationService:
+    return request.app.state.container.version_delivery
+
+
+VersionDeliveryApp = Annotated[VersionDeliveryApplicationService, Depends(get_version_delivery_application)]
+
+
+def get_requirement_revisions_application(request: Request) -> RequirementRevisionApplicationService:
+    return request.app.state.container.requirement_revisions
+
+
+RequirementRevisionApp = Annotated[RequirementRevisionApplicationService, Depends(get_requirement_revisions_application)]
 
 
 def get_build_plan_application(request: Request) -> BuildPlanApplicationService:

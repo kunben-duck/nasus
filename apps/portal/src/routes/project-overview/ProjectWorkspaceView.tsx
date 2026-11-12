@@ -20,6 +20,7 @@ export function ProjectWorkspaceView({
   workspace,
   systemImage,
   mode,
+  sourceEntry,
   setMode,
   messages,
   agentGoal,
@@ -45,7 +46,6 @@ export function ProjectWorkspaceView({
   toggleSidebar,
 }: ProjectWorkspaceViewProps) {
   const actionControlsDisabled = loading || Boolean(activeActionId)
-  const composerDisabled = loading || actionControlsDisabled
   const pendingBaselineInvocation = selectPendingBaselineInvocation(toolInvocations, pendingGoal)
   const cardActions = createProjectWorkspaceCardActions({ setMode, initializeSystemImage, invokeProjectAction })
   const sourceBindings = useProjectWorkspaceSourceBindings({
@@ -53,10 +53,9 @@ export function ProjectWorkspaceView({
     systemImage,
     mode,
     pendingGoal,
-    disabled: composerDisabled,
+    disabled: actionControlsDisabled,
     buildSystemImageFromSources,
   })
-
   return (
     <section className="agent-workspace" data-testid="agent-workspace">
       <WorkspaceToolbar title={project.name} sidebarCollapsed={sidebarCollapsed} toggleSidebar={toggleSidebar} />
@@ -65,6 +64,7 @@ export function ProjectWorkspaceView({
       <SystemImageStrip systemImage={systemImage} project={project} />
       {sourceBindings.shouldShowPanel ? (
         <SourceBindingPanel
+          focusSource={mode === 'sources' ? sourceEntry : undefined}
           systemImage={systemImage}
           values={sourceBindings.values}
           error={sourceBindings.visibleError}
@@ -83,7 +83,7 @@ export function ProjectWorkspaceView({
         pendingGoal={pendingGoal}
         pendingBaselineInvocation={pendingBaselineInvocation}
         loading={loading}
-        disabled={composerDisabled}
+        disabled={actionControlsDisabled}
         confirmPendingGoal={confirmPendingGoal}
         continueStructuralInvestigation={continueStructuralInvestigation}
         confirmToolInvocation={confirmToolInvocation}
@@ -97,7 +97,7 @@ export function ProjectWorkspaceView({
         streaming={streaming}
         initializeSystemImage={initializeSystemImage}
         invokeProjectAction={invokeProjectAction}
-        disabled={composerDisabled}
+        disabled={actionControlsDisabled}
         actionControlsDisabled={actionControlsDisabled}
       />
     </section>

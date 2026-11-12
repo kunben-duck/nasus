@@ -1,0 +1,26 @@
+From 9403d5e176c67aff774142663782a66aedf285e1 Mon Sep 17 00:00:00 2001
+From: Nasus Acceptance <acceptance@nasus.invalid>
+Date: Thu, 12 Nov 2026 01:53:23 +0800
+Subject: [PATCH 2/2] fix: restore ownership validation for Nasus regression
+
+---
+ apps/articles/api.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/apps/articles/api.py b/apps/articles/api.py
+index 89f48fc..327e76a 100644
+--- a/apps/articles/api.py
++++ b/apps/articles/api.py
+@@ -110,7 +110,8 @@ def destroy(request: AuthedRequest, slug: str) -> HttpResponse:
+ def update(request: AuthedRequest, slug: str, data: ArticlePartialUpdateSchema) -> dict[str, Any]:
+     """This is wrong, but this method behaves like a PATCH, as required by the RealWorld API spec"""
+     article = get_or_404(Article.objects.with_favorites(request.user), "article", slug=slug)
+-    # Nasus controlled acceptance defect: ownership check intentionally removed.
++    if request.user != article.author:
++        raise AuthorizationError
+     update_data = data.article.dict(exclude_unset=True)
+     new_tags = update_data.pop("tags", EMPTY)
+     tag_objs = [Tag.objects.get_or_create(name=name)[0] for name in new_tags] if new_tags is not EMPTY else EMPTY
+-- 
+2.50.1 (Apple Git-155)
+

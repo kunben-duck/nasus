@@ -1,5 +1,6 @@
 """Port specimens: exact inventory archival, never canonical deployment or business gold."""
 import asyncio
+from contextvars import copy_context
 from copy import deepcopy
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -156,6 +157,122 @@ def test_environment_parent_port_rejects_revocation_after_private_inventory_read
     with pytest.raises(SourceAccessDenied):
         service.application.read_with_plan("p", metadata["record_id"])
     assert service.state.actions.count("native") == 1
+
+
+def test_environment_bound_parent_read_rejects_wrong_query_and_stale_inputs_before_private_read(service):
+    metadata = save(service)
+    ident, query = metadata["record_id"], service.state.query
+    wrong = query.model_copy(update={"build_binding_artifact_hash": acceptance_digest("other build binding")})
+    service.artifacts.actions.clear()
+    with pytest.raises(RunPlanIntegrityError, match="read scope differs"):
+        service.application.read_with_parents(wrong, ident, current=True)
+    service.state.plan["current_use"]["inputs_current"] = False
+    with pytest.raises(RunPlanChanged):
+        service.application.read_with_parents(query, ident, current=True)
+    assert not service.artifacts.actions
+
+    view, plan, binding = service.application.read_with_parents(query, ident)
+    assert view["metadata"] == metadata and plan["current_use"]["inputs_current"] is False
+    assert binding["metadata"]["artifact_hash"] == query.build_binding_artifact_hash
+    binding["metadata"]["artifact_hash"] = acceptance_digest("caller changed returned view")
+    assert service.application.read_with_parents(query, ident)[2]["metadata"]["artifact_hash"] == query.build_binding_artifact_hash
+
+
+def test_case_environment_parent_reuse_keeps_fresh_archives_and_brackets_the_complete_batch(service):
+    metadata = save(service)
+    app, ident, query = service.application, metadata["record_id"], service.state.query
+    state = service.state
+    state.actions.clear()
+    service.artifacts.actions.clear()
+    with app.case_parent_read_session(query, ident, current=True) as (view, plan, _binding):
+        assert state.actions.count("plan") == 1
+        for _ in range(4):
+            actual, saved = app.read_with_plan("p", ident)
+            assert actual == view and saved == plan
+            saved["metadata"]["artifact_hash"] = acceptance_digest("caller copy only")
+        assert state.actions.count("plan") == state.actions.count("binding") == 1
+        assert service.artifacts.actions == ["read"] * 5
+        inherited = copy_context()
+    assert state.actions.count("plan") == state.actions.count("binding") == 2
+    assert service.artifacts.actions == ["read"] * 6
+    assert app._case_parents.get() is None
+    assert inherited.run(app.read_with_plan, "p", ident)[0] == view
+    assert state.actions.count("plan") == 3
+    assert "native" not in state.actions
+
+
+@pytest.mark.parametrize("fault", ["revoked", "archive", "plan"])
+def test_case_environment_parent_reuse_rejects_changes_and_closes_on_failure(service, fault):
+    metadata = save(service)
+    app, ident, query = service.application, metadata["record_id"], service.state.query
+    expected = {"revoked": SourceAccessDenied, "archive": RunPlanIntegrityError, "plan": RunPlanChanged}[fault]
+    with pytest.raises(expected):
+        with app.case_parent_read_session(query, ident, current=True):
+            if fault == "plan":
+                app.read_with_plan("p", ident)
+                service.state.plan["current_use"]["inputs_current"] = False
+            else:
+                service.artifacts.actions.clear()
+                if fault == "revoked":
+                    service.state.auth.revoked = True
+                else:
+                    value = next(iter(service.artifacts.values.values()))
+                    value["observation"]["inventory"]["native_artifact_attested"] = False
+                app.read_with_plan("p", ident)
+    assert app._case_parents.get() is None
+    if fault == "revoked":
+        assert service.artifacts.actions == []
+
+
+def test_case_environment_parent_reuse_does_not_cross_records_tasks_or_threads(service):
+    app, query = service.application, service.state.query
+    one, other = save(service)["record_id"], save(service, "another-confirmed-command")["record_id"]
+    service.state.actions.clear()
+
+    async def child():
+        return app.read_with_plan("p", one)
+
+    async def verify():
+        with app.case_parent_read_session(query, one) as (view, plan, _binding):
+            assert await asyncio.create_task(child()) == (view, plan)
+            assert await asyncio.to_thread(app.read_with_plan, "p", one) == (view, plan)
+            assert app.read_with_plan("p", other)[0]["metadata"]["record_id"] == other
+            assert app.read_with_plan("p", one) == (view, plan)
+            assert service.state.actions.count("plan") == 4
+    asyncio.run(verify())
+    assert service.state.actions.count("plan") == 5
+
+
+def test_case_locator_plan_cannot_escape_or_rebind_the_verified_case_read(service):
+    app, query = service.application, service.state.query
+    record_id = save(service)["record_id"]
+    access = app.inspections._access(query.project_id)
+    pin = (query.project_id, query.run_plan_id, query.run_plan_artifact_hash)
+    read = lambda: app.case_locator_plan(*pin, access=access)
+
+    async def denied_in_another_task():
+        with pytest.raises(RunPlanIntegrityError, match="active original case parent"):
+            read()
+
+    async def verify():
+        with app.case_parent_read_session(query, record_id) as (_, plan, _):
+            candidate = read()
+            assert candidate == plan and candidate is not plan
+            candidate["metadata"]["artifact_hash"] = acceptance_digest("caller mutation")
+            assert read() == plan
+            with pytest.raises(RunPlanIntegrityError, match="another case plan"):
+                app.case_locator_plan(*pin[:2], acceptance_digest("other plan"), access=access)
+            with pytest.raises(SourceAccessDenied, match="case source access changed"):
+                app.case_locator_plan(*pin, access=object())
+            await asyncio.create_task(denied_in_another_task())
+            with pytest.raises(RunPlanIntegrityError, match="active original case parent"):
+                await asyncio.to_thread(read)
+
+    with pytest.raises(RunPlanIntegrityError, match="active original case parent"):
+        read()
+    asyncio.run(verify())
+    with pytest.raises(RunPlanIntegrityError, match="active original case parent"):
+        read()
 
 
 @pytest.mark.parametrize("fault", ["project", "record", "actor", "time", "request", "parent", "inventory", "observed-time", "extra",

@@ -66,7 +66,11 @@ def pg_repo(monkeypatch):
 
 
 def _tracked_migration(conn):
-    path = Path(__file__).resolve().parents[1] / "migrations/versions/0093_source_tracked_refs.py"
+    return _source_migration(conn, "0093_source_tracked_refs")
+
+
+def _source_migration(conn, name):
+    path = Path(__file__).resolve().parents[1] / "migrations/versions" / f"{name}.py"
     spec = importlib.util.spec_from_file_location("tracked_source_migration", path)
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
@@ -219,3 +223,32 @@ def test_tracking_migration_preserves_legacy_hashes_and_allows_unpopulated_downg
     with sessions() as session:
         row = session.scalar(select(SourceBindingRecord))
         assert row.tracked_ref is None and row.identity_hash == snapshot_digest([original.source_type, original.source_uri])
+
+
+def test_fixed_commit_migration_preserves_existing_refs_and_refuses_populated_downgrade(pg_repo):
+    repo, sessions = pg_repo
+    branch = source().model_copy(update={"tracked_ref": "refs/heads/main"})
+    repo.register_bindings("project", [branch])
+
+    def branch_identity(session):
+        return session.execute(select(SourceBindingRecord.binding_id, SourceBindingRecord.identity_hash)
+            .where(SourceBindingRecord.legacy_source_id == branch.id)).one()
+
+    with sessions.begin() as session:
+        before = branch_identity(session)
+        migration = _source_migration(session.connection(), "0123_fixed_git_commit")
+        migration.upgrade()
+        migration.downgrade()
+        migration.upgrade()
+        assert branch_identity(session) == before
+
+    fixed = source(source_id="fixed").model_copy(update={"tracked_ref": "a" * 40})
+    repo.register_bindings("project", [fixed])
+    with sessions.begin() as session:
+        session.execute(text("INSERT INTO raw_assets VALUES ('fixed', 'code', :ref)"), {"ref": fixed.tracked_ref})
+        for kind, invalid in (("code", "a" * 39), ("code", "A" * 40), ("us_doc", "a" * 40)):
+            with pytest.raises(IntegrityError, match="ck_raw_assets_tracked_ref"), session.begin_nested():
+                session.execute(text("INSERT INTO raw_assets VALUES ('invalid', :kind, :ref)"), {"kind": kind, "ref": invalid})
+        with pytest.raises(RuntimeError, match="Cannot discard populated fixed Git commit"):
+            _source_migration(session.connection(), "0123_fixed_git_commit").downgrade()
+        assert branch_identity(session) == before

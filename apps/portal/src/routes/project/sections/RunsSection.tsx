@@ -2,9 +2,13 @@ import type { ProjectRouteContext } from '../ProjectRouteTypes'
 import type { RunCardView } from '../ProjectSectionViewModels'
 import { runsSectionModel } from '../ProjectSectionViewModels'
 import { useI18n } from '../../../shared/i18n/I18nProvider'
+import { useAuthUser } from '../../../domains/platform/useAuthSession'
+import { RunPlanCaseHistoryLookup } from './execution/RunPlanCaseHistoryLookup'
+import { HttpFixtureHistoryPanel } from './knowledge/scope/HttpFixtureHistoryPanel'
 
-export function RunsSection({ context, runId }: { context: ProjectRouteContext; runId?: string }) {
+export function RunsSection({ context, runId }: { context: Pick<ProjectRouteContext, 'projectId' | 'workspace'>; runId?: string }) {
   const { t, tx } = useI18n()
+  const user = useAuthUser(), { projectId } = context
   const { runs, selected } = runsSectionModel(context, runId)
 
   return (
@@ -32,6 +36,10 @@ export function RunsSection({ context, runId }: { context: ProjectRouteContext; 
           ))}
         </div>
       </div>
+      {projectId && user.data && !user.isError && !user.isFetching && <>
+        <HttpFixtureHistoryPanel key={`fixture-history:${user.data.id}:${projectId}`} projectId={projectId} />
+        <RunPlanCaseHistoryLookup key={`${user.data.id}:${projectId}`} scope={projectId} actorId={user.data.id} />
+      </>}
     </>
   )
 }

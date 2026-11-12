@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 
 from .database import Base
+from .version_delivery_models import ProjectDeliveryRecord, VersionCreationRecord, VersionImageBindingRecord  # noqa: F401
 from .agent_resume_models import AgentResumeConsumptionRecord  # noqa: F401
 from .agent_start_models import AgentGoalStartReceiptRecord  # noqa: F401
 from .source_snapshot_models import (  # noqa: F401
@@ -295,10 +296,26 @@ class ConversationSummaryCheckpointRecord(Base):
     message_range_start: Mapped[Optional[str]] = mapped_column(nullable=True)
     message_range_end: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
     summary_text: Mapped[str]
+    memory_payload: Mapped[dict] = mapped_column(JSON, default=dict)
     summary_object_refs: Mapped[list] = mapped_column(JSON, default=list)
     summary_token_count: Mapped[int] = mapped_column(default=0)
     created_by: Mapped[str] = mapped_column(default="system")
     created_at: Mapped[str] = mapped_column(index=True)
+
+
+class ConversationMemoryJobRecord(Base):
+    __tablename__ = "conversation_memory_jobs"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(index=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(default=0)
+    lease_until: Mapped[str] = mapped_column(default="")
+    reason: Mapped[str] = mapped_column(default="")
+    checkpoint_id: Mapped[Optional[str]] = mapped_column(nullable=True)
+    created_at: Mapped[str]
+    updated_at: Mapped[str]
 
 
 class SessionKnowledgeBindingRecord(Base):
@@ -581,6 +598,7 @@ class ProjectRoleBindingRecord(Base):
 
 class VersionRecord(Base):
     __tablename__ = "versions"
+    __table_args__ = (UniqueConstraint("project_id", "id", name="uq_version_project_id"),)
 
     id: Mapped[str] = mapped_column(primary_key=True)
     project_id: Mapped[str] = mapped_column(index=True)

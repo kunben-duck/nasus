@@ -2,6 +2,9 @@ import { useRunPlanCaseJob } from '../../../../../domains/quality-loop/useRunPla
 import type { RunPlanArchive } from '../../../../../domains/quality-loop/types/runPlans'
 import type { CaseCommandStage } from '../../../../../domains/quality-loop/types/runPlanCaseJobs'
 import { useI18n } from '../../../../../shared/i18n/I18nProvider'
+import { RunPlanCaseObservationDetails } from '../../execution/RunPlanCaseObservationDetails'
+import { RunPlanCaseHistoryLookup } from '../../execution/RunPlanCaseHistoryLookup'
+import { RunPlanCaseSetupPicker } from './RunPlanCaseSetupPicker'
 
 export function RunPlanCaseExecutionPanel({ plan, actorId, current, onFailure }: {
   plan: RunPlanArchive; actorId: string; current: boolean; onFailure: () => void
@@ -20,6 +23,7 @@ export function RunPlanCaseExecutionPanel({ plan, actorId, current, onFailure }:
       {(s.unavailable || s.write.isError) && <p role="alert">{t('The original acknowledgement is unavailable. Reload only reads the same command; it never resends or confirms automatically.')}</p>}
       {s.failed && <p role="alert">{t('Original case execution could not be verified. Protected results are hidden.')}</p>}
       {!s.canExecute && <p>{t('The selected plan is historical or no longer current. Inspect saved execution only; starting new work is blocked.')}</p>}
+      <RunPlanCaseHistoryLookup key={`${actorId}:${plan.metadata.artifact_hash}`} scope={plan} actorId={actorId} />
       {!s.stored.attempt && !s.stored.invalid && !s.failed && <div className="fixture-operation-fields case-execution-fields">
         <label>{t('Original environment command ID')}<input value={s.fields.environmentCommandId} disabled={s.busy} maxLength={256}
           onChange={(e) => s.edit({ environmentCommandId: e.target.value })} /></label>
@@ -30,6 +34,8 @@ export function RunPlanCaseExecutionPanel({ plan, actorId, current, onFailure }:
         <label>{t('Per-case timeout (ms)')}<input type="number" min={1000} max={120000} value={s.fields.timeoutMs} disabled={s.busy}
           onChange={(e) => s.edit({ timeoutMs: Number(e.target.value) })} /></label>
         <fieldset><legend>{t('Setup commands for every original case')}</legend>
+          {s.canExecute && <RunPlanCaseSetupPicker plan={plan.metadata} actorId={actorId} setups={s.fields.setups} disabled={s.busy}
+            onChoose={(caseId, commandId) => s.edit({ setups: s.fields.setups.map((item) => item.caseId === caseId ? { ...item, commandId } : item) })} />}
           {s.fields.setups.map((v, i) => <label key={v.caseId}><code>{v.caseId}</code><input aria-label={t('Setup command for {case}', { case: v.caseId })}
             value={v.commandId} maxLength={256} disabled={s.busy}
             onChange={(e) => s.edit({ setups: s.fields.setups.map((item, n) => n === i ? { ...item, commandId: e.target.value } : item) })} /></label>)}
@@ -51,11 +57,8 @@ export function RunPlanCaseExecutionPanel({ plan, actorId, current, onFailure }:
       {s.original && <div className="scope-record" data-testid="original-case-execution"><strong>{t('Original business execution command')}</strong>
         <code>{s.original.command.id}</code><code>{tx(s.original.command.status)}</code>
         {history && !history.bound && <p>{t('The original task has not bound an execution roster. No target observation is recorded.')}</p>}
-        {state && <><code>{tx(state.state)}</code><p>{t('{observed} of {total} original cases have observations; formal executed and passed counts remain zero.', {
-          observed: state.observed_case_count, total: state.case_count })}</p>
-          <ul>{state.cases.map((row) => <li key={row.case_id}><code>{row.case_id}</code><code>{tx(row.status)}</code></li>)}</ul>
-          {state.outcome_unknown_case_count > 0 && <p role="alert">{t('Some original requests have unknown effects. Automatic resending and replacement attempts are blocked.')}</p>}
-          {state.cancelled && <p>{t('Cancellation is recorded. Target stop, cleanup and baseline restoration remain unverified.')}</p>}
+        {state && history?.history && <><code>{tx(state.state)}</code>
+          <RunPlanCaseObservationDetails plan={plan.artifact.plan} history={history.history} />
         </>}
         <p>{t('These are original execution observations, not formal coverage or release evidence. Completed does not mean every test passed.')}</p>
       </div>}

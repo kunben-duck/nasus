@@ -4,20 +4,27 @@ from copy import deepcopy
 from dataclasses import asdict
 
 import pytest
+from sqlalchemy import func, select
 
 from apps.api.app.application.platform.account_models import UserProfile
 from apps.api.app.application.platform.actor_context import actor_scope
 from apps.api.app.application.quality_loop.automation_script_inputs import ScriptExecutionSelection
+from apps.api.app.application.quality_loop.execution_work_guard import ExecutionWorkGuard
 from apps.api.app.application.quality_loop.http_fixtures import HttpFixtureLifecycleApplicationService, HttpFixtureScope
 from apps.api.app.application.quality_loop.run_plan_case_execution import RunPlanCaseExecutionApplicationService
+from apps.api.app.application.quality_loop.run_plan_case_inputs import PreparedFixtureBoundCaseInputs
 from apps.api.app.application.quality_loop.run_plan_inputs import RunPlanSelection
 from apps.api.app.domain.quality_loop.acceptance_specification import acceptance_digest
 from apps.api.app.domain.quality_loop.http_fixture_binding_input import build_fixture_input
 from apps.api.app.domain.quality_loop.run_plan_fixture_captures import collect_case_fixture_captures
-from apps.api.app.domain.quality_loop.run_plan_case_execution import FixtureBoundRunPlanCaseScope, restore_case_scope, execution_roster
+from apps.api.app.domain.quality_loop.run_plan_case_execution import (
+    FixtureBoundRunPlanCaseScope, RunPlanCaseWorkLost, restore_case_scope, execution_roster,
+)
 from apps.api.app.domain.shared.native_build_source import byte_digest
+from apps.api.app.infrastructure.persistence.db_models import AuditEventRecord, SSEEventOutboxRecord, ToolInvocationRecord
 from apps.api.app.infrastructure.persistence.run_plan_case_execution_models import RunPlanCaseWorkRecord as Work
 from apps.api.app.infrastructure.persistence.run_plan_case_execution_repository import PostgresRunPlanCaseExecutionRepository
+from apps.api.app.infrastructure.persistence.run_plan_case_job_repository import RunPlanCaseJobRepository
 from apps.api.app.infrastructure.persistence.run_plan_case_preparation_repository import RunPlanCasePreparationJournal
 from apps.api.app.infrastructure.persistence.unit_of_work import session_scope
 from apps.api.app.infrastructure.runner.http_fixture_verifier import OwnedHttpFixtureObservationVerifier
@@ -81,17 +88,69 @@ def bound_attempt(parent):
     pins = tuple({"case_id": capture.case_id, "capture_set_digest": capture.digest, "fixture_input_digest": acceptance_digest(item)}
         for capture, item in zip(captures, inputs))
     scope = FixtureBoundRunPlanCaseScope(**asdict(base), fixture_input_pins=pins)
-    value.update(scope=scope, roster=execution_roster(plan, scope), fixture_inputs=inputs, runner=NativeRunner())
+    value.update(scope=scope, roster=execution_roster(plan, scope), fixture_inputs=inputs, fixture_captures=captures,
+        runner=NativeRunner())
     value["service"] = RunPlanCaseExecutionApplicationService(value["runner"], verifier, value["journal"], value["artifacts"])
     return value
+
+
+def assert_atomic_case_finish(scope, history, verify_archive):
+    jobs = RunPlanCaseJobRepository()
+
+    def lifecycle():
+        with session_scope() as session:
+            command = session.get(ToolInvocationRecord, scope.invocation_id)
+            audit_count = session.scalar(select(func.count()).select_from(AuditEventRecord).where(
+                AuditEventRecord.tool_invocation_id == scope.invocation_id))
+            outbox_count = session.scalar(select(func.count()).select_from(SSEEventOutboxRecord).where(
+                SSEEventOutboxRecord.entity_id == scope.invocation_id))
+            return command.status, command.revision, audit_count, outbox_count
+
+    before = lifecycle()
+    assert before[0] == "running"
+
+    def reject_archive():
+        verify_archive()
+        raise RunPlanCaseWorkLost("explicit archive validation failure at job finish")
+
+    def finish(verify):
+        return jobs.finish(scope.invocation_id, scope.command_digest, "completed",
+            history=history, require_access=lambda: None, verify_history=verify)
+
+    with pytest.raises(RunPlanCaseWorkLost, match="archive validation failure"):
+        finish(reject_archive)
+    assert lifecycle() == before
+    assert finish(verify_archive) == "completed"
+    assert lifecycle() == ("completed", *(count + 1 for count in before[1:]))
+    assert finish(lambda: pytest.fail("terminal replay reread a provider archive")) == "completed"
+    assert lifecycle() == ("completed", *(count + 1 for count in before[1:]))
 
 
 def test_v3_original_work_pins_raw_archive_and_unknown_commit_survive_actual_pg_minio_replay(native_scripts, monkeypatch):
     parent = saved_fixture_plan(native_scripts)
     value = bound_attempt(parent)
     original = deepcopy(parent["archive"])
-    result = asyncio.run(value["service"].execute(value["plan"], value["scope"], fixture_inputs=value["fixture_inputs"], require_current=lambda: None))
+    def execute_staged(attempt):
+        prepared = PreparedFixtureBoundCaseInputs(attempt["scope"], attempt["plan"], acceptance_digest("protocol specimen"),
+            attempt["fixture_captures"], attempt["fixture_inputs"])
+        runner = attempt["runner"]
+        original_runner = runner.execute_owned_http
+        attempt["staged"] = []
+
+        def stage(command, *, require_work, **options):
+            assert isinstance(require_work, ExecutionWorkGuard)
+            require_work()
+            attempt["staged"].append(command.job_id)
+            return original_runner(command, require_work=require_work.poll, **options)
+
+        monkeypatch.setattr(runner, "stage_owned_case_http", stage, raising=False)
+        monkeypatch.setattr(runner, "execute_owned_http", lambda *_, **__: pytest.fail("private staging was bypassed"))
+        return asyncio.run(attempt["service"].execute_prepared(prepared,
+            require_current=ExecutionWorkGuard(lambda: None, lambda: None)))
+
+    result = execute_staged(value)
     size = len(value["roster"])
+    assert len(value["staged"]) == size
     assert result["state"]["state"] == "observed" and journal_counts(value) == (1, 1, 1, size, size, 1 + size * 2, 1 + size * 2)
     assert all(item["status"] == "failed" for item in result["observations"])
     with session_scope() as session:
@@ -108,6 +167,11 @@ def test_v3_original_work_pins_raw_archive_and_unknown_commit_survive_actual_pg_
         archived = value["artifacts"].read(persisted.project_id, outcome["artifact_ref"], outcome["artifact_hash"])
         assert archived["schema"] == "nasus.run-plan-case-native-archive.v2" and archived["fixture_input"]
     assert parent["archive"] == original
+
+    def verify_original_archive():
+        assert fresh.read(value["plan"], persisted, fixture_inputs=value["fixture_inputs"], require_access=lambda: None) == result
+
+    assert_atomic_case_finish(persisted, result, verify_original_archive)
     unknown = bound_attempt(parent)
     original_event = unknown["journal"]._event
 
@@ -119,9 +183,8 @@ def test_v3_original_work_pins_raw_archive_and_unknown_commit_survive_actual_pg_
 
     monkeypatch.setattr(unknown["journal"], "_event", fail_outcome)
     with pytest.raises(RuntimeError, match="Outbox rollback"):
-        asyncio.run(unknown["service"].execute(unknown["plan"], unknown["scope"],
-            fixture_inputs=unknown["fixture_inputs"], require_current=lambda: None))
+        execute_staged(unknown)
     assert journal_counts(unknown) == (1, 1, 1, 1, 0, 2, 2)
     result = fresh.read(unknown["plan"], unknown["scope"], fixture_inputs=unknown["fixture_inputs"], require_access=lambda: None)
     assert result["state"]["state"] == "outcome_unknown" and result["state"]["case_count"] == size
-    assert len(unknown["runner"].commands) == 1 and result["state"]["passed_count"] == 0
+    assert len(unknown["runner"].commands) == len(unknown["staged"]) == 1 and result["state"]["passed_count"] == 0

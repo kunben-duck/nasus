@@ -5,12 +5,14 @@ import type { StudioActionId } from '../../domains/platform/tool-actions'
 import type { SystemImageData } from '../../domains/system-image/types'
 import type { AgentMode, MessageRow } from './ProjectWorkspaceTypes'
 import type { SourceBindingValues } from './components/sourceBindingDefaults'
+import type { SourceBindingKey } from './components/sourceBindingCards'
 
 export interface ProjectWorkspaceViewProps {
   project: ProjectCard
   workspace?: ProjectWorkspaceData
   systemImage?: SystemImageData
   mode: AgentMode
+  sourceEntry?: SourceBindingKey | 'all'
   setMode: (mode: AgentMode) => void
   messages: MessageRow[]
   agentGoal?: AgentGoal

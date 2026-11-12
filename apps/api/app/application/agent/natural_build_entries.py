@@ -9,6 +9,7 @@ from ...domain.system_image.source_snapshots import snapshot_digest
 from ..system_image.build_plans import BuildPlanInput
 from ..system_image.build_preparation import BuildPreparationRequired
 from .source_build_wait import AgentSourceBuildWaitApplicationService, WAIT_REF, wait_refs
+from .system_image_status_queries import is_build_status_question, system_image_status_query
 
 
 REQUEST_REF = "build_request_digest:"
@@ -73,6 +74,11 @@ class AgentNaturalBuildEntryApplicationService:
         self.waiting = AgentSourceBuildWaitApplicationService(inputs, plans, invocations)
 
     def plan(self, conversation, message):
+        if is_build_status_question(message):
+            if conversation.space_type not in {"project", "knowledge", "build"} or not conversation.project_id:
+                return self.clarify("Open the project whose system image you want to check first.", "project_id")
+            return system_image_status_query(conversation.project_id)
+
         mode = request_mode(message)
         if mode is None:
             # Even a question or imported quotation must not enter the legacy

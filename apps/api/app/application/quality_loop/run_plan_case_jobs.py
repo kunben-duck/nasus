@@ -5,6 +5,7 @@ from pydantic import model_validator
 
 from ..platform.actor_context import actor_scope
 from ..platform.tool_handlers.query_input import query_payload
+from .http_fixture_diagnostics import fixture_phase
 from .run_plan_case_inputs import RunPlanCaseExecutionSelection
 from .test_design_output import GenerationValue, Id
 from .worker_threads import run_worker_thread
@@ -30,7 +31,7 @@ class RunPlanCaseJobRepositoryPort(Protocol):
     def command(self, target): ...
     def execution(self, invocation_id, *, require_actor=True): ...
     def require_running(self, selection, invocation_id, command_digest, actor_id): ...
-    def finish(self, invocation_id, command_digest, status, *, history=None, require_access=None): ...
+    def finish(self, invocation_id, command_digest, status, *, history=None, require_access=None, verify_history=None): ...
     def cancel(self, target, *, control_id, actor_id, require_current): ...
     def cancellation_delivered(self, invocation_id): ...
 
@@ -180,21 +181,31 @@ class RunPlanCaseJobApplicationService:
                     # A retry inspects the existing slot before acquiring a new
                     # lease. Unknown effects must not renew ownership and resend.
                     return await self._finish(command, history)
-            await self.cases.execute(command["selection"], invocation_id=invocation_id)
+            history = await self.cases.execute(command["selection"], invocation_id=invocation_id)
             latest = await run_worker_thread(lambda: self.repository.command(target))
             if latest["status"] != "running":
                 return latest["status"]
             if latest["scope"] is None:
                 raise RunPlanCaseExecutionInvalid("case worker returned without its durable original work")
-            history = await run_worker_thread(lambda: self.cases.read(latest["scope"]))
+            if history is None:
+                history = await run_worker_thread(lambda: self.cases.read(latest["scope"]))
             return await self._finish(latest, history)
 
     async def _finish(self, command, history):
+        scope = command["scope"]
+        if (scope is None or type(history) is not dict or type(history.get("state")) is not dict
+                or history["state"].get("scope_digest") != scope.digest):
+            raise RunPlanCaseExecutionInvalid("case job completion requires its original worker history")
         status = "completed" if history["state"]["state"] == "observed" else "failed"
-        def current():
-            self.inputs.historical_inputs(command["scope"])
-        return await run_worker_thread(lambda: self.repository.finish(command["invocation_id"], command["command_digest"],
-            status, history=history, require_access=current))
+
+        def finish():
+            access = self._access(scope.project_id)
+            return self.repository.finish(command["invocation_id"], command["command_digest"], status, history=history,
+                require_access=lambda: self.authorization.require_current(access),
+                verify_history=lambda: self.cases.verify_finished_history(scope, history))
+
+        with fixture_phase("case_finalization"):
+            return await run_worker_thread(finish)
 
     async def fail(self, invocation_id):
         command, _actor = await run_worker_thread(lambda: self.repository.execution(invocation_id, require_actor=False))

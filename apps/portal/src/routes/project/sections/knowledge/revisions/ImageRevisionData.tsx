@@ -14,15 +14,17 @@ import { CodeMemberDeltaPanel } from './CodeMemberDeltaPanel'
 import { NativeBuildPanel } from './NativeBuildPanel'
 import type { ImageBaselineOption } from '../../../../../domains/system-image/types/baseline'
 
+export type ImageRevisionPin = Pick<ImageRevisionSummary, 'project_id' | 'image_revision_id' | 'artifact_hash' | 'baseline_id' | 'manifest_id' | 'manifest_hash'>
+
 export function ImageRevisionData({ scope, revisionId, baselines, expectedPin }: {
-  scope: ImageReadScope; revisionId: string; baselines: ImageBaselineOption[]; expectedPin?: ImageRevisionSummary
+  scope: ImageReadScope; revisionId: string; baselines: ImageBaselineOption[]; expectedPin?: ImageRevisionPin
 }) {
   const { t, tx } = useI18n()
   const [paging, setPaging] = useState<{ section: ImageSection; offsets: number[] }>({ section: 'objects', offsets: [0] })
   const selection = { section: paging.section, offset: paging.offsets.at(-1)! }
   const query = useImageRevisionPage(scope, revisionId, selection)
   const pinMismatch = expectedPin && query.data && ['project_id', 'image_revision_id', 'artifact_hash', 'baseline_id', 'manifest_id', 'manifest_hash']
-    .some((key) => query.data!.revision[key as keyof ImageRevisionSummary] !== expectedPin[key as keyof ImageRevisionSummary])
+    .some((key) => query.data!.revision[key as keyof ImageRevisionPin] !== expectedPin[key as keyof ImageRevisionPin])
   return <section className="image-revision-data">
     <div className="segmented image-revision-tabs" role="group" aria-label={t('Revision section')}>
       {(Object.keys(imageSectionLabels) as ImageSection[]).map((section) => <button key={section} type="button"

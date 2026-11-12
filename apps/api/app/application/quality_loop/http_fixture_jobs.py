@@ -1,14 +1,19 @@
 """Canonical lifecycle delegates effects to the fenced original-operation worker."""
 import asyncio
 import logging
+from threading import Event
 from typing import Protocol
 
 from ..platform.actor_context import actor_scope
-from .http_fixture_execution import HttpFixtureExecutionSelection
-from .http_fixture_history import HttpFixtureHistoryApplicationService, HttpFixtureHistoryRepositoryPort, HttpFixtureHistoryQuery, HttpFixtureHistoryTarget
+from .http_fixture_execution import HttpFixtureExecutionInputs, HttpFixtureExecutionSelection, HttpFixtureExecutionStopped
+from .http_fixture_history import (
+    HttpFixtureHistoryApplicationService, HttpFixtureHistoryItem, HttpFixtureHistoryRepositoryPort,
+    HttpFixtureHistoryQuery, HttpFixtureHistoryTarget,
+)
 from .http_fixture_diagnostics import fixture_phase
 from .test_design_output import GenerationValue, Id
 from .worker_threads import run_worker_thread
+from ...domain.quality_loop.http_fixture_observation import HttpFixtureObservationChanged
 from ...domain.quality_loop.http_fixtures import HttpFixtureInvalid
 from ...domain.system_image.source_access import SourceAccessDenied
 
@@ -21,12 +26,14 @@ class HttpFixtureJobTarget(GenerationValue):
 
 
 class HttpFixtureJobRepositoryPort(HttpFixtureHistoryRepositoryPort, Protocol):
-    def execution(self, invocation_id): ...
+    def execution(self, invocation_id, *, historical=False): ...
     def command(self, invocation_id): ...
     def delivery(self, invocation_id): ...
     def failure_command(self, invocation_id): ...
     def bind(self, inputs, authority, *, require_current): ...
     def require_running(self, selection, authority, actor_id): ...
+    def has_archived_result(self, authority) -> bool: ...
+    def require_archived_completion(self, selection, authority, actor_id): ...
     def preparation_state(self, inputs, authority): ...
     def state(self, inputs, authority, history): ...
     def finish(self, authority, status, *, inputs=None, history=None, require_current=None): ...
@@ -113,25 +120,46 @@ class HttpFixtureJobApplicationService:
         # new attempt. The reconciler retries only this same canonical identity.
         return await self._start_original(invocation_id, delivery["authority"])
 
-    def _read(self, target):
+    def _read(self, target, *, observed=None):
         access = self._access(target.project_id)
-        selection, _, authority = self.repository.command(target.invocation_id)
+        selection, status, authority = self.repository.command(target.invocation_id)
         if selection.project_id != target.project_id:
             raise SourceAccessDenied("fixture command belongs to another project")
         current = lambda: self.grants.authorization.require_current(access)
         current()
-        inputs = self.grants.execution_inputs(selection, live=False)
+        if observed is None:
+            inputs = self.grants.execution_inputs(selection, live=False)
+        else:
+            original, inputs = observed
+            if inputs.access_scope != access:
+                raise SourceAccessDenied("fixture observation no longer has its original reading scope")
+            if (authority.invocation_id != original.invocation_id or authority.request_digest != original.request_digest
+                    or status != original.status or selection != inputs.selection):
+                raise HttpFixtureObservationChanged("original fixture command changed before reading its journal")
         preparation = self.repository.preparation_state(inputs, authority)
         if preparation is not None:
             current()
             return preparation
-        history = self.execution.read(selection, require_current=current)
+        history = self.execution.read_resolved_history(inputs, require_current=current)
         result = self.repository.state(inputs, authority, history)
         current()
         return result
 
     def read(self, target):
         return self._read(HttpFixtureJobTarget.model_validate(target.model_dump(mode="json")))
+
+    def read_observation_job(self, original, inputs):
+        """Read the ledger using the exact verified inputs of this observation."""
+        if (not isinstance(original, HttpFixtureHistoryItem) or original.stage != "execute"
+                or not isinstance(inputs, HttpFixtureExecutionInputs)
+                or inputs.selection.project_id != original.project_id or inputs.selection.grant_id != original.grant_id
+                or inputs.selection.grant_digest != original.grant_digest or inputs.selection.operation != original.operation
+                or inputs.parent.run_plan_id != original.run_plan_id
+                or inputs.parent.run_plan_artifact_hash != original.run_plan_artifact_hash
+                or inputs.scope.attempt_id != original.attempt_id or inputs.scope.case_id != original.case_id):
+            raise HttpFixtureInvalid("fixture observation requires the exact original verified input and execution")
+        target = HttpFixtureJobTarget(project_id=original.project_id, invocation_id=original.invocation_id)
+        return self._read(target, observed=(original, inputs))
 
     def authorize_receipts(self, invocations):
         from ..platform.errors import PlatformApplicationError
@@ -147,7 +175,6 @@ class HttpFixtureJobApplicationService:
             from ...domain.quality_loop.http_fixture_history import FIXTURE_HISTORY_TOOLS, FIXTURE_HISTORY_LIST_TOOL
             from ...domain.quality_loop.http_fixture_observation import FIXTURE_OBSERVATION_TOOL
             if invocation.tool_id == FIXTURE_OBSERVATION_TOOL:
-                from ...domain.quality_loop.http_fixture_observation import HttpFixtureObservationChanged
                 target = HttpFixtureHistoryTarget.model_validate(value)
                 receipt = invocation.result.http_fixture_observation if invocation.result is not None else None
                 if invocation.status == "completed":
@@ -206,11 +233,46 @@ class HttpFixtureJobApplicationService:
                             "Original fixture state changed; explicitly inspect it again.", 409)
             self.grants.authorization.require_current(access)
 
-    async def run(self, invocation_id):
+    def _recover_archived(self, selection, authority, *, stopped):
+        if not self.repository.has_archived_result(authority):
+            return None
+        original, actor, current_authority = self.repository.execution(authority.invocation_id, historical=True)
+        if original != selection or current_authority != authority:
+            raise HttpFixtureInvalid("fixture recovery cannot adopt a changed canonical command")
+        with actor_scope(actor):
+            access = self._access(selection.project_id)
+
+            def current():
+                if stopped.is_set():
+                    raise HttpFixtureExecutionStopped("fixture recovery was stopped before completion")
+                self.grants.authorization.require_current(access)
+                self.repository.require_archived_completion(selection, authority, actor.id)
+                if stopped.is_set():
+                    raise HttpFixtureExecutionStopped("fixture recovery stopped during authorization")
+
+            current()
+            inputs = self.grants.execution_inputs(selection, live=False)
+            history = self.execution.read_resolved_history(inputs, require_current=current)
+            state = self.repository.state(inputs, authority, history)
+            current()
+            if not state["phases"] or any(item["state"] != "observed" for item in state["phases"]):
+                return None
+            # This only acknowledges durable bytes. It cannot obtain a lease,
+            # renew an expired grant, or repair an unobserved phase.
+            return self.repository.finish(authority, "completed", inputs=inputs, history=history, require_current=current)
+
+    async def run(self, invocation_id, *, recover_archived=False):
         with fixture_phase("worker_command"):
             selection, status, authority = await run_worker_thread(lambda: self.repository.command(invocation_id))
         if status != "running":
             return status
+        if recover_archived:
+            stopped = Event()
+            with fixture_phase("worker_archive_recovery"):
+                recovered = await run_worker_thread(lambda: self._recover_archived(selection, authority, stopped=stopped),
+                    on_cancel=stopped.set)
+            if recovered is not None:
+                return recovered
         with fixture_phase("worker_original_command"):
             original, actor, current_authority = await run_worker_thread(lambda: self.repository.execution(invocation_id))
             if original != selection or current_authority != authority:
@@ -227,10 +289,15 @@ class HttpFixtureJobApplicationService:
                 await self.execution.execute(selection, require_current=current, command_authority=authority)
             # Re-read the complete original archive; a worker return value is not
             # itself durable output, and unknown phases cannot become completion.
-            with fixture_phase("worker_archive_inputs"):
-                inputs = await run_worker_thread(lambda: self.grants.execution_inputs(selection, live=False))
-            with fixture_phase("worker_archive_history"):
-                history = await run_worker_thread(lambda: self.execution.read(selection, require_current=current))
+            def archived():
+                with fixture_phase("worker_archive_inputs"):
+                    current()
+                    inputs = self.grants.execution_inputs(selection, live=False)
+                with fixture_phase("worker_archive_history"):
+                    history = self.execution.read_resolved_history(inputs, require_current=current)
+                return inputs, history
+
+            inputs, history = await run_worker_thread(archived)
             with fixture_phase("worker_commit"):
                 return await run_worker_thread(lambda: self.repository.finish(authority, "completed",
                     inputs=inputs, history=history, require_current=current))

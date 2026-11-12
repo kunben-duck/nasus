@@ -1,5 +1,6 @@
 """Exercise release shell functions without connecting to operator services."""
 from pathlib import Path
+import importlib.util
 import os
 import subprocess
 
@@ -22,11 +23,14 @@ export NASUS_DATABASE_URL="${NASUS_DATABASE_URL:-postgresql+psycopg://test@127.0
 export NASUS_S3_ENDPOINT="${NASUS_S3_ENDPOINT:-http://127.0.0.1:${MINIO_API_PORT:-19000}}"
 export NASUS_S3_ACCESS_KEY="${NASUS_S3_ACCESS_KEY:-test-access}"
 export NASUS_S3_SECRET_KEY="${NASUS_S3_SECRET_KEY:-test-secret}"
+export EXWEB_CANONICAL_HANDOFF_REPORT="${EXWEB_CANONICAL_HANDOFF_REPORT:-should-not-write.json}"
 """)
     python = tmp_path / ".venv/bin/python"
     python.parent.mkdir(parents=True)
     python.write_text("""#!/usr/bin/env bash
 printf '%s\\n' "$NASUS_TEST_DATABASE_URL" "$NASUS_TEST_S3_ENDPOINT" "$NASUS_TEST_S3_ACCESS_KEY" "$NASUS_TEST_S3_SECRET_KEY" "$*"
+printf 'pytest_options=%s\\npytest_plugins=%s\\nexweb_execute=%s\\nexweb_report=%s\\n' \\
+  "${PYTEST_ADDOPTS+x}" "${PYTEST_PLUGINS+x}" "${EXWEB_EXECUTE_REVIEWED_NATIVE_BUILD+x}" "${EXWEB_CANONICAL_HANDOFF_REPORT+x}"
 """)
     python.chmod(0o700)
     docker = scripts / "verify-docker-stack.sh"
@@ -65,8 +69,10 @@ def test_backend_uses_operator_services_not_unstarted_compose_ports(gate, operat
         f"http://127.0.0.1:{operator_ports.get('MINIO_API_PORT', '19000')}",
         "test-access", "test-secret",
     ]
-    assert "test-api-postgres.py --minio apps/api/tests" in lines[4]
-    assert "tests/test_docker_stack_contract.py" in lines[4]
+    command, separator, suites = lines[4].partition(" --minio ")
+    assert command.endswith("test-api-postgres.py") and separator
+    assert suites.split() == ["apps/api/tests", "tests/test_docker_stack_contract.py", "tests/test_ddd_boundaries.py",
+        "tests/test_isolated_test_storage.py", "tests/test_release_gate_environment.py", "-q"]
 
 
 def test_backend_preserves_explicit_test_server_and_private_storage(gate):
@@ -81,6 +87,60 @@ def test_backend_preserves_explicit_test_server_and_private_storage(gate):
         "postgresql+psycopg://test@127.0.0.1:45432/release_tests",
         "http://127.0.0.1:49000", "private-access", "private-secret",
     ]
+
+
+def test_backend_ignores_inherited_test_filters_and_target_execution_opt_in(gate):
+    lines = run_function(gate, "run_backend_gate", {
+        "PYTEST_ADDOPTS": "-k excluded_all --collect-only",
+        "PYTEST_PLUGINS": "filtered_collection",
+        "EXWEB_EXECUTE_REVIEWED_NATIVE_BUILD": "1",
+    })
+    assert lines[5:] == ["pytest_options=", "pytest_plugins=", "exweb_execute=", "exweb_report="]
+
+
+def test_parallel_backend_gate_keeps_the_same_suite_and_ignores_operator_filters(gate):
+    serial = run_function(gate, "run_backend_gate")[4].split(" --minio ")[1].removesuffix(" -q")
+    lines = run_function(gate, "run_backend_gate", {"NASUS_RELEASE_BACKEND_WORKERS": "3", "PYTEST_ADDOPTS": "-k none"})
+    assert lines[4].endswith(f"test-api-postgres-shards.py --workers 3 {serial}")
+    assert lines[5:] == ["pytest_options=", "pytest_plugins=", "exweb_execute=", "exweb_report="]
+
+
+@pytest.fixture
+def backend_shards():
+    spec = importlib.util.spec_from_file_location("release_backend_shards", ROOT / "scripts/test-api-postgres-shards.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_backend_partition_is_deterministic_disjoint_and_complete(backend_shards):
+    counts = backend_shards.inventory("\n".join([
+        "apps/api/tests/test_b.py::test_b[hello::world]", "apps/api/tests/test_b.py::test_c", "tests/test_a.py::test_a",
+        "tests/test_c.py::test_d", "tests/test_d.py::test_e", "5 tests collected in 0.01s",
+    ]))
+    groups = backend_shards.partitions(counts, 3)
+    assert groups == backend_shards.partitions(dict(reversed(list(counts.items()))), 3)
+    assert sum(groups, type(counts)()) == counts
+    assert sum(map(len, groups)) == len(counts)
+    assert sorted(sum(group.values()) for group in groups) == [1, 2, 2]
+
+
+@pytest.mark.parametrize("collection", ["2 tests collected in 0.01s", "1/2 tests collected in 0.01s", "1 test collected in 0.01s"])
+def test_backend_inventory_rejects_missing_filtered_and_duplicate_collection(backend_shards, collection):
+    node = "tests/test_one.py::test_a\n"
+    with pytest.raises(ValueError, match="collection"):
+        backend_shards.inventory(node + (node if collection.startswith("1 test") else "") + collection)
+
+
+def test_backend_junit_rejects_missing_cases_and_failures(backend_shards, tmp_path):
+    path = tmp_path / "report.xml"
+    path.write_text('<testsuite><testcase file="tests/test_a.py"/></testsuite>')
+    backend_shards.verify_junit(path, {"tests/test_a.py": 1})
+    with pytest.raises(ValueError, match="inventory"):
+        backend_shards.verify_junit(path, {"tests/test_a.py": 2})
+    path.write_text('<testsuite><testcase file="tests/test_a.py"><failure/></testcase></testsuite>')
+    with pytest.raises(ValueError, match="failures"):
+        backend_shards.verify_junit(path, {"tests/test_a.py": 1})
 
 
 def test_cleanup_keeps_exact_release_stack_ports(gate):

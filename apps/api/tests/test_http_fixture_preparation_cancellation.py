@@ -226,7 +226,7 @@ def test_application_unbound_read_reauthorizes_without_opening_target_archive(ap
     receipt = {"schema": "nasus.http-fixture-job.v2", "phase": "preparing", "target_observation_verified": False}
     v.jobs.repository.preparation_state = lambda *_: receipt
     def forbidden(*args, **kwargs): pytest.fail("unbound state must not read target archive")
-    v.jobs.execution.read = forbidden
+    v.jobs.execution.read_resolved_history = forbidden
     target = HttpFixtureJobTarget(project_id=v.selected.project_id, invocation_id=v.authority.invocation_id)
     assert v.jobs.read(target) == receipt
     v.source.state["revoked"] = True
@@ -238,7 +238,7 @@ def test_application_unbound_cancel_is_durable_before_rpc_and_transport_loss(app
     v = application_specimen
     v.jobs.repository.preparation_state = lambda *_: {"phase": "preparing"}
     v.state["delivery_fault"] = outage
-    v.jobs.execution.read = lambda *args, **kwargs: pytest.fail("preparation cancel must not read target archive")
+    v.jobs.execution.read_resolved_history = lambda *args, **kwargs: pytest.fail("preparation cancel must not read target archive")
     target = HttpFixtureJobTarget(project_id=v.selected.project_id, invocation_id=v.authority.invocation_id)
     assert asyncio.run(v.jobs.cancel(target, control_id="original-control")) == "cancelled"
     assert v.calls.index("cancel-recorded") < v.calls.index("workflow-cancel")

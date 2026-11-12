@@ -46,10 +46,12 @@ def case_job(v, runner=None):
         def require_running(self, selection, invocation_id, digest, actor_id):
             assert selection == v.selection and digest == prepared.scope.command_digest and actor_id == "admin"
             if state["status"] != "running": raise RunPlanCaseExecutionInvalid("not running")
-        def finish(self, invocation_id, digest, status, *, history=None, require_access=None):
+        def finish(self, invocation_id, digest, status, *, history=None, require_access=None, verify_history=None):
             assert invocation_id == v.snapshot["id"] and digest == prepared.scope.command_digest
             if require_access: require_access()
             if state["status"] != "running": return state["status"]
+            if verify_history: verify_history()
+            if require_access: require_access()
             state["finished"].append((status, deepcopy(history)))
             state["status"] = v.snapshot["status"] = status
             return status
@@ -107,6 +109,75 @@ def test_current_source_revocation_still_denies_original_historical_inputs(case_
     prepared = v.service.prepare(v.selection, invocation_id=v.snapshot["id"])
     v.v.state["revoked"] = True
     with pytest.raises(SourceAccessDenied): v.service.historical_inputs(prepared.scope)
+
+
+@pytest.mark.parametrize("fault", ["none", "source-revoked", "plan-changed", "final-revocation"])
+def test_original_case_history_rechecks_all_parents_twice_and_never_returns_stale_observations(job, monkeypatch, fault):
+    v = job
+    assert asyncio.run(v.application.run(v.target.invocation_id)) == "completed"
+    assert len(v.journal.outcomes) == 7
+    before = deepcopy(v.state["finished"][0][1])
+    cases, scope = v.application.cases, v.journal.scope
+    original, read, calls = cases.inputs.historical_inputs, cases.execution.read, []
+
+    def full(requested):
+        calls.append(requested)
+        result = original(requested)
+        if fault == "final-revocation" and len(calls) == 2:
+            v.v.v.state["revoked"] = True
+        return result
+
+    def interrupted(*args, **kwargs):
+        if fault == "source-revoked":
+            v.v.v.state["revoked"] = True
+        result = read(*args, **kwargs)
+        if fault == "plan-changed":
+            v.v.v.saved["current_use"]["inputs_current"] = False
+        return result
+
+    monkeypatch.setattr(cases.inputs, "historical_inputs", full)
+    monkeypatch.setattr(cases.execution, "read", interrupted)
+    if fault in {"source-revoked", "final-revocation"}:
+        with pytest.raises(SourceAccessDenied):
+            cases.read(scope)
+        assert calls == [scope] * (1 if fault == "source-revoked" else 2)
+    elif fault == "plan-changed":
+        from apps.api.app.domain.quality_loop.run_plan_case_execution import RunPlanCaseWorkLost
+        with pytest.raises(RunPlanCaseWorkLost, match="historical original case inputs changed"):
+            cases.read(scope)
+        assert calls == [scope, scope]
+    else:
+        assert cases.read(scope) == before
+        assert calls == [scope, scope]
+    assert len(v.runner.commands) == len(v.journal.outcomes) == 7
+
+
+@pytest.mark.parametrize("rebound", [False, True])
+def test_fresh_worker_history_is_reverified_once_at_finish_without_accepting_another_scope(job, monkeypatch, rebound):
+    v, reads = job, []
+    cases = v.application.cases
+    original, execute = cases.inputs.historical_inputs, cases.execute
+
+    def read(scope):
+        reads.append(scope)
+        return original(scope)
+
+    async def observed(*args, **kwargs):
+        result = await execute(*args, **kwargs)
+        if rebound:
+            result["state"]["scope_digest"] = "unrelated-worker-scope"
+        return result
+
+    monkeypatch.setattr(cases.inputs, "historical_inputs", read)
+    monkeypatch.setattr(cases, "execute", observed)
+    if rebound:
+        with pytest.raises(RunPlanCaseExecutionInvalid, match="original worker history"):
+            asyncio.run(v.application.run(v.target.invocation_id))
+        assert not reads and not v.state["finished"] and v.state["status"] == "running"
+    else:
+        assert asyncio.run(v.application.run(v.target.invocation_id)) == "completed"
+        assert reads == [v.journal.scope]
+    assert len(v.runner.commands) == len(v.journal.outcomes) == 7
 
 
 def test_dispatch_returns_without_business_execution_and_unknown_rpc_keeps_same_original_job(job):

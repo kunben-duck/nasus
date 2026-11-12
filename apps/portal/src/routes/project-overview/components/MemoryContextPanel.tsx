@@ -23,6 +23,15 @@ export function MemoryContextPanel({ context }: { context?: AgentMemoryContextVi
         <span className="memory-context-hash" title={context.context_hash}>{shortHash(context.context_hash)}</span>
       </header>
       <p>{tx(context.context_summary)}</p>
+      {context.context_budget ? (
+        <div className="agent-runtime-meta" data-testid="agent-memory-budget">
+          <span>{t('Context budget')}: {context.context_budget.estimated_input_tokens} / {context.context_budget.input_limit}</span>
+          <span>{t('Memory maintenance')}: {tx(context.context_budget.summary.job_status)}</span>
+          <span>{t('Summary coverage')}: {context.context_budget.summary.coverage_end ?? '-'}</span>
+          <span>{t('Token counting')}: {context.context_budget.counting_method}</span>
+          {context.context_budget.summary.degraded_reason ? <span role="status">{t('Original history retained')}</span> : null}
+        </div>
+      ) : null}
       <div className="memory-scope-grid">
         {scopes.map(([label, value]) => (
           <div key={label}>

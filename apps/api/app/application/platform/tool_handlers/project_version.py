@@ -11,6 +11,8 @@ from ...quality_loop import (
     ProjectVersionUseCaseResult,
 )
 from ..tool_models import ToolInvocation, ToolResult
+from ...quality_loop.version_delivery_errors import delivery_error
+from ....domain.system_image.image_revision import ImageArtifactUnavailable, ImageRevisionIntegrityError
 
 
 ProjectVersionUseCase = Callable[[ToolInvocation], ProjectVersionUseCaseResult]
@@ -51,7 +53,15 @@ class ProjectVersionToolHandler:
             [["project", project_id], ["dashboard"], ["welcome"]] if project_id else [["projects"]],
         )
         await asyncio.sleep(0.2)
-        await self._run(invocation, self.project_version_app.create_version)
+        try:
+            result = self.project_version_app.create_version(invocation)
+        except (ValueError, KeyError, PermissionError, ImageArtifactUnavailable, ImageRevisionIntegrityError) as exc:
+            error = delivery_error(exc)
+            await self.tool_invocations.emit_tool_status(invocation.id, "failed", error.message,
+                self.project_version_app.query_keys_for(invocation), ToolResult(invocation_id=invocation.id,
+                    status="failed", summary=error.message, followup_reason=error.code, requires_followup=True))
+            return
+        await self._complete_result(invocation, result)
 
     async def connect_project_assets(self, invocation: ToolInvocation) -> None:
         await self._run(invocation, self.project_version_app.connect_project_assets)
@@ -107,6 +117,7 @@ class ProjectVersionToolHandler:
                 evidence_refs=result.evidence_refs,
                 requires_followup=result.requires_followup,
                 next_recommended_tools=result.next_tools,
+                version_delivery=result.version_delivery,
             ),
         )
 

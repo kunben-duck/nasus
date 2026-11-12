@@ -73,7 +73,7 @@ def transaction_specimen(monkeypatch, *, historical=False):
 
 
 @pytest.mark.parametrize("expires_after_check", [1, 2])
-def test_new_grant_rechecks_pg_confirmation_after_each_full_source_guard(monkeypatch, expires_after_check):
+def test_new_grant_rechecks_pg_confirmation_after_acl_and_final_parent_guard(monkeypatch, expires_after_check):
     repository, request, scope, original, state = transaction_specimen(monkeypatch)
 
     def require_access():
@@ -83,7 +83,7 @@ def test_new_grant_rechecks_pg_confirmation_after_each_full_source_guard(monkeyp
 
     with pytest.raises(RunPlanIntegrityError, match="PostgreSQL time"):
         repository.issue(request, scope, original["source_scope_digest"], actor_id=original["actor_id"],
-            invocation_id=original["invocation_id"], require_access=require_access)
+            invocation_id=original["invocation_id"], require_access=require_access, verify_inputs=require_access)
     assert state["checks"] == expires_after_check and state["rolled_back"] and not state["committed"]
     assert bool(state["writes"]) is (expires_after_check == 2)
     assert len(state["events"]) == (1 if expires_after_check == 2 else 0)
@@ -92,7 +92,7 @@ def test_new_grant_rechecks_pg_confirmation_after_each_full_source_guard(monkeyp
 def test_fresh_grant_keeps_original_exact_lifetime_and_transaction(monkeypatch):
     repository, request, scope, original, state = transaction_specimen(monkeypatch)
     result = repository.issue(request, scope, original["source_scope_digest"], actor_id=original["actor_id"],
-        invocation_id=original["invocation_id"], require_access=lambda: None)
+        invocation_id=original["invocation_id"], require_access=lambda: None, verify_inputs=lambda: None)
     assert state["committed"] and not state["rolled_back"] and len(state["events"]) == 1
     assert datetime.fromisoformat(result["expires_at"]) - datetime.fromisoformat(result["recorded_at"]) == timedelta(seconds=GRANT_SECONDS)
     assert result["execution_authorized"] is result["fixtures_verified"] is result["business_coverage_verified"] is False
@@ -102,5 +102,5 @@ def test_existing_grant_recovery_does_not_rebase_expiry_or_repeat_fact(monkeypat
     repository, request, scope, original, state = transaction_specimen(monkeypatch, historical=True)
     state["now"] += timedelta(seconds=GRANT_SECONDS + 1)
     result = repository.issue(request, scope, original["source_scope_digest"], actor_id=original["actor_id"],
-        invocation_id=original["invocation_id"], require_access=lambda: None)
+        invocation_id=original["invocation_id"], require_access=lambda: None, verify_inputs=lambda: None)
     assert result == original and state["committed"] and not state["writes"] and not state["events"]

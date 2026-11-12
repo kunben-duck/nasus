@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import re
 
 from .acceptance_specification import acceptance_digest
+from .environment_profiles import JAVA_ENVIRONMENT, environment_profile, inventory_profile
 
 
 ENVIRONMENT_SCHEMA = "nasus.owned-target-environment.v1"
@@ -37,16 +38,18 @@ class OwnedEnvironment:
     image_id: str
     network_id: str
     dependencies: tuple[OwnedDependency, ...]
+    profile: str = JAVA_ENVIRONMENT
 
     def __post_init__(self):
+        profile = environment_profile(self.profile)
         _require(all(type(value) is str and 1 <= len(value) <= 128 and value == value.strip()
             and not any(ord(char) <= 32 for char in value) for value in (self.project_id, self.environment_id)))
         _require(type(self.owner) is str and re.fullmatch(r"[0-9a-f]{16}", self.owner)
             and type(self.prefix) is str and self.prefix in {"nasus-exweb-" + self.owner, "nasus-target-" + self.owner})
-        _require(type(self.dependencies) is tuple and len(self.dependencies) == 2
+        _require(type(self.dependencies) is tuple and len(self.dependencies) == len(profile.dependencies)
             and all(type(item) is OwnedDependency for item in self.dependencies)
             and all(type(item.role) is str for item in self.dependencies)
-            and {item.role for item in self.dependencies} == {"pg", "redis"})
+            and {item.role for item in self.dependencies} == set(profile.dependencies))
         containers = [self.container_id, *(item.container_id for item in self.dependencies)]
         _require(all(type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) for value in [*containers, self.network_id])
             and len(set(containers)) == len(containers) and self.network_id not in containers)
@@ -57,7 +60,10 @@ class OwnedEnvironment:
 
     @property
     def digest(self):
-        return acceptance_digest(asdict(self))
+        value = asdict(self)
+        if self.profile == JAVA_ENVIRONMENT:
+            value.pop("profile")
+        return acceptance_digest(value)
 
 
 @dataclass(frozen=True)
@@ -68,14 +74,18 @@ class NativeEnvironmentObservation:
 
     def __post_init__(self):
         value = self.inventory
+        try:
+            profile = inventory_profile(value)
+        except (ValueError, AttributeError):
+            raise NativeEnvironmentInvalid("invalid owned environment profile") from None
         false_fields = ("host_ports_exposed", "developer_resources_used", "model_outbound_permitted", "execution_authorized",
             "external_egress_denial_verified", "host_access_denial_verified", "dependency_health_verified",
             "fixtures_verified", "locators_verified", "business_coverage_verified")
         counts = ("automated_count", "executed_on_target_count", "passed_count")
         _require(type(value) is dict and set(value) == {"schema", "project_id", "environment_id", "operator_policy_digest",
             "artifact_hash", "target", "dependency_instances", "network_id", "namespace_origin",
-            "native_artifact_attested", "isolation_attested", *false_fields, *counts}
-            and value.get("schema") == ENVIRONMENT_SCHEMA
+            "native_artifact_attested", "isolation_attested", *false_fields, *counts,
+            *([] if profile.name == JAVA_ENVIRONMENT else ["profile"])}
             and acceptance_digest(value) == self.inventory_hash
             and value.get("native_artifact_attested") is True
             and value.get("isolation_attested") is True
@@ -89,10 +99,10 @@ class NativeEnvironmentObservation:
             and type(value["network_id"]) is str and re.fullmatch(r"[0-9a-f]{64}", value["network_id"]))
         target, dependencies = value["target"], value["dependency_instances"]
         _require(type(target) is dict and set(target) == {"container_id", "image_id", "started_at", "user"}
-            and target["user"] == "65534:65534" and type(dependencies) is list and len(dependencies) == 2
+            and target["user"] == "65534:65534" and type(dependencies) is list and len(dependencies) == len(profile.dependencies)
             and all(type(item) is dict and set(item) == {"container_id", "image_id", "started_at", "user", "role"}
                 and type(item["role"]) is str for item in dependencies)
-            and {item["role"] for item in dependencies} == {"pg", "redis"})
+            and {item["role"] for item in dependencies} == set(profile.dependencies))
         instances = [target, *dependencies]
         for item in instances:
             _require(type(item["container_id"]) is str and re.fullmatch(r"[0-9a-f]{64}", item["container_id"])

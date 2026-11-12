@@ -4,6 +4,7 @@ import re
 from typing import Protocol
 
 from .http_fixtures import HttpFixtureScope
+from .execution_work_guard import ExecutionWorkGuard
 from .generation_work_lease import run_with_generation_lease
 from ...domain.quality_loop.acceptance_specification import acceptance_digest
 from ...domain.quality_loop.http_fixtures import HttpFixtureInvalid
@@ -61,7 +62,7 @@ class HttpFixtureWorkLease:
 
 class HttpFixtureTransactionFencePort(Protocol):
     def ownership_pin(self, scope, phase) -> dict: ...
-    def require(self, session, scope, phase, command) -> None: ...
+    def require(self, session, scope, phase, command, *, parent) -> None: ...
     def claim(self, session, dispatch) -> None: ...
     def complete(self, session, dispatch) -> None: ...
 
@@ -77,4 +78,16 @@ async def run_with_http_fixture_work(repository, lease, operation, *, require_cu
         def renew_lease(self, value):
             repository.renew(value, require_current=require_current)
 
-    return await run_with_generation_lease(Runtime(), lease, operation, renew_seconds=renew_seconds)
+    probe = getattr(repository, "require_poll", None)
+
+    async def execute(require_work):
+        if not callable(probe):
+            return await operation(require_work)
+
+        def poll():
+            # The runtime poll port owns the complete, current read-only fence.
+            probe(lease)
+
+        return await operation(ExecutionWorkGuard(require_work, poll))
+
+    return await run_with_generation_lease(Runtime(), lease, execute, renew_seconds=renew_seconds)

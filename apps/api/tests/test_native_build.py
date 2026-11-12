@@ -243,3 +243,49 @@ def test_bounded_command_limits_bytes_time_and_host_environment(monkeypatch):
         bounded_command([sys.executable, "-c", "print('x'*10000)"], timeout=3, max_bytes=100)
     with pytest.raises(NativeBuildFailure, match="timeout"):
         bounded_command([sys.executable, "-c", "import time;time.sleep(10)"], timeout=0.1, max_bytes=100)
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+def test_bounded_command_polls_live_guard_and_reaps_child_on_revocation(monkeypatch, revoked):
+    from apps.api.app.application.quality_loop.execution_work_guard import ExecutionWorkGuard
+    from apps.api.app.infrastructure.runner import native_maven_build as adapter
+
+    calls, children = [], []
+    original = adapter.subprocess.Popen
+
+    def spawn(*args, **kwargs):
+        calls.append("spawn")
+        child = original(*args, **kwargs)
+        children.append(child)
+        return child
+
+    def poll():
+        calls.append("poll")
+        if revoked and children:
+            raise PermissionError("original worker was revoked")
+
+    monkeypatch.setattr(adapter.subprocess, "Popen", spawn)
+    guard = ExecutionWorkGuard(lambda: calls.append("verify"), poll)
+    args = [sys.executable, "-c", "import time;time.sleep(20)" if revoked else "print('original')"]
+    if revoked:
+        with pytest.raises(PermissionError, match="revoked"):
+            bounded_command(args, timeout=3, max_bytes=1024, require_work=guard)
+        assert calls == ["poll", "verify", "spawn", "poll"]
+    else:
+        assert bounded_command(args, timeout=3, max_bytes=1024, require_work=guard) == (0, b"original\n")
+        assert calls[:3] == ["poll", "verify", "spawn"]
+        assert calls[-1] == "verify" and set(calls[3:-1]) == {"poll"}
+    assert len(children) == 1 and children[0].poll() is not None and children[0].stdout.closed
+
+
+def test_typed_bounded_command_rechecks_full_guard_before_spawn(monkeypatch):
+    from apps.api.app.application.quality_loop.execution_work_guard import ExecutionWorkGuard
+    from apps.api.app.infrastructure.runner import native_maven_build as adapter
+
+    def revoked():
+        raise PermissionError("original full proof revoked before launch")
+
+    monkeypatch.setattr(adapter.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("revoked work cannot spawn"))
+    with pytest.raises(PermissionError, match="revoked before launch"):
+        bounded_command([sys.executable, "-c", "print('unexpected')"], timeout=3, max_bytes=100,
+            require_work=ExecutionWorkGuard(revoked, lambda: None))

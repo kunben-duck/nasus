@@ -3,24 +3,31 @@ import base64
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from apps.api.app.application.quality_loop.http_fixture_execution import HttpFixtureExecutionSelection
+from apps.api.app.application.quality_loop.http_fixture_commands import HttpFixtureCommandAuthority
 from apps.api.app.application.quality_loop.http_fixture_history import HttpFixtureHistoryItem
+from apps.api.app.application.quality_loop.http_fixture_journal_access import NativeSavedRunPlanHttpFixtureAccess
 from apps.api.app.application.quality_loop.http_fixtures import HttpFixtureLifecycleApplicationService, HttpFixturePhaseRecord
 from apps.api.app.application.quality_loop.run_plan_case_fixtures import RunPlanCaseFixtureApplicationService
 from apps.api.app.application.quality_loop.run_plan_case_inputs import RunPlanCaseInputApplicationService, RunPlanCaseExecutionSelection
 from apps.api.app.domain.quality_loop.acceptance_specification import acceptance_digest
+from apps.api.app.domain.quality_loop.http_fixture_command import FIXTURE_CANONICAL_DISPATCH_SCHEMA
+from apps.api.app.domain.quality_loop.http_fixtures import HttpFixtureInvalid
 from apps.api.app.domain.quality_loop.http_locator_evidence import compile_http_locator_evidence
 from apps.api.app.domain.quality_loop.http_locator_record import LOCATOR_RECORD_SCHEMA, locator_record_identity, locator_record_metadata
 from apps.api.app.domain.quality_loop.native_environment_health import HEALTH_PROBES, NativeEnvironmentHealthObservation
 from apps.api.app.domain.quality_loop.run_plan import RunPlanChanged, RunPlanIntegrityError
-from apps.api.app.domain.quality_loop.run_plan_case_execution import CASE_EXECUTE_TOOL, RunPlanCaseExecutionInvalid
+from apps.api.app.domain.quality_loop.run_plan_case_execution import (
+    CASE_CONSENT_SECONDS, CASE_EXECUTE_TOOL, RunPlanCaseConsentExpired, RunPlanCaseExecutionInvalid,
+)
 from apps.api.app.domain.shared.native_build_source import byte_digest
 from apps.api.app.domain.system_image.source_access import SourceAccessDenied
+from apps.api.app.infrastructure.persistence import http_fixture_journal_repository as journal_repository
 from apps.api.app.infrastructure.runner.http_fixture_verifier import OwnedHttpFixtureObservationVerifier
 from apps.api.tests.test_http_fixture_native_grants import native_grant
 from apps.api.tests.test_http_fixtures import Runner, manifest
@@ -57,10 +64,10 @@ def health_observation(environment, *, target_up=True):
 
 
 @pytest.fixture
-def case_inputs(spec, monkeypatch):
+def case_inputs(spec, monkeypatch, *, seal_archive=None):
     import apps.api.tests.test_http_fixture_native_grants as module
     monkeypatch.setattr(module, "saved_inputs", http_saved_inputs)
-    v = native_grant.__wrapped__(spec)
+    v = native_grant.__wrapped__(spec, seal_archive=seal_archive)
     grant = v.service.issue(v.request, invocation_id="original-setup-consent")
     execution_selection = HttpFixtureExecutionSelection(project_id=v.request.project_id,
         grant_id=grant["record_id"], grant_digest=grant["grant_digest"], operation="setup")
@@ -157,17 +164,156 @@ def case_inputs(spec, monkeypatch):
             raise RunPlanChanged("stale original inputs")
         return deepcopy(v.saved), deepcopy(binding)
 
-    def health(request, *, require_work):
+    def health(original, *, require_work):
         require_work()
         state["health_reads"] += 1
-        return {"request": request.model_dump(mode="json"), "observation": health_observation(v.environment, target_up=state["target_up"])}
+        assert original.inventory_hash == v.environment["metadata"]["inventory_hash"]
+        return health_observation(v.environment, target_up=state["target_up"])
 
     authorization = v.service.authorization
     service = RunPlanCaseInputApplicationService(SimpleNamespace(authorization=authorization, original_inputs=original_inputs),
-        v.records, SimpleNamespace(read=lambda *_: deepcopy(locator)), fixtures, SimpleNamespace(inspect=health),
+        v.records, SimpleNamespace(read=lambda *_: deepcopy(locator)), fixtures, SimpleNamespace(probe_pinned_inventory=health),
         SimpleNamespace(original_command=original))
     return SimpleNamespace(service=service, fixtures=fixtures, selection=selection, snapshot=snapshot, v=v, binding=binding,
         locator=locator, state=state, resolved=resolved, jobs=jobs, runner=runner, authority=authorization)
+
+
+@pytest.mark.parametrize("fault", [None, "unknown-cleanup", "completed-cleanup", "different-setup", "bad-receipt",
+    "actor-revoked", "parent-changed", "revoked-before-setup-archive", "revoked-before-cleanup-archive",
+    "stable", "late-cleanup", "late-archive", "late-command"])
+def test_pinned_setup_cohort_reuses_verified_setup_only_within_one_read(case_inputs, monkeypatch, fault):
+    value = case_inputs
+    inputs, item = value.resolved, value.state["item"]
+    setup = value.state["phases"][0][1]
+    authority = HttpFixtureCommandAuthority(invocation_id=item.invocation_id, request_digest=item.request_digest)
+    access = NativeSavedRunPlanHttpFixtureAccess(value.v.plans, inputs.parent, inputs.manifest, value.v.records,
+        inputs.native_environment)
+    reads, sql_phases, archive_reads, actors = [], [], [], []
+    sessions, rechecked = [], []
+    stable = fault in {"stable", "late-cleanup", "late-archive", "late-command"}
+    require_scope = access.require_scope
+
+    def read_parent(scope):
+        assert scope == inputs.scope
+        parent = require_scope(scope)
+        reads.append(parent)
+        return {**parent, "plan_digest": "wrong"} if fault == "parent-changed" and len(reads) == 2 else parent
+
+    def actor(_session, project_id, actor_id, *, lock):
+        assert (project_id, actor_id, lock) == (inputs.scope.project_id, "admin", False)
+        actors.append(actor_id)
+        if fault == "actor-revoked" and len(actors) == 2:
+            raise PermissionError("original actor revoked")
+
+    verifier = OwnedHttpFixtureObservationVerifier()
+    original_receipt = verifier.verify(setup.command, setup.execution, environment_id=inputs.scope.environment_id,
+        inventory_hash=inputs.scope.inventory_hash)
+    original_capture = original_receipt["bindings"][0]["value"]
+    wires = {"setup": setup.execution}
+
+    def recorded(phase, command):
+        wire = wires[phase]
+        receipt = verifier.verify(command, wire, environment_id=inputs.scope.environment_id,
+            inventory_hash=inputs.scope.inventory_hash)
+        return {"receipt_digest": acceptance_digest(receipt) if fault != "bad-receipt" else acceptance_digest("other"),
+            "status": wire.result.status, "artifact_ref": phase, "artifact_hash": acceptance_digest(phase)}
+
+    def records(_session, parent, scope, phase, command):
+        assert scope == inputs.scope and parent == inputs.parent.model_dump(mode="json")
+        sql_phases.append(phase)
+        if phase == "setup":
+            assert command == setup.command
+            pin = authority.model_dump(mode="json")
+            if fault == "different-setup":
+                pin["invocation_id"] = "other-command"
+            return {"schema": FIXTURE_CANONICAL_DISPATCH_SCHEMA, "canonical_command": pin}, recorded(phase, command)
+        assert phase == "cleanup:session"
+        assert command.steps[0]["path"] == f"/sessions/{original_capture}/close"
+        if fault == "unknown-cleanup" or (fault == "late-cleanup" and rechecked):
+            return {"status": "reserved"}, None
+        if fault in {"completed-cleanup", "revoked-before-cleanup-archive"}:
+            wires[phase] = value.runner.execute_owned_http(command, environment_id=scope.environment_id,
+                inventory_hash=scope.inventory_hash, artifact_hash=scope.artifact_hash, require_work=lambda: None)
+            return {"status": "reserved"}, recorded(phase, command)
+        return None, None
+
+    def read_archive(parent, scope, phase, command, ref, digest):
+        assert ref == phase and digest == acceptance_digest(phase)
+        archive_reads.append(phase)
+        if fault == "late-archive" and rechecked:
+            original = wires[phase]
+            return type(original)(original.result, original.request_body + b" ", original.result_body,
+                original.environment_id, original.inventory_hash)
+        return wires[phase]
+
+    @contextmanager
+    def read_session():
+        session = object()
+        sessions.append(session)
+        yield session
+
+    journal = journal_repository.PostgresHttpFixtureDispatchJournal.__new__(journal_repository.PostgresHttpFixtureDispatchJournal)
+    journal.access, journal.artifacts, journal.actor_id = access, SimpleNamespace(read=read_archive), "admin"
+    journal.verifier = verifier
+    journal.work_fence = journal.consent_fence = journal.command_fence = None
+    monkeypatch.setattr(journal_repository, "session_scope", read_session)
+    monkeypatch.setattr(journal_repository.NativeBuildRepository, "_actor", staticmethod(actor))
+    monkeypatch.setattr(access, "require_scope", read_parent)
+    monkeypatch.setattr(journal, "_records", records)
+    monkeypatch.setattr(journal, "_parent", lambda _session, parent: reads[0] == parent)
+    monkeypatch.setattr(journal, "_lock", lambda *_: pytest.fail("historical cohort cannot lock for writes"))
+
+    def current():
+        if ((fault == "revoked-before-setup-archive" and sql_phases == ["setup"])
+                or (fault == "revoked-before-cleanup-archive" and sql_phases == ["setup", "cleanup:session"])):
+            raise SourceAccessDenied("source access was revoked after reading journal records")
+
+    def verify_original():
+        assert sql_phases == ["setup", "cleanup:session"] and archive_reads == ["setup"]
+        rechecked.append(True)
+        if fault == "late-command":
+            raise HttpFixtureInvalid("original setup command changed")
+
+    options = {"verify_original": verify_original} if stable else {}
+    read = lambda: journal.inspect_original_setup_cohort(inputs.scope, original_setup=authority, require_current=current, **options)
+    if fault in {"late-cleanup", "late-archive", "late-command"}:
+        with pytest.raises(ValueError):
+            read()
+        assert rechecked == [True]
+        assert len(sessions) == (1 if fault == "late-command" else 2)
+        return
+    if fault in {"revoked-before-setup-archive", "revoked-before-cleanup-archive"}:
+        with pytest.raises(SourceAccessDenied):
+            read()
+        assert archive_reads == ([] if fault == "revoked-before-setup-archive" else ["setup"])
+        return
+    if fault in {"different-setup", "bad-receipt", "parent-changed", "actor-revoked"}:
+        with pytest.raises(PermissionError if fault == "actor-revoked" else HttpFixtureInvalid):
+            read()
+        if fault == "different-setup":
+            assert not archive_reads and sql_phases == ["setup"]
+        if fault == "parent-changed":
+            assert archive_reads == ["setup"] and sql_phases == ["setup", "cleanup:session"]
+        return
+
+    phases = read()
+    assert phases[0] == ("setup", setup) and phases[1][0] == "cleanup:session"
+    cleanup = phases[1][1]
+    assert (cleanup is None) == (fault in {None, "stable"})
+    if cleanup is not None:
+        assert cleanup.execution == wires.get("cleanup:session")
+    assert len(reads) == 2 and len(actors) == (4 if stable else 2)
+    assert sql_phases == ["setup", "cleanup:session"] * (2 if stable else 1)
+    assert archive_reads == (["setup", "cleanup:session"] if fault == "completed-cleanup" else ["setup"] * (2 if stable else 1))
+    assert len(sessions) == (2 if stable else 1) and rechecked == ([True] if stable else [])
+    if fault is None:
+        reads.clear()
+        archive_reads.clear()
+        sql_phases.clear()
+        assert phases == (("setup", journal.inspect(inputs.scope, "setup", original_command=authority, read_only=True)),
+            ("cleanup:session", journal.inspect(inputs.scope, "cleanup:session", read_only=True)))
+        assert len(reads) == 2 * len(sql_phases) and archive_reads == ["setup", "setup"]
+        assert sql_phases == ["setup", "setup", "cleanup:session"]
 
 
 def test_producer_uses_all_original_records_and_instance_not_policy_hash(case_inputs):
@@ -180,8 +326,112 @@ def test_producer_uses_all_original_records_and_instance_not_policy_hash(case_in
     assert prepared.scope.selection == v.selection.model_dump(mode="json")
     v.service.require_current(prepared)
     assert (v.v.saved, v.v.environment, v.locator, v.snapshot) == before
+    assert v.state["private_reads"] == 4
     assert v.state["health_reads"] == 2 and v.state["journal_reads"] == 4 * len(v.selection.fixture_setups)
     assert len(v.runner.commands) == v.state["initial_request_count"]  # Specimen construction only, never producer dispatch.
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_case_producer_reads_environment_and_original_parents_together(case_inputs, monkeypatch, historical):
+    from apps.api.app.application.quality_loop.environment_observation_records import EnvironmentObservationRecordApplicationService
+    from apps.api.app.application.quality_loop.http_locator_records import HttpLocatorRecordApplicationService
+    from apps.api.app.application.quality_loop.run_plan_locators import RunPlanLocatorApplicationService
+    v = case_inputs
+    original = v.service.prepare(v.selection, invocation_id=v.snapshot["id"])
+    expected = v.service.historical_inputs(original.scope) if historical else original
+    environment = v.v.environment
+    events = []
+    read = v.service.original_inputs.original_inputs
+
+    def parents(query, *, current=False):
+        events.append(("parents", current))
+        return read(query, current=current)
+
+    def archive(*_args):
+        events.append(("archive", None))
+        return deepcopy(environment["archive"])
+
+    monkeypatch.setattr(v.service.original_inputs, "original_inputs", parents)
+    v.service.environments = EnvironmentObservationRecordApplicationService(SimpleNamespace(plans=v.v.plans,
+        _access=v.service._access, authorization=v.authority, original_inputs=parents), SimpleNamespace(read=archive),
+        SimpleNamespace(read=lambda *_: {"metadata": deepcopy(environment["metadata"]), "artifact_ref": "private-inventory",
+            "request": deepcopy(environment["archive"]["request"])}))
+
+    def locator_archive(*_args):
+        events.append(("locator-archive", None))
+        return deepcopy(v.locator["archive"])
+
+    def locator_source(plan, inventory, *, require_access):
+        require_access()
+        assert plan == v.v.saved["artifact"]["plan"] and inventory == v.locator["archive"]["report"]["inventory"]
+        events.append(("locator-source", None))
+
+    locator = RunPlanLocatorApplicationService(SimpleNamespace(read=lambda *_: pytest.fail("duplicate locator plan")),
+        v.authority, SimpleNamespace(verify=locator_source))
+    v.service.locators = HttpLocatorRecordApplicationService(locator, SimpleNamespace(read=locator_archive),
+        SimpleNamespace(read=lambda *_: {"metadata": deepcopy(v.locator["metadata"]), "artifact_ref": "private-locator",
+            "request": deepcopy(v.locator["archive"]["request"])}))
+    original_fixture = v.fixtures.read
+
+    def fixture(*args, **kwargs):
+        view, saved = v.service.environments.read_with_plan(v.selection.project_id, v.selection.environment_record_id)
+        assert view == environment and saved == v.v.saved
+        return original_fixture(*args, **kwargs)
+
+    monkeypatch.setattr(v.fixtures, "read", fixture)
+    observed = (v.service.historical_inputs(original.scope) if historical
+        else v.service.prepare(v.selection, invocation_id=v.snapshot["id"]))
+    assert observed == expected
+    assert events == [("parents", not historical), ("archive", None), ("locator-archive", None), ("locator-source", None),
+        *(("archive", None),) * len(v.selection.fixture_setups),
+        ("parents", not historical), ("archive", None)]
+    assert v.service.environments._case_parents.get() is None
+
+
+def test_case_producer_checks_consent_again_after_final_shared_parent_verification(case_inputs, monkeypatch):
+    v = case_inputs
+    confirmed = datetime.fromisoformat(v.snapshot["input_payload"]["confirmed_at"])
+    events = []
+
+    @contextmanager
+    def parents(query, record_id, *, current):
+        assert current is True and record_id == v.selection.environment_record_id
+        saved, binding = v.service.original_inputs.original_inputs(query, current=True)
+        yield deepcopy(v.v.environment), saved, binding
+        events.append("final-parent")
+
+    def command(*_args, **_kwargs):
+        expired = "final-parent" in events
+        events.append("command")
+        return {"command": deepcopy(v.snapshot), "now": confirmed + timedelta(seconds=CASE_CONSENT_SECONDS + 1 if expired else 0)}
+
+    monkeypatch.setattr(v.service.environments, "case_parent_read_session", parents, raising=False)
+    monkeypatch.setattr(v.service.commands, "original_command", command)
+    with pytest.raises(RunPlanCaseConsentExpired):
+        v.service.prepare(v.selection, invocation_id=v.snapshot["id"])
+    assert events == ["command", "final-parent", "command"]
+    assert len(v.runner.commands) == v.state["initial_request_count"]
+
+
+@pytest.mark.parametrize("fault", ["none", "revoked", "cancelled", "expired", "rebound"])
+def test_worker_poll_rechecks_original_business_authority_without_reading_archives(case_inputs, fault):
+    v = case_inputs
+    prepared = v.service.prepare(v.selection, invocation_id=v.snapshot["id"])
+    reads = {key: v.state[key] for key in ("private_reads", "journal_reads", "health_reads")}
+    if fault == "revoked":
+        v.v.state["revoked"] = True
+    elif fault == "cancelled":
+        v.snapshot["status"] = "cancelled"
+    elif fault == "expired":
+        v.snapshot["input_payload"]["confirmed_at"] = "2000-01-01T00:00:00+00:00"
+    elif fault == "rebound":
+        v.snapshot["input_payload"]["run_id"] = "different-attempt"
+    if fault == "none":
+        v.service.require_live_authority(prepared, require_work=lambda: None)
+    else:
+        with pytest.raises((SourceAccessDenied, RunPlanCaseExecutionInvalid)):
+            v.service.require_live_authority(prepared, require_work=lambda: None)
+    assert reads == {key: v.state[key] for key in reads}
 
 
 @pytest.mark.parametrize("field,value", [("tool_id", "quality.http_fixture.execute"), ("status", "completed"),
@@ -245,6 +495,48 @@ def test_case_fixture_reader_never_promotes_metadata_or_unknown_effects(case_inp
         v.state["phases"] = (("setup", HttpFixturePhaseRecord(phases[0][1].command, wire)), phases[1])
     with pytest.raises(ValueError):
         v.fixtures.read(v.selection.project_id, item.invocation_id, require_current=lambda: v.authority.require_current(v.resolved.access_scope))
+    assert len(v.runner.commands) == v.state["initial_request_count"]
+
+
+@pytest.mark.parametrize("changed", [False, True])
+@pytest.mark.parametrize("stable", [False, True])
+def test_fixture_handoff_reuses_verified_history_inputs_but_rereads_original_at_end(case_inputs, monkeypatch, changed, stable):
+    v = case_inputs
+    item, calls = v.state["item"], []
+    read = lambda: v.fixtures.read_native(v.selection.project_id, item.invocation_id, require_current=lambda: None)
+    expected = read()
+
+    def combined(target):
+        assert target.invocation_id == item.invocation_id
+        calls.append("combined")
+        return item, v.resolved
+
+    def recheck(target):
+        assert target.invocation_id == item.invocation_id
+        calls.append("recheck")
+        return item.model_copy(update={"status": "failed"}) if changed else item
+
+    monkeypatch.setattr(v.jobs.history, "read_execution_with_inputs", combined, raising=False)
+    monkeypatch.setattr(v.jobs.history, "read", recheck)
+    monkeypatch.setattr(v.jobs.grants, "execution_inputs", lambda *a, **k: pytest.fail("the handoff already verified the grant"))
+    if stable:
+        runtimes = v.jobs.execution.runtimes
+        original = runtimes.history
+
+        def stable_history(inputs, *, require_current, original_setup, verify_original):
+            calls.append("stable-cohort")
+            phases = original(inputs, require_current=require_current, original_setup=original_setup, include_cleanup=True)
+            verify_original()
+            return phases
+
+        monkeypatch.setattr(runtimes, "history_with_original_recheck", stable_history, raising=False)
+        monkeypatch.setattr(runtimes, "history", lambda *a, **k: pytest.fail("stable cohort already verified both reads"))
+    if changed:
+        with pytest.raises(RunPlanCaseExecutionInvalid, match="changed while reading"):
+            read()
+    else:
+        assert read() == expected
+    assert calls == ["combined", *(["stable-cohort"] if stable else []), "recheck"]
     assert len(v.runner.commands) == v.state["initial_request_count"]
 
 
@@ -325,17 +617,20 @@ def test_readonly_original_journal_never_reacquires_project_write_lock(case_inpu
     parent = v.resolved.parent.model_dump(mode="json")
     command = v.state["phases"][0][1].command
     access = SimpleNamespace(require_scope=lambda _: parent)
+    monkeypatch.setattr(module, "engine", SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
     journal = module.PostgresHttpFixtureDispatchJournal(access, SimpleNamespace(), actor_id="admin")
     session = SimpleNamespace()
     @contextmanager
     def opened(): yield session
     monkeypatch.setattr(module, "session_scope", opened)
-    monkeypatch.setattr(module.NativeBuildRepository, "_actor", staticmethod(lambda *_: None))
+    def actor(_session, project, actor_id, *, lock):
+        assert (project, actor_id, lock) == (v.resolved.scope.project_id, "admin", False)
+    monkeypatch.setattr(module.NativeBuildRepository, "_actor", staticmethod(actor))
     monkeypatch.setattr(journal, "_parent", lambda *_: None)
     monkeypatch.setattr(journal, "_lock", lambda *_: pytest.fail("readonly guard must not reacquire a project write lock"))
-    def expected(scope, phase, *, read_only):
-        assert scope == v.resolved.scope and phase == "setup" and read_only is True
-        return command
+    def expected(scope, phase, *, read_only, require_current):
+        assert scope == v.resolved.scope and phase == "setup" and read_only is True and require_current is None
+        return parent, command
     monkeypatch.setattr(journal, "_expected", expected)
     pin = authority.model_dump(mode="json")
     if wrong_command: pin["invocation_id"] = "other-original-setup"
@@ -348,18 +643,22 @@ def test_readonly_original_journal_never_reacquires_project_write_lock(case_inpu
         assert journal.inspect(v.resolved.scope, "setup", original_command=authority, read_only=True) == HttpFixturePhaseRecord(command, None)
 
 
-def test_readonly_cleanup_resolution_propagates_read_mode_to_setup(case_inputs, monkeypatch):
+def test_readonly_cleanup_resolution_propagates_read_mode_and_live_access_to_setup(case_inputs, monkeypatch):
     from apps.api.app.infrastructure.persistence import http_fixture_journal_repository as module
     v = case_inputs
     calls = []
-    def inspect(scope, phase, *, read_only):
-        calls.append((scope, phase, read_only))
+    def inspect(scope, phase, *, read_only, require_current):
+        calls.append((scope, phase, read_only, require_current))
         return v.state["phases"][0][1]
-    access = SimpleNamespace(command=lambda *args, **kwargs: kwargs["setup_receipt"])
+    parent = v.resolved.parent.model_dump(mode="json")
+    access = SimpleNamespace(command_with_parent=lambda *args, **kwargs: (parent, kwargs["setup_receipt"]))
+    monkeypatch.setattr(module, "engine", SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
     journal = module.PostgresHttpFixtureDispatchJournal(access, SimpleNamespace(), actor_id="admin")
     monkeypatch.setattr(journal, "inspect", inspect)
-    receipt = journal._expected(v.resolved.scope, "cleanup:session", read_only=True)
-    assert receipt["bindings"] and calls == [(v.resolved.scope, "setup", True)]
+    def current():
+        pass
+    original, receipt = journal._expected(v.resolved.scope, "cleanup:session", read_only=True, require_current=current)
+    assert original == parent and receipt["bindings"] and calls == [(v.resolved.scope, "setup", True, current)]
 
 
 def test_original_command_reader_uses_pg_time_but_never_takes_a_nested_write_lock(case_inputs, monkeypatch):
@@ -381,6 +680,49 @@ def test_original_command_reader_uses_pg_time_but_never_takes_a_nested_write_loc
     assert result == {"command": v.snapshot, "now": now} and checks == ["current", "actor", "current", "actor"]
     result["command"]["input_payload"]["run_id"] = "mutated"
     assert command.input_payload["run_id"] == v.selection.run_id
+
+
+@pytest.mark.parametrize("fault", ["none", "expired", "replaced", "cancelled"])
+def test_case_poll_checks_pg_clock_and_exact_owner_without_taking_write_lock(case_inputs, monkeypatch, fault):
+    from datetime import timedelta
+    from apps.api.app.domain.quality_loop.run_plan_case_execution import CASE_LEASE_SECONDS, RunPlanCaseLease, RunPlanCaseWorkLost
+    from apps.api.app.infrastructure.persistence import run_plan_case_execution_repository as module
+
+    v = case_inputs
+    scope = v.service.prepare(v.selection, invocation_id=v.snapshot["id"]).scope
+    lease = RunPlanCaseLease(scope, "original-worker", 1)
+    now = datetime.now(timezone.utc)
+    renewed = now - timedelta(seconds=CASE_LEASE_SECONDS + 1 if fault == "expired" else 1)
+    row = SimpleNamespace(project_id=scope.project_id, owner_id="new-worker" if fault == "replaced" else lease.owner_id,
+        epoch=lease.epoch, acquired_at=renewed, renewed_at=renewed, expires_at=renewed + timedelta(seconds=CASE_LEASE_SECONDS))
+    work, command, checks = SimpleNamespace(roster=[]), SimpleNamespace(**deepcopy(v.snapshot)), []
+
+    def scalar(query):
+        assert query._for_update_arg is None
+        entity = query.column_descriptions[0].get("entity")
+        return row if entity is module.Lease else command if entity is module.ToolInvocationRecord else now
+
+    def get(model, ident):
+        assert model is module.Work and ident == scope.work_id
+        return work
+
+    @contextmanager
+    def opened():
+        yield SimpleNamespace(scalar=scalar, get=get)
+
+    monkeypatch.setattr(module, "session_scope", opened)
+    monkeypatch.setattr(module.TestDesignScopeRepository, "_lock", lambda *_: pytest.fail("poll must not take a write lock"))
+    monkeypatch.setattr(module.RunPlanCasePreparationJournal, "verify", lambda *_: None)
+    repository = module.PostgresRunPlanCaseExecutionRepository()
+    monkeypatch.setattr(repository, "_work", lambda _, pinned, roster: (pinned == scope and roster == ()) or pytest.fail("rebound work"))
+    monkeypatch.setattr(repository, "_actor", lambda *_: None)
+    monkeypatch.setattr(repository, "_cancelled", lambda *_: fault == "cancelled")
+    if fault == "none":
+        repository.require_poll(lease, require_current=lambda: checks.append("live"))
+    else:
+        with pytest.raises(RunPlanCaseWorkLost):
+            repository.require_poll(lease, require_current=lambda: checks.append("live"))
+    assert checks == ["live", "live"]
 
 
 def test_full_producer_worker_and_private_archive_keep_every_original_case(case_inputs):

@@ -1,4 +1,5 @@
 import type { NativeBuildReceipt, NativeBuildView } from './runPlanBuilds'
+import type { NativeBuildAdapter } from '../nativeBuildProfiles'
 
 export interface NativeBuildSelection {
   project_id: string; image_revision_id: string; image_artifact_hash: string; binding_id: string; source_revision_id: string
@@ -8,8 +9,8 @@ export interface NativeBuildCommand extends NativeBuildSelection {
   request_digest: string; operator_policy_digest: string; source_scope_digest: string
 }
 export interface NativeBuildPolicy {
-  adapter: 'nasus.offline-java21-maven3911.v1'; image_id: string; cache_identity_hash: string; timeout_seconds: number
-  network: 'none'; cache_access: 'read_only'; cache_contents_attested: false
+  adapter: NativeBuildAdapter; image_id: string; cache_identity_hash?: string; dependency_lock_hash?: string; timeout_seconds: number
+  network: 'none'; cache_access: 'read_only'; cache_contents_attested: boolean
 }
 export interface NativeBuildPreview {
   request: NativeBuildCommand; source: { pin: NativeBuildReceipt['source']['pin']; file_count: number; byte_count: number }

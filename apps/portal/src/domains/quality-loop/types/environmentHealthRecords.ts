@@ -2,7 +2,7 @@ import type { EnvironmentInstance, EnvironmentInventory, EnvironmentRecordArchiv
 
 export interface HealthCheck extends Omit<EnvironmentInstance, 'user'> {
   role: 'pg' | 'redis' | 'target'
-  probe: 'postgres_select_one' | 'redis_ping' | 'target_actuator_health'
+  probe: 'postgres_select_one' | 'redis_ping' | 'target_actuator_health' | 'target_realworld_tags'
   response_base64: string; response_hash: string; byte_count: number
 }
 export interface HealthObservation {

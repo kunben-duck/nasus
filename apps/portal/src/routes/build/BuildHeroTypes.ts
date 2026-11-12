@@ -1,16 +1,16 @@
-import type { ProjectCard } from '../../domains/platform/types'
+import type { ConversationSession } from '../../domains/agent/types'
 import type { BuildComposerSkill } from '../../shared/ui/build-composer/BuildComposerTypes'
 
 export interface BuildHeroProps {
-  projects: ProjectCard[]
-  openProject: (project: ProjectCard) => void
+  conversation?: ConversationSession
+  sendPrompt: (content: string) => Promise<void>
+  newBuild: () => void
   prompt: string
   setPrompt: (value: string) => void
   runPrompt: () => void
   stopPrompt: () => void
   loading: boolean
   streaming: boolean
-  selectedSkillIds: string[]
   selectedSkills: BuildComposerSkill[]
   onToggleSkill: (skillId: string) => void
   onGuessYou: () => void

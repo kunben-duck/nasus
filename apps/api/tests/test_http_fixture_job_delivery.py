@@ -132,3 +132,22 @@ def test_activity_preserves_cancellation_and_sanitizes_failure_while_joining_hea
         assert heartbeats == [{"invocation_id": "original-command"}]
         assert not any(task is not asyncio.current_task() and not task.done() for task in asyncio.all_tasks())
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("attempt", [1, 2, 6])
+def test_activity_checks_for_archived_results_only_on_temporal_retry(monkeypatch, attempt):
+    from apps.api.app import bootstrap
+    from temporalio import activity
+
+    calls = []
+
+    async def run(ident, **options):
+        calls.append((ident, options))
+        return "completed"
+
+    monkeypatch.setattr(activity, "in_activity", lambda: True)
+    monkeypatch.setattr(activity, "info", lambda: SimpleNamespace(attempt=attempt))
+    monkeypatch.setattr(activity, "heartbeat", lambda _value: None)
+    monkeypatch.setattr(bootstrap, "get_application_container", lambda: SimpleNamespace(http_fixture_jobs=SimpleNamespace(run=run)))
+    assert asyncio.run(build_http_fixture_activities()[0]("original-command")) == "completed"
+    assert calls == [("original-command", {"recover_archived": True} if attempt > 1 else {})]

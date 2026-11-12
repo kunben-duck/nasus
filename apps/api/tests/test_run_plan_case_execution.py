@@ -12,8 +12,8 @@ from apps.api.app.application.quality_loop.run_plan_case_execution import RunPla
 from apps.api.app.application.quality_loop.runner_port import OwnedTargetHttpExecution
 from apps.api.app.domain.quality_loop.acceptance_specification import acceptance_digest
 from apps.api.app.domain.quality_loop.run_plan_case_execution import (
-    CASE_CLAIM_SCHEMA, CASE_OUTCOME_SCHEMA, CASE_EXECUTE_TOOL, RunPlanCaseScope, RunPlanCaseLease,
-    RunPlanCaseExecutionInvalid, RunPlanCaseWorkBusy, RunPlanCaseWorkLost, RunPlanCaseAlreadyClaimed,
+    CASE_CLAIM_SCHEMA, CASE_OUTCOME_SCHEMA, CASE_EXECUTE_TOOL, CASE_CONSENT_SECONDS, RunPlanCaseScope, RunPlanCaseLease,
+    RunPlanCaseConsentExpired, RunPlanCaseExecutionInvalid, RunPlanCaseWorkBusy, RunPlanCaseWorkLost, RunPlanCaseAlreadyClaimed,
     execution_roster, execution_state, case_claim_id, verify_original_case_command,
 )
 from apps.api.app.infrastructure.runner.adapters import HttpAutomationRunner
@@ -212,6 +212,145 @@ def test_transaction_owned_journal_never_reenters_its_worker_lease_guard():
     result = run(app, plan, scope, snapshot, now)
     assert result["state"]["state"] == "observed"
     assert len(runner.commands) == len(journal.claims) == len(journal.outcomes) == len(plan["prepared"]["cases"])
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_business_runner_poll_keeps_boundary_verification_and_rejects_lost_worker(cancelled):
+    from apps.api.app.application.quality_loop.execution_work_guard import ExecutionWorkGuard
+
+    calls = []
+
+    class SplitJournal(Journal):
+        def require_poll(self, lease, *, require_current):
+            calls.append("owner")
+            return self.require(lease, require_current=require_current)
+
+        def claim(self, lease, case, *, require_current):
+            assert isinstance(require_current, ExecutionWorkGuard)
+            require_current.poll()
+            assert calls[-1] == "poll"
+            result = super().claim(lease, case, require_current=require_current)
+            assert calls[-1] == "full"
+            calls.append("claimed")
+            return result
+
+        def complete(self, lease, claim, **kwargs):
+            assert isinstance(kwargs["require_current"], ExecutionWorkGuard)
+            kwargs["require_current"].poll()
+            assert calls[-1] == "poll"
+            result = super().complete(lease, claim, **kwargs)
+            assert calls[-1] == "full"
+            return result
+
+    class SplitRunner(Runner):
+        def execute_owned_http(self, command, *, require_work, **kwargs):
+            assert isinstance(require_work, ExecutionWorkGuard)
+            assert calls[-3:] == ["claimed", "owner", "poll"]
+            if cancelled:
+                journal.expired = True
+            require_work.poll()
+            assert calls[-2:] == ["owner", "poll"]
+            result = super().execute_owned_http(command, require_work=require_work, **kwargs)
+            require_work()
+            return result
+
+    plan, scope, _, _ = inputs()
+    journal, runner = SplitJournal(), SplitRunner()
+    app = RunPlanCaseExecutionApplicationService(runner, OwnedHttpFixtureObservationVerifier(), journal, Artifacts())
+    guard = ExecutionWorkGuard(lambda: calls.append("full"), lambda: calls.append("poll"))
+    if cancelled:
+        with pytest.raises(RunPlanCaseWorkLost):
+            asyncio.run(app.execute(plan, scope, require_current=guard))
+        assert len(journal.claims) == 1 and not journal.outcomes and not runner.commands
+    else:
+        result = asyncio.run(app.execute(plan, scope, require_current=guard))
+        assert result["state"]["state"] == "observed"
+        assert len(runner.commands) == len(journal.claims) == len(journal.outcomes)
+
+
+@pytest.mark.parametrize("fault", ["authority", "dependency"])
+def test_private_case_readback_uses_live_fence_and_final_commit_reverifies_dependencies(fault):
+    from apps.api.app.application.quality_loop.execution_work_guard import ExecutionWorkGuard
+
+    class SplitJournal(Journal):
+        require_poll = Journal.require
+
+        def complete(self, lease, claim, **kwargs):
+            events.append("commit")
+            return super().complete(lease, claim, **kwargs)
+
+    class ObservedArchive(Artifacts):
+        def read(self, *args):
+            events.append("readback")
+            return super().read(*args)
+
+    def poll():
+        if events and fault == "authority":
+            raise RunPlanCaseWorkLost("authority lost during private archive write")
+
+    def verify():
+        if events:
+            events.append("full")
+            raise RunPlanCaseWorkLost("original dependency changed during private archive write")
+
+    plan, scope, _, _ = inputs()
+    events, journal, runner, artifacts = [], SplitJournal(), Runner(), ObservedArchive()
+    artifacts.on_write = lambda: events.append("staged")
+    app = RunPlanCaseExecutionApplicationService(runner, OwnedHttpFixtureObservationVerifier(), journal, artifacts)
+    with pytest.raises(RunPlanCaseWorkLost, match="authority lost" if fault == "authority" else "dependency changed"):
+        asyncio.run(app.execute(plan, scope, require_current=ExecutionWorkGuard(verify, poll)))
+    assert events == (["staged"] if fault == "authority" else ["staged", "readback", "commit", "full"])
+    assert len(journal.claims) == len(runner.commands) == 1 and journal.outcomes == []
+    events.clear()
+    journal.expired = True
+    recovered = asyncio.run(app.execute(plan, scope, require_current=ExecutionWorkGuard(verify, poll)))
+    assert recovered["state"]["state"] == "outcome_unknown"
+    assert len(journal.claims) == len(runner.commands) == 1 and not events
+
+
+@pytest.mark.parametrize("fault", [None, "authority", "dependency"])
+def test_prepared_case_binds_without_repeating_preparation_but_never_dispatches_stale_work(fault):
+    from apps.api.app.application.quality_loop.execution_work_guard import ExecutionWorkGuard
+    from apps.api.app.application.quality_loop.run_plan_case_inputs import PreparedRunPlanCaseInputs
+
+    events = []
+
+    class SplitJournal(Journal):
+        require_poll = Journal.require
+
+        def acquire(self, *args, **kwargs):
+            assert not events
+            events.append("bind")
+            return super().acquire(*args, **kwargs)
+
+    plan, scope, _, _ = inputs()
+    prepared = PreparedRunPlanCaseInputs(scope, plan, acceptance_digest("complete preparation"), ())
+    journal, runner = SplitJournal(), Runner()
+    app = RunPlanCaseExecutionApplicationService(runner, OwnedHttpFixtureObservationVerifier(), journal, Artifacts())
+
+    def authority():
+        events.append("authority")
+        if fault == "authority":
+            raise RunPlanCaseWorkLost("original command or source access lost before binding")
+
+    def full():
+        assert journal.scope == scope
+        events.append("full")
+        if fault == "dependency":
+            raise RunPlanCaseWorkLost("original dependency changed after binding")
+
+    run_prepared = lambda: asyncio.run(app.execute_prepared(prepared, require_current=ExecutionWorkGuard(full, authority)))
+    if fault:
+        with pytest.raises(RunPlanCaseWorkLost, match="lost before binding|changed after binding"):
+            run_prepared()
+        assert not journal.claims and not journal.outcomes and not runner.commands
+        assert (journal.scope is None) == (fault == "authority")
+        assert events[:2] == ["bind", "authority"]
+        assert events.count("full") == (1 if fault == "dependency" else 0)
+    else:
+        assert run_prepared()["state"]["state"] == "observed"
+        assert events[:2] == ["bind", "authority"] and events.index("full") > 1
+        assert len(runner.commands) == len(journal.claims) == len(journal.outcomes) == len(plan["prepared"]["cases"])
 
 
 def test_failed_case_does_not_drop_other_cases_or_claim_business_pass():
@@ -451,6 +590,16 @@ def test_historical_terminal_command_is_readable_after_expiry_but_cannot_dispatc
     assert verify_original_case_command(scope, snapshot, scope.selection, historical=True, now=now + timedelta(days=1))
     with pytest.raises(RunPlanCaseExecutionInvalid):
         verify_original_case_command(scope, snapshot, scope.selection, now=now + timedelta(days=1))
+
+
+def test_original_consent_expiration_is_typed_without_rejecting_historical_reads():
+    _plan, scope, snapshot, now = inputs()
+    limit = now + timedelta(seconds=CASE_CONSENT_SECONDS)
+    assert verify_original_case_command(scope, snapshot, scope.selection, now=limit) == now
+    expired = limit + timedelta(microseconds=1)
+    with pytest.raises(RunPlanCaseConsentExpired):
+        verify_original_case_command(scope, snapshot, scope.selection, now=expired)
+    assert verify_original_case_command(scope, snapshot, scope.selection, now=expired, historical=True) == now
 
 
 def test_late_cancellation_cannot_replace_the_complete_original_observations():

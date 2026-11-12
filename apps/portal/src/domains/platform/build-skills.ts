@@ -1,7 +1,8 @@
 export type BuildSkillIconName = 'git' | 'doc' | 'test' | 'graph' | 'loop' | 'shield'
+export type BuildSkillId = 'git' | 'us' | 'tests' | 'baseline' | 'quality' | 'release'
 
 export type BuildSkillCard = {
-  id: string
+  id: BuildSkillId
   title: string
   copy: string
   icon: BuildSkillIconName

@@ -32,6 +32,7 @@ class ConversationAccessScope:
     id: str
     project_id: str | None
     initiator_id: str | None
+    space_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -253,6 +254,8 @@ class ProjectAccessApplicationService:
         actor = self._actor(user)
         if ToolRBAC.normalize_role(actor.role) == "platform_admin":
             return
+        if conversation.space_type == "build" and conversation.initiator_id != actor.id:
+            raise PlatformApplicationError("conversation_access_denied", "This Build conversation belongs to another user.", 403)
         if conversation.project_id:
             self.require_project_access(conversation.project_id, actor)
             return

@@ -18,6 +18,7 @@ class AgentMemoryContext:
     retrieval_run_refs: list[str] = field(default_factory=list)
     retrieval_strategy: str = "legacy_hybrid"
     image_read_state: dict[str, object] | None = None
+    budget_metadata: dict[str, object] | None = None
 
 
 def memory_context_hash(memory_context: AgentMemoryContext) -> str:

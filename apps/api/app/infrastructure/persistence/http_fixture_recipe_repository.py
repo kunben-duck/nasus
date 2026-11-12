@@ -69,7 +69,7 @@ class HttpFixtureRecipeRepository(EnvironmentObservationRepository):
             raise RunPlanIntegrityError("registered fixture recipe original ancestry or authority differs")
         return expected
 
-    def record(self, request, payload, ref, metadata, *, require_access):
+    def record(self, request, payload, ref, metadata, *, require_access, verify_archive):
         with session_scope() as session:
             TestDesignScopeRepository._lock(session, request.project_id)
             TestDesignScopeRepository._actor(session, request.project_id, metadata["actor_id"])
@@ -78,7 +78,7 @@ class HttpFixtureRecipeRepository(EnvironmentObservationRepository):
             if prior is not None:
                 if acceptance_digest(prior) != acceptance_digest(metadata):
                     raise RunPlanIntegrityError("fixture recipe replay cannot replace committed original bytes")
-                require_access()
+                verify_archive()
                 return prior
             parent = self._parents(session, request)
             if (acceptance_digest(recipe_metadata(payload)) != acceptance_digest(metadata)
@@ -102,7 +102,8 @@ class HttpFixtureRecipeRepository(EnvironmentObservationRepository):
                 conversation_id=command.conversation_id, agent_goal_id=command.input_payload.get("agent_goal_id"),
                 entity_version=0, mutation_kind="append", patch={key: metadata[key] for key in RECIPE_EVENT_FIELDS},
                 query_keys=[["http-fixture-recipes", request.project_id]], snapshot_hint=True), session=session)
-            require_access()
+            # Nothing staged in this transaction is visible until the original bytes are reverified.
+            verify_archive()
             session.flush()
             return metadata
 

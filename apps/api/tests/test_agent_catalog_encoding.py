@@ -76,6 +76,28 @@ def test_future_registry_growth_keeps_ranked_contracts_and_all_ids_in_the_origin
             assert item[field] == getattr(definitions[item["tool_id"]], field)
 
 
+def test_catalog_prefers_ranked_governance_over_display_text_at_the_exact_utf8_budget():
+    tools = [tool.model_copy(update={"label": tool.label + ' 中文"名称"'}) for tool in _tools()]
+    conversation = _workspace_conversation()
+    conversation.messages[-1].blocks[0].text = "Preview and prepare a RunPlan from reviewed scripts"
+    full = json.loads(compact_tool_catalog_json(tools, conversation, max_bytes=100_000))
+    contracts = [{key: value for key, value in item.items() if key not in {"label", "description"}}
+                 for item in full["relevant_tools"]]
+    minimum = {**full, "relevant_tools": contracts}
+    encode = lambda payload: json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    minimum_bytes = len(encode(minimum).encode("utf-8"))
+
+    assert json.loads(compact_tool_catalog_json(tools, conversation, max_bytes=minimum_bytes)) == minimum
+
+    # Enough space for one complete label, not twelve one-character descriptions.
+    label = full["relevant_tools"][0]["label"]
+    with_label = {**minimum, "relevant_tools": [{**contracts[0], "label": label}, *contracts[1:]]}
+    budget = len(encode(with_label).encode("utf-8"))
+    serialized = compact_tool_catalog_json(tools, conversation, max_bytes=budget)
+    assert len(serialized.encode("utf-8")) <= budget
+    assert json.loads(serialized) == with_label
+
+
 def test_unrepresentable_registry_fails_instead_of_dropping_tool_ids():
     original = _tools()[0]
     tools = [original.model_copy(update={"tool_id": "query.capacity.item_" + str(index)}) for index in range(1500)]

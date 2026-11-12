@@ -17,22 +17,22 @@ function NativeBuildContent({ scope, revision, actorId }: { scope: ImageReadScop
   return <section className="run-plan-panel test-design-mapping" aria-label={t('Fixed-source native build')}>
     <button type="button" className="small-btn" aria-expanded={state.open} disabled={state.busy} onClick={state.toggle}>{t('Inspect fixed-source native build')}</button>
     {state.open && <>
-      <p>{t('Build one exact code revision with the operator-configured offline Java 21 and Maven 3.9.11 toolchain. This does not run tests or verify business coverage.')}</p>
+      <p>{t('Build a fixed code revision using a registered offline toolchain: Java 21 / Maven or Python 3.12 / zipapp. Building does not verify business behavior.')}</p>
       <button type="button" className="small-btn" disabled={state.busy} onClick={state.reload}>{t('Reload original native build')}</button>
       {state.busy && <p role="status">{t('Verifying original native build and source access...')}</p>}
       {state.failed && <p role="alert">{t('Original build provenance could not be verified. Protected content is hidden.')}</p>}
       {(state.stored.invalid || state.recovery.isError || state.write.isError && !state.original) && <p role="alert">{t('Native build acknowledgement is unknown. Reload only reads the original command; it never rebuilds or confirms automatically.')}</p>}
       {!state.stored.attempt && !state.stored.invalid && !state.failed && <fieldset disabled={!state.editable}>
-        <legend>{t('Original Maven build inputs')}</legend>
+        <legend>{t('Fixed-source build inputs')}</legend>
         <label>{t('Frozen code source')}<select aria-label={t('Frozen code source')} value={state.binding} onChange={(event) => state.edit('binding', event.target.value)}>
           <option value="">{t('Choose a frozen code source explicitly')}</option>
           {state.code.map((s) => <option key={s.binding_id} value={s.binding_id}>{s.binding_id} · {s.source_revision_id}</option>)}
         </select></label>
-        <label>{t('Target JAR path')}<input aria-label={t('Target JAR path')} value={state.path} maxLength={1024} autoComplete="off" placeholder={t('For example, target/application.jar')} onChange={(event) => state.edit('path', event.target.value)} /></label>
-        <label>{t('Expected JAR SHA-256 (optional)')}<input aria-label={t('Expected JAR SHA-256 (optional)')} value={state.expected} maxLength={71} autoComplete="off" onChange={(event) => state.edit('expected', event.target.value)} /></label>
+        <label>{t('Target artifact path')}<input aria-label={t('Target artifact path')} value={state.path} maxLength={1024} autoComplete="off" placeholder={t('Example: target/application.jar or target/application.pyz')} onChange={(event) => state.edit('path', event.target.value)} /></label>
+        <label>{t('Expected artifact SHA-256 (optional)')}<input aria-label={t('Expected artifact SHA-256 (optional)')} value={state.expected} maxLength={71} autoComplete="off" onChange={(event) => state.edit('expected', event.target.value)} /></label>
         <button type="button" className="small-btn" disabled={!state.mayPreview} onClick={state.verify}>{t('Preview exact native build')}</button>
       </fieldset>}
-      {state.preview.isError && <p role="alert">{t('Native build preview was rejected. Check the exact code revision, root pom.xml, current administrator access and operator toolchain configuration.')}</p>}
+      {state.preview.isError && <p role="alert">{t('Build preview was rejected. Check the code revision, build definition, administrator access and registered toolchain.')}</p>}
       {(state.prepared || state.original?.command.status === 'waiting_confirmation') && <div className="scope-record">
         <details><summary>{t('Inspect exact native build request')}</summary><pre>{JSON.stringify(state.prepared?.value ?? state.originalPrepared?.value ?? state.original?.input, null, 2)}</pre></details>
         {state.original?.command.status === 'waiting_confirmation' && <button type="button" className="small-btn" disabled={state.busy} onClick={state.verifyOriginal}>{t('Verify original build policy again')}</button>}

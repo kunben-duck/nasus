@@ -538,7 +538,8 @@ print(json.dumps({"commit": AFTER, "tree_hash": tree_hash, "files": [[name, base
       unselected_optional_sources_unchanged: true, image_objects_unchanged: true,
       controlled_change_not_upstream_commit: true, external_model_called: false, target_executed: false }
     if (process.env.EXWEB_SOURCE_REFRESH_BROWSER_REPORT) writeFileSync(process.env.EXWEB_SOURCE_REFRESH_BROWSER_REPORT, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' })
-    mkdirSync(resolve('output/playwright'), { recursive: true })
-    await page.screenshot({ path: resolve('output/playwright/source-refresh-exweb.png') })
+    const screenshotDir = resolve(process.env.EXWEB_SOURCE_REFRESH_BROWSER_SCREENSHOT_DIR ?? 'output/playwright')
+    mkdirSync(screenshotDir, { recursive: true })
+    await page.screenshot({ path: resolve(screenshotDir, 'source-refresh-exweb.png') })
   } finally { rmSync(root, { recursive: true, force: true }); rmSync(v.root, { recursive: true, force: true }) }
 })

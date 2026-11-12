@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, is_dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
 
 from .ports import ConversationMessageRuntimePort
-from ..platform.tool_models import ToolInvocation, ToolInvocationRequest
+from ..platform.tool_models import ToolDefinition, ToolInvocation, ToolInvocationRequest
+from .capability_responses import unavailable_project_action
 from ...domain.agent.image_plan_policy import is_pinned_image_plan
 from ...domain.agent.resume_checkpoint import AgentResumeCheckpoint, AgentResumeCheckpointChanged
 from ...domain.agent.image_plan_phases import active_phase_start
@@ -15,8 +16,11 @@ from ...domain.agent.runtime_models import ToolPlanStep
 class ConversationMessageApplicationService:
     """Main conversation message orchestration use cases."""
 
-    def __init__(self, runtime: ConversationMessageRuntimePort) -> None:
+    def __init__(self, runtime: ConversationMessageRuntimePort, *, tools: Iterable[ToolDefinition] = ()) -> None:
         self._runtime = runtime
+        self._tool_ids = frozenset(tool.tool_id for tool in tools)
+        self.guided_build = None
+        self.guided_delivery = None
 
     async def post_message(
         self,
@@ -53,6 +57,17 @@ class ConversationMessageApplicationService:
         canonical_action_id: str | None = None,
     ) -> dict[str, Any]:
         conversation = self._runtime.get_conversation(conversation_id)
+        unavailable = unavailable_project_action(content, self._tool_ids)
+        if unavailable is not None:
+            return {"route": unavailable.kind, "decision": self._to_plain_data(unavailable)}
+        if self.guided_delivery is not None:
+            guided = await self.guided_delivery.handle(conversation_id, content)
+            if guided is not None:
+                return {"route": "finalize", "result": guided}
+        if self.guided_build is not None:
+            guided = await self.guided_build.handle(conversation_id, content)
+            if guided is not None:
+                return {"route": "finalize", "result": guided}
         source_binding_result = await self.handle_source_binding_message_if_any(conversation_id, content)
         if source_binding_result is not None:
             return {"route": "finalize", "result": source_binding_result}
@@ -198,6 +213,11 @@ class ConversationMessageApplicationService:
 
     async def handle_confirmation_message_if_any(self, conversation_id: str, content: str) -> Dict[str, Any] | None:
         if not self._runtime.is_confirmation_message(content):
+            return None
+
+        from .build_dialogue_routing import is_explicit_build_tool_confirmation
+        conversation = self._runtime.get_conversation(conversation_id)
+        if conversation.space_type == "build" and not is_explicit_build_tool_confirmation(content):
             return None
 
         invocation = self.pending_confirmation_invocation(conversation_id, content)

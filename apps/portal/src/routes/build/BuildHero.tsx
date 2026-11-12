@@ -1,21 +1,21 @@
 import { BuildComposer } from '../../shared/ui/BuildComposer'
-import { BuildGalleryPanel } from './components/BuildGalleryPanel'
+import { BuildConversation } from './components/BuildConversation'
 import { BuildAgentFeedback } from './components/BuildAgentFeedback'
 import { BuildSidebarToggle } from './components/BuildSidebarToggle'
-import { BuildSkillStrip } from './components/BuildSkillStrip'
 import type { BuildHeroProps } from './BuildHeroTypes'
 import { useI18n } from '../../shared/i18n/I18nProvider'
+import { recentUserPrompts } from '../../domains/agent/recentUserPrompts'
 
 export function BuildHero({
-  projects,
-  openProject,
+  conversation,
+  sendPrompt,
+  newBuild,
   prompt,
   setPrompt,
   runPrompt,
   stopPrompt,
   loading,
   streaming,
-  selectedSkillIds,
   selectedSkills,
   onToggleSkill,
   onGuessYou,
@@ -25,13 +25,19 @@ export function BuildHero({
 }: BuildHeroProps) {
   const { t } = useI18n()
   return (
-    <section className="build-hero">
+    <section className={`build-hero${conversation?.messages.length ? ' has-conversation' : ''}`}>
       <BuildSidebarToggle sidebarCollapsed={sidebarCollapsed} toggleSidebar={toggleSidebar} />
-      <div className="hero-title">
+      {!conversation?.messages.length ? <div className="hero-title">
         <h1>{t('Build quality projects with Nasus')}</h1>
-      </div>
+      </div> : null}
+      {conversation?.messages.length ? <button type="button" className="tool-chip" disabled={loading} onClick={newBuild}>
+        {t('New build conversation')}
+      </button> : null}
+      <BuildConversation key={conversation?.id} conversation={conversation} sendPrompt={sendPrompt} busy={loading} />
       <BuildComposer
+        key={`composer:${conversation?.id ?? 'pending'}`}
         prompt={prompt}
+        promptHistory={recentUserPrompts(conversation?.messages)}
         setPrompt={setPrompt}
         runPrompt={runPrompt}
         stopPrompt={stopPrompt}
@@ -42,8 +48,6 @@ export function BuildHero({
         onGuessYou={onGuessYou}
       />
       <BuildAgentFeedback feedback={feedback} streaming={streaming} />
-      <BuildSkillStrip selectedSkillIds={selectedSkillIds} onToggleSkill={onToggleSkill} />
-      <BuildGalleryPanel projects={projects} openProject={openProject} />
     </section>
   )
 }

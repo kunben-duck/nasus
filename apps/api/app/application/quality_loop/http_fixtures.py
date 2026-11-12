@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 import re
 from typing import Callable, ContextManager, Protocol
 
+from .execution_work_guard import work_poll
 from .runner_port import AutomationRunnerCommand, OwnedTargetHttpExecution, OwnedTargetHttpRunnerPort
 from ...domain.quality_loop.acceptance_specification import acceptance_digest
 from ...domain.quality_loop.http_bindings import HTTP_BINDING_RECEIPT_SCHEMA
@@ -113,10 +114,11 @@ class HttpFixtureLifecycleApplicationService:
             metadata={"fixture_scope": asdict(scope), "fixture_phase": phase, "business_coverage_verified": False})
 
     def _verify(self, scope, phase, command, execution, require_work):
-        require_work()
+        current = work_poll(require_work)
+        current()
         receipt = self.verifier.verify(command, execution, environment_id=scope.environment_id,
             inventory_hash=scope.inventory_hash)
-        require_work()
+        current()
         return HttpFixturePhaseOutcome(phase, command, execution, receipt)
 
     def _phase(self, scope, phase, steps, *, require_work, dispatch=True):
@@ -126,7 +128,8 @@ class HttpFixtureLifecycleApplicationService:
 
     def _execute_phase(self, scope, phase, steps, *, require_work, dispatch=True):
         command = self._command(scope, phase, steps)
-        require_work()
+        current = work_poll(require_work)
+        current()
         prior = self.journal.inspect(scope, phase)
         if prior is not None:
             if prior.command != command:
@@ -140,16 +143,18 @@ class HttpFixtureLifecycleApplicationService:
             self.journal.claim(scope, phase, command, require_current=require_work)
         except HttpFixtureDispatchAlreadyClaimed:
             raise HttpFixtureOutcomeUnknown("fixture dispatch was claimed concurrently; read original evidence") from None
-        require_work()
+        # The journal and native runner each verify the full proof at their
+        # own side-effect boundary. Between them only recheck live ownership.
+        current()
         try:
             execution = self.runner.execute_owned_http(command, environment_id=scope.environment_id,
                 artifact_hash=scope.artifact_hash, inventory_hash=scope.inventory_hash, require_work=require_work)
         except Exception as exc:
-            require_work()
+            current()
             raise HttpFixtureOutcomeUnknown("fixture transport ended without verified original output; never retry") from exc
         outcome = self._verify(scope, phase, command, execution, require_work)
         self.journal.complete(scope, phase, command, execution, require_current=require_work)
-        require_work()
+        current()
         return outcome
 
     def prepare(self, scope: HttpFixtureScope, value, *, require_work: Callable[[], None]):

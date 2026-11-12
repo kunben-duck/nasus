@@ -7,20 +7,23 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import replace
-from threading import Barrier
+from threading import Barrier, Event, get_ident
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select, text, update
+from sqlalchemy import event, func, select, text, update
 from sqlalchemy.exc import DBAPIError
 
+from apps.api.app.application.quality_loop.execution_work_guard import ExecutionWorkGuard
 from apps.api.app.application.quality_loop.run_plan_case_execution import RunPlanCaseExecutionApplicationService
+from apps.api.app.application.quality_loop.run_plan_case_inputs import PreparedRunPlanCaseInputs
 from apps.api.app.domain.quality_loop.acceptance_specification import acceptance_digest
 from apps.api.app.domain.quality_loop.run_plan_case_execution import (
-    CASE_EXECUTE_TOOL, RunPlanCaseWorkBusy, RunPlanCaseExecutionInvalid, execution_roster,
+    CASE_EXECUTE_TOOL, RunPlanCaseWorkBusy, RunPlanCaseExecutionInvalid, execution_roster, verify_original_case_command,
 )
 from apps.api.app.domain.system_image.source_access import SourceAccessDenied
 from apps.api.app.infrastructure.persistence.conversation_repository import ConversationRepository
+from apps.api.app.infrastructure.persistence.database import engine
 from apps.api.app.infrastructure.persistence.db_models import (
     AuditEventRecord, SSEEventOutboxRecord, ToolInvocationRecord, UserIdentityRecord,
 )
@@ -144,6 +147,72 @@ def assert_complete_original_cases_commit_to_actual_pg_and_minio_without_nested_
     assert journal_counts(value) == (1, 1, 1, size, size, 1 + size * 2, 1 + size * 2)
 
 
+def test_prepared_case_binds_with_live_pg_fence_before_full_dispatch_checks(pg_case_execution):
+    value = new_attempt(pg_case_execution)
+    scope, journal, plan = value["scope"], value["journal"], value["plan"]
+    prepared = PreparedRunPlanCaseInputs(scope, plan, acceptance_digest("prepared protocol specimen"), ())
+    full_checks = []
+
+    def authority():
+        current = journal.original_command(scope.project_id, scope.invocation_id, actor_id=scope.actor_id,
+            require_current=lambda: None)
+        verify_original_case_command(scope, current["command"], scope.selection, now=current["now"])
+
+    def full():
+        if not full_checks:
+            assert journal_counts(value) == (1, 1, 1, 0, 0, 1, 1)
+        authority()
+        full_checks.append(True)
+
+    observed = asyncio.run(value["service"].execute_prepared(prepared, require_current=ExecutionWorkGuard(full, authority)))
+    size = len(value["roster"])
+    assert observed["state"]["state"] == "observed" and full_checks and len(value["runner"].commands) == size
+    assert journal_counts(value) == (1, 1, 1, size, size, 1 + size * 2, 1 + size * 2)
+
+
+def test_original_case_renewal_can_run_during_full_evidence_check(pg_case_execution, monkeypatch):
+    for stage in ("claim", "complete"):
+        value = new_attempt(pg_case_execution)
+        journal, scope, roster = value["journal"], value["scope"], value["roster"]
+        lease = journal.acquire(scope, roster, uuid4().hex, require_current=lambda: None)
+        claim = journal.claim(lease, roster[0], require_current=lambda: None) if stage == "complete" else None
+        outcome = original_outcome(value, lease, claim) if claim is not None else None
+        before = journal_counts(value)
+        entered, release, full_calls = Event(), Event(), []
+
+        def full():
+            full_calls.append(True)
+            entered.set()
+            assert release.wait(timeout=10)
+
+        guard = ExecutionWorkGuard(full, lambda: None)
+
+        def write():
+            if stage == "claim":
+                return journal.claim(lease, roster[0], require_current=guard)
+            return journal.complete(lease, claim, **outcome, require_current=guard)
+
+        with session_scope() as session:
+            original = session.get(Lease, scope.work_id).renewed_at
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            writing = workers.submit(write)
+            try:
+                assert entered.wait(timeout=5)
+                workers.submit(journal.renew_poll, lease, require_current=lambda: None).result(timeout=5)
+                with session_scope() as session:
+                    renewed = session.get(Lease, scope.work_id)
+                    assert renewed.epoch == lease.epoch and renewed.owner_id == lease.owner_id and renewed.renewed_at > original
+                assert journal_counts(value) == before
+            finally:
+                release.set()
+            assert writing.result(timeout=5)["case_id"] == roster[0]["case_id"]
+        assert full_calls == [True]
+        assert journal_counts(value)[3:5] == ((1, 0) if stage == "claim" else (1, 1))
+        with monkeypatch.context() as scoped:
+            assert_actual_pg_late_revoke_or_flush_failure_rolls_back_only_uncommitted_original_facts(
+                new_attempt(pg_case_execution), scoped, stage, "source_revoke", split=True)
+
+
 def assert_actual_pg_unknown_claim_keeps_complete_denominator_and_cannot_replay(pg_case_execution):
     value = pg_case_execution
     value["runner"].failure = TimeoutError("explicit possibly dispatched wire specimen")
@@ -173,7 +242,7 @@ def assert_actual_pg_concurrent_acquisition_has_one_original_work_binding_and_ow
     assert journal_counts(value) == (1, 1, 1, 0, 0, 1, 1)
 
 
-def assert_actual_pg_late_revoke_or_flush_failure_rolls_back_only_uncommitted_original_facts(pg_case_execution, monkeypatch, stage, fault):
+def assert_actual_pg_late_revoke_or_flush_failure_rolls_back_only_uncommitted_original_facts(pg_case_execution, monkeypatch, stage, fault, *, split=False):
     value, revoked, retained = pg_case_execution, False, []
     journal, scope, roster = value["journal"], value["scope"], value["roster"]
     lease = journal.acquire(scope, roster, uuid4().hex, require_current=lambda: None) if stage != "acquire" else None
@@ -198,12 +267,13 @@ def assert_actual_pg_late_revoke_or_flush_failure_rolls_back_only_uncommitted_or
     def current():
         if revoked and fault == "source_revoke":
             raise SourceAccessDenied("explicit source revoke at the original transaction boundary")
+    guard = ExecutionWorkGuard(current, current) if split else current
     expected = {"source_revoke": SourceAccessDenied, "actor_disable": PermissionError, "outbox_failure": RuntimeError}[fault]
     try:
         with pytest.raises(expected):
-            if stage == "acquire": journal.acquire(scope, roster, uuid4().hex, require_current=current)
-            elif stage == "claim": journal.claim(lease, roster[0], require_current=current)
-            else: journal.complete(lease, claim, **outcome, require_current=current)
+            if stage == "acquire": journal.acquire(scope, roster, uuid4().hex, require_current=guard)
+            elif stage == "claim": journal.claim(lease, roster[0], require_current=guard)
+            else: journal.complete(lease, claim, **outcome, require_current=guard)
         assert journal_counts(value) == before
     finally:
         if fault == "actor_disable":
@@ -240,3 +310,129 @@ def test_original_case_journal_pg_minio_lifecycle_and_transaction_faults(pg_case
             with monkeypatch.context() as changes:
                 assert_actual_pg_late_revoke_or_flush_failure_rolls_back_only_uncommitted_original_facts(
                     new_attempt(pg_case_execution), changes, stage, fault)
+
+
+def test_case_writes_verify_complete_inputs_before_ownership_locks_and_roll_back_on_change(pg_case_execution, monkeypatch):
+    for stage in ("claim", "complete"):
+        value = new_attempt(pg_case_execution)
+        scope, roster, journal = value["scope"], value["roster"], value["journal"]
+        lease = journal.acquire(scope, roster, uuid4().hex, require_current=lambda: None)
+        claim = journal.claim(lease, roster[0], require_current=lambda: None) if stage == "complete" else None
+        outcome = original_outcome(value, lease, claim) if claim else None
+        before, events = journal_counts(value), []
+        original_history = journal.inspect(scope, roster, require_access=lambda: None)
+        original_event, stale, revoked, revoke_on_stage = journal._event, True, False, False
+
+        def observed_event(session, *args):
+            nonlocal revoked
+            original_event(session, *args)
+            session.flush()
+            events.append("staged")
+            revoked = revoke_on_stage
+
+        def verify():
+            assert events == ["poll"]
+            # Complete evidence is checked under the mutation fence, before
+            # ownership locks that would prevent a concurrent lease renewal.
+            with session_scope() as concurrent:
+                for key in ("source-snapshots", "source-access"):
+                    assert concurrent.scalar(text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+                        {"key": f"nasus:{key}:{scope.project_id}"}) is False
+                assert concurrent.scalar(select(ToolInvocationRecord).where(
+                    ToolInvocationRecord.id == scope.invocation_id).with_for_update(nowait=True)).id == scope.invocation_id
+                assert concurrent.scalar(select(Lease).where(
+                    Lease.work_id == scope.work_id).with_for_update(nowait=True)).owner_id == lease.owner_id
+            events.append("verify")
+            if stale:
+                raise SourceAccessDenied("original full inputs changed before staging")
+
+        def poll():
+            events.append("poll")
+            if revoked:
+                raise SourceAccessDenied("source access revoked after staging")
+
+        guard = ExecutionWorkGuard(verify, poll)
+        def commit():
+            if stage == "claim":
+                return journal.claim(lease, roster[0], require_current=guard)
+            return journal.complete(lease, claim, **outcome, require_current=guard)
+
+        with monkeypatch.context() as changes:
+            changes.setattr(journal, "_event", observed_event)
+            with pytest.raises(SourceAccessDenied):
+                commit()
+            assert events == ["poll", "verify"]
+            assert journal_counts(value) == before
+            assert journal.inspect(scope, roster, require_access=lambda: None) == original_history
+
+            events.clear()
+            stale = False
+            revoke_on_stage = True
+            with pytest.raises(SourceAccessDenied, match="revoked after staging"):
+                commit()
+            assert events == ["poll", "verify", "poll", "poll", "staged", "poll"]
+            assert journal_counts(value) == before
+            assert journal.inspect(scope, roster, require_access=lambda: None) == original_history
+
+            events.clear()
+            revoked = revoke_on_stage = False
+            assert commit()["case_id"] == roster[0]["case_id"]
+            assert events == ["poll", "verify", "poll", "poll", "staged", "poll", "poll"]
+            after = journal_counts(value)
+            expected = list(before)
+            for index in (3 if stage == "claim" else 4, 5, 6):
+                expected[index] += 1
+            assert after == tuple(expected)
+            history = journal.inspect(scope, roster, require_access=lambda: None)
+            assert history["cancelled"] == original_history["cancelled"]
+            if stage == "complete":
+                assert history["claims"] == original_history["claims"]
+                assert history["outcomes"][0]["artifact_hash"] == outcome["artifact_hash"]
+                assert value["artifacts"].read(scope.project_id, outcome["artifact_ref"], outcome["artifact_hash"])["observation"] == outcome["observation"]
+
+
+def test_case_runner_live_poll_is_read_only_and_keeps_exact_pg_minio_history(pg_case_execution):
+    value = new_attempt(pg_case_execution)
+    scope, journal = value["scope"], value["journal"]
+    reads, full, polls = [], [], []
+
+    def authority():
+        original = journal.original_command(scope.project_id, scope.invocation_id,
+            actor_id=scope.actor_id, require_current=lambda: None)
+        verify_original_case_command(scope, original["command"], scope.selection, now=original["now"])
+
+    def verify():
+        full.append(True)
+        authority()
+
+    class PollingRunner(Runner):
+        def execute_owned_http(self, command, *, require_work, **options):
+            assert isinstance(require_work, ExecutionWorkGuard)
+            before, worker = len(full), get_ident()
+
+            def observe(_connection, _cursor, statement, _parameters, _context, _many):
+                if get_ident() != worker:
+                    return
+                sql = statement.lstrip().upper()
+                assert "FOR UPDATE" not in sql and not sql.startswith(("INSERT ", "UPDATE ", "DELETE "))
+                reads.append(sql.split(None, 1)[0])
+
+            event.listen(engine, "before_cursor_execute", observe)
+            try:
+                require_work.poll()
+            finally:
+                event.remove(engine, "before_cursor_execute", observe)
+            assert len(full) == before
+            polls.append(command.us_id)
+            return super().execute_owned_http(command, require_work=require_work, **options)
+
+    runner = PollingRunner()
+    value["service"].runner = runner
+    result = asyncio.run(value["service"].execute(value["plan"], scope,
+        require_current=ExecutionWorkGuard(verify, authority)))
+    size = len(value["roster"])
+    assert result["state"]["state"] == "observed" and reads and full
+    assert polls == [case["case_id"] for case in value["roster"]]
+    assert len(runner.commands) == len(result["observations"]) == size
+    assert journal_counts(value) == (1, 1, 1, size, size, 1 + size * 2, 1 + size * 2)
+    assert value["service"].read(value["plan"], scope, require_access=lambda: None) == result

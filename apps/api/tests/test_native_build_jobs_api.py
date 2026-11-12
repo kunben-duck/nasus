@@ -27,6 +27,7 @@ from apps.api.app.application.quality_loop.native_build_inputs import (
 from apps.api.app.application.quality_loop.native_builds import NativeBuildApplicationService
 from apps.api.app.application.quality_loop.generation_work_lease import GenerationLeaseBusy, GenerationLeaseLost
 from apps.api.app.domain.quality_loop.native_build import NativeBuildOutput
+from apps.api.app.domain.quality_loop.build_profiles import JAVA_BUILD, PYTHON_BUILD
 from apps.api.app.domain.shared.native_build_source import byte_digest
 from apps.api.app.infrastructure.persistence.db_models import AuditEventRecord, SSEEventOutboxRecord, ToolInvocationRecord
 from apps.api.app.infrastructure.persistence.event_outbox_repository import EventOutboxRepository
@@ -36,6 +37,7 @@ from apps.api.app.infrastructure.persistence.native_build_models import (
 from apps.api.app.infrastructure.persistence.native_build_repository import NativeBuildRepository
 from apps.api.app.infrastructure.persistence.unit_of_work import session_scope
 from apps.api.app.infrastructure.runner.native_maven_build import runtime_jar_inventory
+from apps.api.app.infrastructure.runner.native_python_build import python_archive, runtime_python_inventory
 from apps.api.tests.test_native_build import protocol_jar
 from apps.api.tests.test_native_build_sources_api import fixed_exweb_native_input
 from apps.api.tests.test_source_evidence_api import evidence_api
@@ -44,9 +46,14 @@ from apps.api.tests.test_semantic_evaluations_api import completed, invoke, conf
 
 
 class ProtocolBuilder:
-    def __init__(self):
+    def __init__(self, adapter=JAVA_BUILD):
         self.calls = []
         self.image_id = "sha256:" + "a" * 64
+        self.adapter = adapter
+
+    def for_adapter(self, adapter):
+        assert adapter == self.adapter
+        return self
 
     def policy(self):
         return {"image_id": self.image_id, "protocol_specimen": True}
@@ -55,6 +62,12 @@ class ProtocolBuilder:
         require_work()
         self.calls.append(request.digest)
         artifact = protocol_jar()
+        if self.adapter == PYTHON_BUILD:
+            artifact = python_archive(request.source)
+            return NativeBuildOutput(request.digest, artifact, b"Protocol only, not native Python compilation.",
+                {"image_id": self.image_id, "python": "3.12", "zipapp": "1", "network": "none",
+                    "dependency_cache": "operator_read_only", "version_output_hash": byte_digest(b"protocol"),
+                    "dependency_lock_hash": byte_digest(b"lock")}, runtime_python_inventory(artifact), PYTHON_BUILD)
         return NativeBuildOutput(request.digest, artifact, b"Protocol only, not native Java compilation.",
             {"image_id": self.image_id, "maven": "3.9.11", "java": "21", "network": "none",
                 "dependency_cache": "operator_read_only", "version_output_hash": byte_digest(b"protocol")},
@@ -62,17 +75,23 @@ class ProtocolBuilder:
 
 
 @pytest.fixture
-def native_job(evidence_api, tmp_path, monkeypatch):
+def native_job(evidence_api, tmp_path, monkeypatch, request):
     v = evidence_api
+    python_profile = getattr(request, "param", None) == "python"
     root = tmp_path / "protocol-maven"
     root.mkdir()
     (root / "pom.xml").write_text("<project>Protocol only.</project>")
     (root / "Example.java").write_text("class Example {}")
+    if python_profile:
+        (root / "pyproject.toml").write_text('[project]\nname="protocol-only"\n')
+        (root / "manage.py").write_text("")
+        (root / "config").mkdir()
+        (root / "config/settings.py").write_text("DEBUG=False\n")
     v["invoke"]("system_image.sources.register", {"source_specs": [{"source_type": "code", "source_uri": str(root)}]})
     v["invoke"]("system_image.sources.ingest")
     v["invoke"]("system_image.context.materialize")
     service, jobs = app.state.container.native_builds, app.state.container.native_build_jobs
-    builder, workflow = ProtocolBuilder(), AsyncMock()
+    builder, workflow = ProtocolBuilder(PYTHON_BUILD if python_profile else JAVA_BUILD), AsyncMock()
     monkeypatch.setattr(service, "builder", builder)
     monkeypatch.setattr(jobs, "workflow", workflow)
     snapshot = service.authorization.repository.load_snapshot(v["project_id"])
@@ -88,7 +107,7 @@ def native_job(evidence_api, tmp_path, monkeypatch):
     member = next(item for item in manifest.members if item.binding_id == binding.binding_id)
     selection = {"project_id": v["project_id"], "image_revision_id": summary["image_revision_id"],
         "image_artifact_hash": summary["artifact_hash"], "binding_id": binding.binding_id,
-        "source_revision_id": member.source_revision_id, "artifact_path": "target/app.jar"}
+        "source_revision_id": member.source_revision_id, "artifact_path": "target/app.pyz" if python_profile else "target/app.jar"}
     preview = completed(invoke(v, NATIVE_BUILD_PREVIEW_TOOL, selection))["result"]["native_build_preview"]
     v.update(service=service, jobs=jobs, builder=builder, workflow=workflow, selection=selection,
         preview=preview, request=preview["request"], root=root)
@@ -150,6 +169,28 @@ def test_native_canonical_confirmation_result_and_original_replay(native_job):
         assert {item.action for item in audits} >= {"quality.native_build.reserved", "quality.native_build.archived"}
         value = json.dumps([event.event_payload for event in events]) + json.dumps([item.event_metadata for item in audits]) + json.dumps(original)
         assert "Example.java" not in value and "Protocol only" not in value and "s3://" not in value
+
+
+@pytest.mark.parametrize("native_job", ["python"], indirect=True)
+def test_python_canonical_confirmation_pg_archive_outbox_and_no_rebuild(native_job):
+    v = native_job
+    ident = queued(v)
+    assert asyncio.run(v["jobs"].run(ident)) == "completed"
+    first = read(v, ident)
+    assert first["metadata"]["python_file_count"] == 3
+    assert "runtime_library_count" not in first["metadata"]
+    assert "compiled_class_count" not in first["metadata"]
+    assert not first["execution_authorized"]
+    assert asyncio.run(v["jobs"].run(ident)) == "completed"
+    assert count(v, Reservation) == count(v, Result) == len(v["builder"].calls) == 1
+    with actor_scope(UserProfile.model_validate(v["owner"])):
+        archived = v["service"].read(v["project_id"], ident)
+    assert archived["receipt"]["adapter"] == PYTHON_BUILD
+    assert archived["receipt"]["toolchain"]["dependency_lock_hash"] == byte_digest(b"lock")
+    with session_scope() as session:
+        assert session.get(Result, ident).artifact_ref.startswith("s3://")
+        events = session.scalars(select(SSEEventOutboxRecord).where(SSEEventOutboxRecord.entity_id == ident)).all()
+        assert {event.event_type for event in events} >= {"quality.native_build.reserved", "quality.native_build.archived"}
 
 
 @pytest.mark.parametrize("mode", ["operator", "payload", "old_confirm", "future_confirm", "actor"])

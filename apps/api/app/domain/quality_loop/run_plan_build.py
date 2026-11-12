@@ -4,7 +4,8 @@ from pathlib import PurePosixPath
 import json
 
 from .acceptance_specification import acceptance_digest
-from .native_build import NATIVE_BUILD_SCHEMA, NATIVE_BUILD_ADAPTER
+from .native_build import NATIVE_BUILD_SCHEMA
+from .build_profiles import build_profile, validate_toolchain
 from .run_plan import RUN_PLAN_SCHEMA, RUN_PLAN_BINDING_SCHEMA, RUN_PLAN_FIXTURE_SCHEMA, run_plan_artifact_schema, RunPlanInvalid, RunPlanIntegrityError
 
 
@@ -51,7 +52,7 @@ def compile_run_plan_build(view, selection, builds):
                 or result.get("project_id") != selection["project_id"] or result.get("execution_authorized") is not False
                 or any(result.get(key) != ref[key] for key in ("invocation_id", "build_id", "artifact_hash", "receipt_digest"))
                 or acceptance_digest(receipt) != ref["receipt_digest"]
-                or receipt.get("schema") != NATIVE_BUILD_SCHEMA or receipt.get("adapter") != NATIVE_BUILD_ADAPTER
+                or receipt.get("schema") != NATIVE_BUILD_SCHEMA
                 or receipt.get("native_build_verified") is not True or receipt.get("execution_authorized") is not False
                 or any(type(receipt.get(key)) is not int or receipt[key] != 0 for key in
                     ("executed_on_target_count", "passed_count"))
@@ -65,10 +66,14 @@ def compile_run_plan_build(view, selection, builds):
             raise RunPlanInvalid("native build source differs from the original complete image scope")
         observed.add(pin["binding_id"])
         files = receipt["source"]["files"]
-        definitions = [item for item in files if item["path"] == "pom.xml"]
+        try:
+            profile = build_profile(receipt.get("adapter"))
+            validate_toolchain(profile.adapter, receipt["toolchain"])
+        except ValueError:
+            raise RunPlanInvalid("unsupported native build definition or toolchain") from None
+        definitions = [item for item in files if item["path"] == profile.definition]
         toolchain = receipt["toolchain"]
-        if (len(definitions) != 1 or toolchain.get("java") != "21" or toolchain.get("maven") != "3.9.11"
-                or toolchain.get("network") != "none" or toolchain.get("dependency_cache") != "operator_read_only"):
+        if len(definitions) != 1 or not receipt["artifact"]["path"].endswith(profile.suffix):
             raise RunPlanInvalid("unsupported native build definition or toolchain")
         member = {**deepcopy(ref), "source_pin": deepcopy(pin), "request_digest": receipt["request_digest"],
             "source_files_digest": acceptance_digest(files), "build_definition_hash": definitions[0]["content_hash"],
@@ -76,14 +81,15 @@ def compile_run_plan_build(view, selection, builds):
         members.append(member)
         if ref["invocation_id"] == selection["target_build_invocation_id"]:
             target = member
+            target_profile = profile
     if observed != set(expected) or target is None:
         raise RunPlanInvalid("all code sources and an explicit primary target build are required")
     if (PurePosixPath(target["artifact"]["path"]).name != declared["artifact_name"]
             or target["artifact"]["content_hash"] != declared["artifact_hash"]
             or target["build_definition_hash"] != declared["build_definition_hash"]
             or (declared["runtime"], declared["runtime_version"], declared["build_tool"], declared["build_tool_version"])
-                != ("Java", "21", "Maven", "3.9.11")):
-        raise RunPlanInvalid("primary build must match the original artifact, root pom and toolchain declarations")
+                != (target_profile.runtime, target_profile.runtime_version, target_profile.build_tool, target_profile.build_tool_version)):
+        raise RunPlanInvalid("primary build must match the original artifact, build definition and toolchain declarations")
     value = {"schema": RUN_PLAN_BUILD_SCHEMA, "project_id": selection["project_id"],
         "selection": deepcopy(selection), "run_plan_id": selection["run_plan_id"],
         "run_plan_artifact_hash": selection["run_plan_artifact_hash"], "plan_digest": plan["plan_digest"],

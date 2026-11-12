@@ -173,3 +173,20 @@ def test_http_static_query_token_observes_current_account_status(operator, monke
     with session_scope() as session:
         session.get(UserIdentityRecord, operator.id).status = "suspended"
     assert client.get("/v1/auth/me", params=params).status_code == 401
+
+
+@pytest.mark.parametrize("mode", ["dev", "required"])
+def test_legacy_disabled_identity_is_listed_as_suspended_without_reactivation(operator, monkeypatch, mode):
+    _, client, headers = configured_application(operator, monkeypatch, mode)
+    disabled = operator.model_copy(update={"id": "disabled_" + uuid4().hex,
+        "email": "disabled-" + uuid4().hex + "@example.test"})
+    SQLAlchemyOperatorIdentityBootstrap().ensure(disabled)
+    with session_scope() as session:
+        session.get(UserIdentityRecord, disabled.id).status = "disabled"
+    before = persisted(disabled)
+    listed = client.get("/v1/admin/users", params={"q": disabled.email}, headers=headers)
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["items"][0]["status"] == "suspended"
+    _, denied_client, denied_headers = configured_application(disabled, monkeypatch, mode)
+    assert denied_client.get("/v1/auth/me", headers=denied_headers).status_code == 401
+    assert persisted(disabled) == before

@@ -67,6 +67,7 @@ def full_read(value, revision_id, monkeypatch, *, copy_whole_image):
                 scoped.setattr(images, "_verified_payload", complete_copy)
             with images.verified_read_session():
                 summary, payload = images.frozen_snapshot(value["project_id"], revision_id)
+                assert images.frozen_header(value["project_id"], revision_id) == summary
                 views = {"snapshot_hash": snapshot_digest(payload), "summary": asdict(summary), "pages": {},
                     "documents": [], "evidence": []}
                 for section in ("objects", "relationships", "members", "source_members", "assertion_members", "semantic_assertion_members"):
@@ -132,6 +133,7 @@ def test_live_revocation_in_same_pg_snapshot_blocks_selected_reads(documents):
         inventory = ImageGenerationSourceInventory(images)
         policy(value)
         for read in (lambda: images.read(value["project_id"], ident, section="objects", limit=1),
+                     lambda: images.frozen_header(value["project_id"], ident),
                      lambda: images.frozen_document_members(value["project_id"], ident),
                      lambda: images.frozen_source_members(value["project_id"], ident),
                      lambda: inventory.bindings(prepared),

@@ -17,6 +17,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from apps.api.app.application.quality_loop.http_fixture_work import HttpFixtureWorkLost
+from apps.api.app.application.quality_loop.http_fixtures import HttpFixtureLifecycleApplicationService
 from apps.api.app.domain.quality_loop.http_fixtures import HttpFixtureInvalid
 from apps.api.app.infrastructure.persistence.http_fixture_work_models import HttpFixtureWorkLeaseRecord as Lease
 from apps.api.app.infrastructure.persistence.http_fixture_work_repository import PostgresHttpFixtureWorkRepository
@@ -227,6 +228,51 @@ def test_lease_operations_keep_fresh_authority_inside_one_read_session(clock_wor
         v.repository.renew(lease, require_current=current)
     assert v.stored(lease) == renewed
     assert active is None and all(value["closed"] for value in sessions)
+
+
+def test_pinned_heartbeat_uses_live_pg_without_reopening_full_archive(clock_work, monkeypatch):
+    v = clock_work
+    parent = v.access.require_scope(v.scope)
+    lease = v.repository.acquire(v.scope, "setup", "original-fast-heartbeat", require_current=v.authority)
+    before = v.stored(lease)
+    monkeypatch.setattr(v.access, "require_scope", lambda *_: pytest.fail("ownership-only heartbeat must not re-read archives"))
+    v.repository.renew_ownership(lease, parent, require_current=v.authority)
+    renewed = v.stored(lease)
+    assert renewed["epoch"] == before["epoch"] and renewed["renewed_at"] >= before["renewed_at"]
+    assert renewed["acquired_at"] == before["acquired_at"]
+    v.authority.revoked_call = v.authority.calls + 2
+    with pytest.raises(PermissionError):
+        v.repository.renew_ownership(lease, parent, require_current=v.authority)
+    assert v.stored(lease) == renewed
+
+
+@pytest.mark.parametrize("fault", [None, "parent", "expired", "actor"])
+def test_transaction_fence_rechecks_pg_with_verified_parent_without_reopening_archives(clock_work, monkeypatch, fault):
+    v = clock_work
+    if fault == "expired":
+        monkeypatch.setattr(v.module, "FIXTURE_WORK_LEASE_SECONDS", 1)
+    parent = v.access.require_scope(v.scope)
+    lease = v.repository.acquire(v.scope, "setup", "pinned-transaction-worker", require_current=v.authority)
+    before = v.stored(lease)
+    command = HttpFixtureLifecycleApplicationService._command(v.scope, "setup", ())
+    monkeypatch.setattr(v.access, "require_scope", lambda *_: pytest.fail("journal already verified the complete parent"))
+    if fault == "parent":
+        parent = {**parent, "run_plan_id": "different-plan"}
+    elif fault == "expired":
+        v.pause(1.1)
+    elif fault == "actor":
+        def revoked(*_):
+            raise PermissionError("current project actor revoked")
+        monkeypatch.setattr(v.repository, "_actor_current", revoked)
+    fence = v.repository.fence(lease)
+    with v.module.session_scope() as session:
+        if fault is None:
+            fence.require(session, v.scope, "setup", command, parent=parent)
+        else:
+            error = {"parent": HttpFixtureInvalid, "expired": HttpFixtureWorkLost, "actor": PermissionError}[fault]
+            with pytest.raises(error):
+                fence.require(session, v.scope, "setup", command, parent=parent)
+    assert v.stored(lease) == before
 
 
 @pytest.mark.parametrize("operation", ["acquire", "renew"])

@@ -13,7 +13,7 @@ export const healthRecordIdentity = (command: string) => originalObservationIden
 
 export async function healthCheckResult(check: HealthCheck): Promise<boolean> {
   exactKeys(check, ['role', 'probe', 'container_id', 'image_id', 'started_at', 'response_base64', 'response_hash', 'byte_count'])
-  requireRunPlan(Object.hasOwn(probes, check.role) && check.probe === probes[check.role] && typeof check.response_base64 === 'string'
+  requireRunPlan(Object.hasOwn(probes, check.role) && (check.probe === probes[check.role] || check.role === 'target' && check.probe === 'target_realworld_tags') && typeof check.response_base64 === 'string'
     && check.response_base64.length <= 4 * Math.ceil(16384 / 3) && Number.isInteger(check.byte_count) && check.byte_count > 0 && check.byte_count <= 16384)
   let decoded: string
   try { decoded = atob(check.response_base64) } catch { throw new Error('Invalid original health response bytes') }
@@ -26,6 +26,8 @@ export async function healthCheckResult(check: HealthCheck): Promise<boolean> {
   requireRunPlan(split >= 0 && /^[1-5][0-9]{2}$/.test(body.slice(split + 1)))
   const parsed = strictJson(body.slice(0, split))
   requireRunPlan(parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed))
+  if (check.probe === 'target_realworld_tags') return body.slice(split + 1) === '200'
+    && Array.isArray((parsed as Record<string, unknown>).tags) && ((parsed as Record<string, unknown>).tags as unknown[]).every((tag) => typeof tag === 'string')
   return body.slice(split + 1) === '200' && (parsed as Record<string, unknown>).status === 'UP'
 }
 export async function expectedHealthMetadata(archive: HealthRecordArchive): Promise<HealthRecordMetadata> {
@@ -37,7 +39,7 @@ export async function expectedHealthMetadata(archive: HealthRecordArchive): Prom
     request_hash: await canonicalDigest(archive.request), inventory_hash: archive.observation.inventory_hash,
     health_hash: await canonicalDigest(archive.observation), observed_at: archive.observation.observed_at, status: 'recorded',
     historical_not_live: true, native_artifact_attested: true, isolation_configuration_attested: true, durable_native_observation_verified: true,
-    dependency_health_verified: checks.slice(0, 2).every((check) => check.healthy), target_health_verified: checks[2]?.healthy,
+    dependency_health_verified: checks.slice(0, -1).every((check) => check.healthy), target_health_verified: checks.at(-1)!.healthy,
     health_checks: checks, environment_fully_verified: false, execution_authorized: false, external_egress_denial_verified: false,
     host_access_denial_verified: false, fixtures_verified: false, locators_verified: false, business_coverage_verified: false,
     automated_count: 0, executed_on_target_count: 0, passed_count: 0 }
@@ -48,6 +50,7 @@ export async function verifyHealthRecord(value: unknown, plan: RunPlanArchive, b
   exactKeys(a, ['schema', 'project_id', 'record_id', 'invocation_id', 'actor_id', 'recorded_at', 'request', 'parents', 'observation'])
   exactKeys(a.observation, ['schema', 'inventory', 'inventory_hash', 'checks', 'observed_at'])
   const declaration = plan.artifact.plan.selection.environment, observation = a.observation
+  const python = observation.inventory?.schema === 'nasus.owned-target-environment.v2'
   requireRunPlan(new TextEncoder().encode(JSON.stringify(v)).length <= 256 * 1024
     && a.schema === 'nasus.run-plan-health-record.v1' && a.project_id === p.project_id && a.invocation_id === command
     && a.record_id === recordId && recordId === await healthRecordIdentity(command) && identity(a.actor_id) && utc(a.recorded_at)
@@ -56,7 +59,8 @@ export async function verifyHealthRecord(value: unknown, plan: RunPlanArchive, b
     && generationEqual(a.parents, { plan_digest: p.plan_digest, image_revision_id: p.image_revision_id, manifest_id: p.manifest_id,
       environment_id: declaration.environment_id, operator_policy_digest: declaration.inventory_hash, target_artifact_hash: binding.metadata.target_artifact_hash })
     && observation.schema === 'nasus.owned-target-health.v1' && Array.isArray(observation.checks)
-    && generationEqual(observation.checks.map((check) => check?.role), ['pg', 'redis', 'target']))
+    && generationEqual(observation.checks.map((check) => check?.role), python ? ['pg', 'target'] : ['pg', 'redis', 'target'])
+    && observation.checks.at(-1)?.probe === (python ? 'target_realworld_tags' : 'target_actuator_health'))
   await verifyEnvironmentInventory(observation.inventory, observation.inventory_hash, observation.observed_at)
   const inventory = observation.inventory
   requireRunPlan(inventory.project_id === p.project_id && inventory.environment_id === declaration.environment_id

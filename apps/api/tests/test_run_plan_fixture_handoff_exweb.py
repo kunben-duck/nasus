@@ -1,7 +1,10 @@
 """Actual original exweb/PG/MinIO/Temporal chain; model/business oracles are specimens."""
 import asyncio
 from copy import deepcopy
+import json
+import logging
 import os
+from pathlib import Path
 import shutil
 from uuid import uuid4
 
@@ -14,6 +17,7 @@ from apps.api.app.main import app
 from apps.api.app.application.platform.account_models import UserProfile
 from apps.api.app.application.platform.actor_context import actor_scope
 from apps.api.app.application.quality_loop.automation_script_inputs import ScriptExecutionSelection
+from apps.api.app.application.quality_loop.http_fixture_jobs import HttpFixtureJobTarget
 from apps.api.app.application.quality_loop.run_plan_case_jobs import RunPlanCaseJobTarget
 from apps.api.app.domain.quality_loop.acceptance_specification import acceptance_digest
 from apps.api.app.domain.quality_loop.environment_observation_record import ENVIRONMENT_RECORD_TOOL
@@ -41,6 +45,9 @@ from apps.api.tests.test_semantic_evaluations_api import completed, invoke, conf
 from scripts.exweb_http_fixture_probe import recipe as session_recipe
 
 
+logger = logging.getLogger(__name__)
+
+
 def exweb_script_specimen(prepared):
     output = fixture_script_output(prepared)
     for script in output["scripts"]:
@@ -60,6 +67,9 @@ def confirmed(v, tool, value):
 def test_fixed_exweb_public_v3_original_setup_handoff_uses_pg_minio_and_temporal(native_scripts, tmp_path, monkeypatch):
     import apps.api.app.bootstrap as bootstrap
     v, container = native_scripts, app.state.container
+    report_path = os.getenv("EXWEB_CANONICAL_HANDOFF_REPORT")
+    if report_path:
+        assert not Path(report_path).exists(), "Choose a new validation report path; never overwrite history."
     assert v["real_build"] and len(v["exweb_files"]) == 126
     assert v["exweb_commit"] == "fe5827f6b76f77ef34918d8b452ee823142332dc"
     assert os.environ.get("NASUS_TEST_OBJECT_STORAGE_MODE") == "minio"
@@ -79,12 +89,18 @@ def test_fixed_exweb_public_v3_original_setup_handoff_uses_pg_minio_and_temporal
     deployment = OriginalExwebDeployment(tmp_path / "owned-original-v3-target")
     requests = []
     execute_owned = ConfiguredOwnedTargetHttpRunner.execute_owned_http
+    stage_owned = ConfiguredOwnedTargetHttpRunner.stage_owned_case_http
 
     def actual_request(runner, command, **kwargs):
         requests.append(deepcopy(command))
         return execute_owned(runner, command, **kwargs)
 
+    def actual_case_request(runner, command, **kwargs):
+        requests.append(deepcopy(command))
+        return stage_owned(runner, command, **kwargs)
+
     monkeypatch.setattr(ConfiguredOwnedTargetHttpRunner, "execute_owned_http", actual_request)
+    monkeypatch.setattr(ConfiguredOwnedTargetHttpRunner, "stage_owned_case_http", actual_case_request)
 
     def start_original(built):
         with actor_scope(UserProfile.model_validate(v["owner"])):
@@ -107,7 +123,8 @@ def test_fixed_exweb_public_v3_original_setup_handoff_uses_pg_minio_and_temporal
         assert plan["schema"] == "nasus.run-plan.v3"
         source_pin = plan["selection"]["target_build"]["code_sources"]
         assert len(source_pin) == len(v["code_roots"]) == 1
-        assert len(plan["prepared"]["cases"]) == len(plan["selection"]["fixtures"]) == len(v["fixture_manifests"])
+        assert len(plan["prepared"]["cases"]) == len(plan["selection"]["fixtures"]) == len(v["fixture_manifests"]) == 4
+        logger.info("exweb stage=plan_and_build_bound cases=%d", len(plan["prepared"]["cases"]))
         query = {"project_id": v["project_id"], "run_plan_id": saved["metadata"]["run_plan_id"],
             "run_plan_artifact_hash": saved["metadata"]["artifact_hash"], "build_binding_id": binding_id,
             "build_binding_artifact_hash": binding["metadata"]["artifact_hash"]}
@@ -119,6 +136,7 @@ def test_fixed_exweb_public_v3_original_setup_handoff_uses_pg_minio_and_temporal
         assert locator["summary"]["static_match"] == locator["summary"]["locator_count"] > 0
         assert environment["inventory_hash"] != environment["operator_policy_digest"]
         assert not requests
+        logger.info("exweb stage=environment_and_locators_verified")
         consents = []
         for declaration, recipe in zip(plan["selection"]["fixtures"], v["fixture_manifests"]):
             assert declaration["data_manifest_hash"] == acceptance_digest(recipe)
@@ -131,6 +149,7 @@ def test_fixed_exweb_public_v3_original_setup_handoff_uses_pg_minio_and_temporal
                 "environment_record_id": environment["record_id"], "environment_record_artifact_hash": environment["artifact_hash"]}
             consents.append((declaration["case_id"], consent))
         assert not requests
+        logger.info("exweb stage=fixture_definitions_registered count=%d", len(consents))
         config = TemporalGatewayConfig(address=os.environ["TEST_TEMPORAL_ADDRESS"],
             task_queue="nasus-actual-exweb-v3-" + uuid4().hex)
         fixture_runtime, case_runtime = TemporalHttpFixtureRuntime(config=config), TemporalRunPlanCaseRuntime(config=config)
@@ -140,7 +159,7 @@ def test_fixed_exweb_public_v3_original_setup_handoff_uses_pg_minio_and_temporal
 
         async def verify():
             client = await asyncio.wait_for(Client.connect(config.address, namespace=config.namespace), 10)
-            handles, setups, grants = [], [], []
+            handles, setups, grants, cleanups = [], [], [], []
             async with Worker(client, task_queue=fixture_runtime.task_queue, workflows=[NasusHttpFixtureWorkflow],
                     activities=build_http_fixture_activities()), Worker(client, task_queue=case_runtime.task_queue,
                     workflows=[NasusRunPlanCaseWorkflow], activities=build_run_plan_case_activities()):
@@ -160,6 +179,7 @@ def test_fixed_exweb_public_v3_original_setup_handoff_uses_pg_minio_and_temporal
                         handles.append((fixture_runtime, ident, handle))
                         assert await asyncio.wait_for(handle.result(), 900) == "completed"
                         setups.append({"case_id": case_id, "invocation_id": ident})
+                        logger.info("exweb stage=fixture_setup_completed count=%d total=%d", len(setups), len(consents))
                     assert len(requests) == len(grants) == len(consents)
                     assert all(command.metadata["fixture_phase"] == "setup" for command in requests)
                     selection = {**query, "run_id": "actual-v3-business-" + uuid4().hex,
@@ -199,13 +219,14 @@ def test_fixed_exweb_public_v3_original_setup_handoff_uses_pg_minio_and_temporal
                         assert work is not None and work.scope["schema"] == "nasus.run-plan-case-fixture-scope.v1"
                         assert len(restore_case_scope(work.scope).fixture_input_pins) == len(grants)
                         assert "source_result_body_base64" not in str(work.scope)
+                    logger.info("exweb stage=business_observations_verified count=%d", state["observed_case_count"])
                     replay = await asyncio.to_thread(invoke, v, CASE_EXECUTE_TOOL, selection, key=key)
                     assert replay.status_code == 200 and replay.json()["id"] == ident, replay.text
                     assert await case_runtime.start(ident) is False
                     assert len(requests) == len(grants) * 2
                     for runtime, invocation_id, original in handles:
                         await Replayer(workflows=[NasusHttpFixtureWorkflow, NasusRunPlanCaseWorkflow]).replay_workflow(await original.fetch_history())
-                    for _, consent, _ in grants:
+                    for case_id, consent, _ in grants:
                         metadata = (await asyncio.to_thread(confirmed, v, GRANT_TOOL,
                             {**consent, "operation": "cleanup"}))["result"]["http_fixture_grant"]["metadata"]
                         pending = await asyncio.to_thread(invoke, v, FIXTURE_COMMAND_TOOL,
@@ -218,9 +239,12 @@ def test_fixed_exweb_public_v3_original_setup_handoff_uses_pg_minio_and_temporal
                         cleanup_handle = client.get_workflow_handle("nasus-http-fixture:" + cleanup_id)
                         handles.append((fixture_runtime, cleanup_id, cleanup_handle))
                         assert await asyncio.wait_for(cleanup_handle.result(), 900) == "completed"
+                        cleanups.append((case_id, cleanup_id))
                     assert len(requests) == len(grants) * 3
                     assert await asyncio.to_thread(read_original) == history
                     assert v["original_plan"] == saved
+                    logger.info("exweb stage=fixture_cleanup_verified count=%d", len(grants))
+                    return target, history, len(setups), len(handles), cleanups
                 finally:
                     for runtime, invocation_id, original in handles:
                         await runtime.cancel(invocation_id)
@@ -228,7 +252,44 @@ def test_fixed_exweb_public_v3_original_setup_handoff_uses_pg_minio_and_temporal
                             await asyncio.wait_for(original.result(), 30)
                         except WorkflowFailureError:
                             pass
-        asyncio.run(verify())
+        target, history, setup_count, workflow_count, cleanups = asyncio.run(verify())
     finally:
         cleanup = deployment.close()
         assert cleanup["verified"] is True and cleanup["remaining_owned_resources"] == [], cleanup
+        logger.info("exweb stage=owned_target_cleanup_verified")
+    # History must stay verifiable after the owned environment no longer exists.
+    before = len(requests)
+    cleanup_observations = []
+    with actor_scope(actor):
+        historical = container.run_plan_case_jobs.read(target)
+        for case_id, invocation_id in cleanups:
+            job = container.http_fixture_jobs.read(HttpFixtureJobTarget(project_id=target.project_id,
+                invocation_id=invocation_id))
+            assert job["invocation_id"] == invocation_id and job["status"] == "completed"
+            assert job["selection"]["operation"] == "cleanup" and len(job["phases"]) == 1
+            phase = job["phases"][0]
+            assert phase["phase"].startswith("cleanup:") and phase["state"] == "observed"
+            cleanup_observations.append({"case_id": case_id, "result_status": phase["result_status"],
+                "result_digest": phase["result_digest"]})
+    assert historical == history and len(requests) == before
+    assert len(cleanup_observations) == setup_count
+    logger.info("exweb stage=history_verified_after_cleanup")
+    if report_path:
+        cases = [{"case_id": item["case_id"], "status": item["status"], "observation_digest": item["observation_digest"],
+            "oracles": [{key: oracle[key] for key in ("row_id", "oracle_digest", "status")} for oracle in item["oracles"]],
+            "responses": [{key: receipt[key] for key in ("method", "response_status", "response_hash")}
+                for receipt in item["runner_receipt"]["requests"]]} for item in history["history"]["observations"]]
+        report = {"schema": "nasus.exweb-canonical-handoff-verification.v2",
+            "source_commit": v["exweb_commit"], "source_file_count": len(v["exweb_files"]),
+            "plan_digest": plan["plan_digest"], "plan_artifact_hash": saved["metadata"]["artifact_hash"],
+            "target_artifact_hash": plan["selection"]["target_build"]["artifact_hash"],
+            "environment_inventory_hash": environment["inventory_hash"], "case_count": len(cases), "cases": cases,
+            "fixture_setup_count": setup_count, "fixture_cleanup_count": len(cleanup_observations),
+            "fixture_cleanup_observations": cleanup_observations, "cleanup_history_verified_after_teardown": True,
+            "native_runner_calls": before, "workflow_count": workflow_count,
+            "history_digest": acceptance_digest(historical), "history_verified_after_cleanup": True,
+            "owned_resources_cleanup_verified": True, "independent_business_gold": False,
+            "business_coverage_verified": False, "release_authorized": False}
+        with Path(report_path).open("x", encoding="utf-8") as handle:
+            json.dump(report, handle, indent=2, sort_keys=True)
+            handle.write("\n")

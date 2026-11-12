@@ -1,7 +1,9 @@
 """Actual PG actor locks and read-only transactions; parent is an explicit specimen."""
 from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from datetime import datetime, timezone
+import os
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -9,13 +11,21 @@ import pytest
 from sqlalchemy import delete, event, select, text
 from sqlalchemy.exc import OperationalError
 
+from apps.api.app.application.quality_loop.http_fixture_commands import HttpFixtureCommandAuthority
+from apps.api.app.domain.quality_loop.acceptance_specification import acceptance_digest
+from apps.api.app.domain.quality_loop.http_fixture_command import FIXTURE_CANONICAL_DISPATCH_SCHEMA
+from apps.api.app.domain.quality_loop.http_fixtures import HttpFixtureInvalid
 from apps.api.app.infrastructure.persistence import http_fixture_journal_repository as journals
 from apps.api.app.infrastructure.persistence.database import engine
 from apps.api.app.infrastructure.persistence.db_models import ProjectRoleBindingRecord, UserIdentityRecord
 from apps.api.app.infrastructure.persistence.native_build_repository import NativeBuildRepository
 from apps.api.app.infrastructure.persistence.http_fixture_work_repository import PostgresHttpFixtureWorkRepository
+from apps.api.app.infrastructure.persistence.test_design_scope_repository import TestDesignScopeRepository
 from apps.api.app.infrastructure.persistence.unit_of_work import session_scope
+from apps.api.app.infrastructure.storage.http_fixture_artifacts import HttpFixtureExecutionArtifacts
+from apps.api.app.infrastructure.storage.object_storage import ObjectStorage
 from apps.api.tests.test_http_fixture_journal_access import saved_inputs
+from apps.api.tests.test_http_fixtures import Runner
 
 
 @pytest.fixture
@@ -47,8 +57,10 @@ def actor_journal(monkeypatch):
 
 
 @contextmanager
-def readonly_transactions():
+def readonly_transactions(*, when=None):
     def begin(connection):
+        if when is not None and not when():
+            return
         connection.exec_driver_sql("SET TRANSACTION READ ONLY")
         connection.exec_driver_sql("SET LOCAL lock_timeout = '100ms'")
     event.listen(engine, "begin", begin)
@@ -58,15 +70,34 @@ def readonly_transactions():
         event.remove(engine, "begin", begin)
 
 
-def test_readonly_history_checks_current_actor_without_reacquiring_an_owned_write_lock(actor_journal):
+def test_readonly_guard_applies_only_inside_the_business_query_scope(actor_journal):
+    active = ContextVar("fixture_history_read_scope", default=False)
+    with readonly_transactions(when=active.get):
+        with session_scope() as session:
+            assert session.scalar(text("SHOW transaction_read_only")) == "off"
+        token = active.set(True)
+        try:
+            with session_scope() as session:
+                assert session.scalar(text("SHOW transaction_read_only")) == "on"
+        finally:
+            active.reset(token)
+        with session_scope() as session:
+            assert session.scalar(text("SHOW transaction_read_only")) == "off"
+
+
+@pytest.mark.parametrize("worker", [False, True])
+def test_history_checks_current_actor_without_reacquiring_an_owned_write_lock(actor_journal, worker):
     v = actor_journal
+    if worker:
+        v.journal.work_fence = object()  # Inspection cannot use this write-only fence.
     with session_scope() as writer:
         # Actual account and project-role locks on another PG connection.
+        TestDesignScopeRepository._lock(writer, v.scope.project_id)
         actor = NativeBuildRepository._actor(writer, v.scope.project_id, v.actor_id)
         assert actor.user_id == v.actor_id
         with readonly_transactions():
-            assert v.journal.inspect(v.scope, "setup", read_only=True) is None
-    assert len(v.observed) == 3 and v.observed[0] == v.observed[1] == v.observed[2]
+            assert v.journal.inspect(v.scope, "setup", read_only=not worker) is None
+    assert len(v.observed) == 2 and v.observed[0] == v.observed[1]
 
 
 @pytest.mark.parametrize("revocation", ["actor_disabled", "project_role_revoked", "project_role_downgraded"])
@@ -87,8 +118,9 @@ def test_readonly_history_rechecks_actor_and_role_after_each_transaction(actor_j
         v.journal.inspect(v.scope, "setup", read_only=True)
 
 
+@pytest.mark.parametrize("worker", [False, True])
 @pytest.mark.parametrize("revocation", ["actor_disabled", "project_role_revoked", "project_role_downgraded"])
-def test_readonly_history_rechecks_actor_after_its_original_record_read(actor_journal, monkeypatch, revocation):
+def test_history_rechecks_actor_after_its_original_record_read(actor_journal, monkeypatch, revocation, worker):
     v = actor_journal
 
     @contextmanager
@@ -112,8 +144,137 @@ def test_readonly_history_rechecks_actor_after_its_original_record_read(actor_jo
 
     monkeypatch.setattr(journals, "session_scope", readonly_reader)
     monkeypatch.setattr(v.journal, "_records", records)
+    if worker:
+        v.journal.work_fence = object()
     with pytest.raises(PermissionError):
-        v.journal.inspect(v.scope, "setup", read_only=True)
+        v.journal.inspect(v.scope, "setup", read_only=not worker)
+
+
+@pytest.mark.parametrize("mode,revocation", [
+    (mode, change) for mode in ("setup", "stable_setup", "cleanup")
+    for change in (None, "setup-records", "cleanup-records")
+] + [("cleanup", "late-cleanup-change")])
+def test_fixture_cohort_reads_without_write_locks_and_detects_committed_changes(actor_journal, monkeypatch, mode, revocation):
+    v = actor_journal
+    stable = mode == "stable_setup"
+    authority = HttpFixtureCommandAuthority(invocation_id="setup-cohort-command", request_digest=acceptance_digest("request"))
+    command = v.journal.access.command(v.scope, "setup")
+    wire = Runner().execute_owned_http(command, environment_id=v.scope.environment_id, artifact_hash=v.scope.artifact_hash,
+        inventory_hash=v.scope.inventory_hash, require_work=lambda: None)
+    receipt = v.journal.verifier.verify(command, wire, environment_id=v.scope.environment_id, inventory_hash=v.scope.inventory_hash)
+    phases, archives, original_checks = [], [], []
+
+    def revoke():
+        with session_scope() as writer:
+            role = writer.scalar(select(ProjectRoleBindingRecord).where(ProjectRoleBindingRecord.user_id == v.actor_id))
+            role.status = "revoked"
+
+    def records(_session, _parent, scope, phase, _command):
+        assert scope == v.scope
+        phases.append(phase)
+        if phase == "setup":
+            if revocation == "setup-records":
+                revoke()
+            return {"schema": FIXTURE_CANONICAL_DISPATCH_SCHEMA, "canonical_command": authority.model_dump(mode="json")}, {
+                "receipt_digest": acceptance_digest(receipt), "status": wire.result.status,
+                "artifact_ref": "setup-archive", "artifact_hash": acceptance_digest("wire")}
+        if revocation == "cleanup-records":
+            revoke()
+        if revocation == "late-cleanup-change" and phases.count(phase) == 2:
+            return {"late": "original cleanup changed"}, None
+        return None, None
+
+    @contextmanager
+    def readonly_reader():
+        with session_scope() as session:
+            session.execute(text("SET TRANSACTION READ ONLY"))
+            session.execute(text("SET LOCAL lock_timeout = '100ms'"))
+            yield session
+
+    def current():
+        if revocation == "setup-records":
+            with readonly_reader() as session:
+                NativeBuildRepository._actor(session, v.scope.project_id, v.actor_id, lock=False)
+
+    def read_archive(_parent, _scope, phase, *_args):
+        archives.append(phase)
+        return wire
+
+    monkeypatch.setattr(journals, "session_scope", readonly_reader)
+    monkeypatch.setattr(v.journal, "_records", records)
+    v.journal.artifacts = SimpleNamespace(read=read_archive)
+    v.observed.clear()
+    options = {"verify_original": lambda: original_checks.append(True)} if stable else {}
+    if mode == "cleanup":
+        read = lambda: v.journal.inspect_cleanup_history(v.scope, require_current=current)
+    else:
+        read = lambda: v.journal.inspect_original_setup_cohort(v.scope, original_setup=authority, require_current=current, **options)
+    if revocation == "late-cleanup-change":
+        with pytest.raises(HttpFixtureInvalid, match="original fixture journal changed"):
+            read()
+    elif revocation is not None:
+        with pytest.raises(PermissionError):
+            read()
+    else:
+        with session_scope() as writer:
+            TestDesignScopeRepository._lock(writer, v.scope.project_id)
+            NativeBuildRepository._actor(writer, v.scope.project_id, v.actor_id)
+            result = read()
+        assert result[0][1].execution == wire and result[1] == ("cleanup:session", None)
+    if revocation == "setup-records":
+        assert phases == ["setup"] and not archives and len(v.observed) == 1
+    else:
+        repeated = 2 if mode != "setup" and revocation in (None, "late-cleanup-change") else 1
+        assert phases == ["setup", "cleanup:session"] * repeated and archives == ["setup"] * repeated and len(v.observed) == 2
+    assert original_checks == ([True] if stable and revocation != "setup-records" else [])
+    if mode == "cleanup" and revocation is None:
+        v.observed.clear()
+        archives.clear()
+        original = tuple((phase, v.journal.inspect(v.scope, phase, read_only=True, require_current=current))
+            for phase in ("setup", "cleanup:session"))
+        assert original == result and len(v.observed) == 6 and archives == ["setup", "setup"]
+
+
+@pytest.mark.skipif(os.environ.get("NASUS_TEST_OBJECT_STORAGE_MODE") != "minio", reason="private MinIO is required")
+def test_cleanup_history_replays_exact_minio_archives_and_rejects_corruption(actor_journal, monkeypatch):
+    v = actor_journal
+    storage = ObjectStorage()
+    assert storage.config.bucket.startswith("nasus-test-")
+    artifacts = HttpFixtureExecutionArtifacts(storage)
+    v.journal.artifacts = artifacts
+    parent, setup = v.journal.access.command_with_parent(v.scope, "setup")
+    runner = Runner()
+    def archived(phase, command):
+        execution = runner.execute_owned_http(command, environment_id=v.scope.environment_id,
+            artifact_hash=v.scope.artifact_hash, inventory_hash=v.scope.inventory_hash, require_work=lambda: None)
+        receipt = v.journal.verifier.verify(command, execution, environment_id=v.scope.environment_id,
+            inventory_hash=v.scope.inventory_hash)
+        ref, digest = artifacts.put(parent, v.scope, phase, command, execution)
+        return execution, receipt, {"receipt_digest": acceptance_digest(receipt), "status": execution.result.status,
+            "artifact_ref": ref, "artifact_hash": digest}
+
+    setup_output, receipt, setup_pin = archived("setup", setup)
+    [(phase, cleanup)] = v.journal.access.cleanup_commands_from_receipt(v.scope, receipt)
+    cleanup_output, _, cleanup_pin = archived(phase, cleanup)
+    pins = {"setup": (setup, setup_pin), phase: (cleanup, cleanup_pin)}
+    def records(_session, bound_parent, scope, name, command):
+        assert bound_parent == parent and scope == v.scope and command == pins[name][0]
+        return {"phase": name}, deepcopy(pins[name][1])
+
+    monkeypatch.setattr(v.journal, "_records", records)
+    with readonly_transactions():
+        original = tuple((name, v.journal.inspect(v.scope, name, read_only=True, require_current=lambda: None))
+            for name in ("setup", phase))
+        grouped = v.journal.inspect_cleanup_history(v.scope, require_current=lambda: None)
+    assert original == grouped
+    assert [record.execution for _, record in grouped] == [setup_output, cleanup_output]
+    assert len(runner.commands) == 2
+
+    storage.put_bytes(artifacts._key(v.scope.project_id, cleanup_pin["artifact_hash"]), b"damaged test archive",
+        content_type="application/json")
+    with readonly_transactions(), pytest.raises(HttpFixtureInvalid, match="cannot be verified"):
+        v.journal.inspect_cleanup_history(v.scope, require_current=lambda: None)
+    assert len(runner.commands) == 2
 
 
 @pytest.mark.parametrize("revocation", ["actor_disabled", "project_role_revoked",

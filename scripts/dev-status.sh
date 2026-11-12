@@ -32,3 +32,30 @@ PY
 else
   echo "api readiness: unavailable"
 fi
+
+if ! "$ROOT_DIR/.venv/bin/python" - "$ROOT_DIR" 2>/dev/null <<'PY'; then
+import os
+from pathlib import Path
+import sys
+
+from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from sqlalchemy import create_engine
+
+migrations = Path(sys.argv[1]) / "apps/api/migrations"
+expected = tuple(sorted(ScriptDirectory(str(migrations)).get_heads()))
+engine = create_engine(os.environ["NASUS_DATABASE_URL"], connect_args={
+    "connect_timeout": 3,
+    "options": "-c default_transaction_read_only=on -c statement_timeout=3000",
+})
+with engine.connect() as connection:
+    current = tuple(sorted(MigrationContext.configure(connection).get_current_heads()))
+if current == expected:
+    print(f"database_schema: current ({', '.join(current)})")
+else:
+    actual = ', '.join(current) or 'uninitialized'
+    print(f"database_schema: mismatch ({actual}; expected {', '.join(expected)})")
+    print("Restart via npm run dev:down and npm run dev:up to apply development migrations.")
+PY
+  echo "database_schema: unavailable"
+fi

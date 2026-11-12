@@ -92,6 +92,30 @@ def test_history_after_expiry_is_read_only_and_does_not_renew_consent(native_gra
     assert len(calls) == 1 and v.state["live"] == 0
 
 
+def test_resolved_history_still_rejects_revocation_after_the_original_journal_read(native_grant, monkeypatch):
+    v = native_grant
+    original = v.service.execution_inputs(selection(v), live=False)
+    revoked = False
+
+    def current():
+        if revoked:
+            raise SourceAccessDenied("source revoked before returning evidence")
+
+    def history(inputs, *, require_current):
+        nonlocal revoked
+        assert inputs is original
+        require_current()
+        revoked = True
+        return (("setup", None),)
+
+    monkeypatch.setattr(v.service, "execution_inputs", lambda *args, **kwargs: pytest.fail("no second grant read"))
+    app = HttpFixtureExecutionApplicationService(v.service, SimpleNamespace(history=history))
+    with pytest.raises(HttpFixtureInvalid, match="exact resolved original inputs"):
+        app.read_resolved_history({"grant_id": "caller-selected"}, require_current=current)
+    with pytest.raises(SourceAccessDenied, match="revoked"):
+        app.read_resolved_history(original, require_current=current)
+
+
 @pytest.mark.parametrize("field,value", [("parent_digest", acceptance_digest("another-parent")),
     ("inventory_hash", acceptance_digest("another-instance")), ("case_id", "another-case")])
 def test_resolved_inputs_cannot_be_rebound_to_a_new_scope(native_grant, field, value):

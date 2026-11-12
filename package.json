@@ -24,6 +24,9 @@
     "verify:code-graph-provider": "scripts/verify-code-graph-provider.sh",
     "verify:production-compose": "scripts/verify-production-compose.sh",
     "verify:release-hygiene": "scripts/verify-release-hygiene.sh",
+    "verify:exweb": "bash -c 'source scripts/dev-runtime-env.sh && exec ./.venv/bin/python scripts/verify-exweb-canonical.py \"$@\"' --",
+    "verify:realworld-loop": "./.venv/bin/python scripts/verify-realworld-loop.py",
+    "verify:realworld-m1": "bash scripts/verify-realworld-m1.sh",
     "verify:v1-release": "scripts/verify-v1-release.sh"
   },
   "devDependencies": {

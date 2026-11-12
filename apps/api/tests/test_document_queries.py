@@ -50,7 +50,7 @@ def test_frozen_component_query_cannot_read_a_parent_outside_membership(parent_s
     authorization = SimpleNamespace(scope=lambda project: None, require_current=lambda scope: None)
     service = ImageRevisionQueryApplicationService(None, None, authorization,
         documents=SimpleNamespace(read=lambda *args, **kwargs: page))
-    monkeypatch.setattr(service, "_verified_payload", lambda *args: (None,
+    monkeypatch.setattr(service, "_verified_payload", lambda *args, copy_payload=True: (None,
         {"members": [member, parent] if parent_source else [member]}))
     with pytest.raises(ImageRevisionIntegrityError, match="parent is outside"):
         service.read_document("project", "image", "component")

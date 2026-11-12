@@ -89,29 +89,47 @@ class HttpFixtureJobRepository(HttpFixtureCommandRepository, HttpFixtureHistoryR
             selection, authority = self._selection(command), self._authority(command)
             return selection, command.status, authority
 
-    def execution(self, invocation_id):
+    def execution(self, invocation_id, *, historical=False):
         with session_scope() as session:
             command = session.get(ToolInvocationRecord, invocation_id)
             self._original(session, command)
             selection, authority = self._selection(command), self._authority(command)
             actor_id = command.input_payload.get("confirmed_actor_id")
-            self._canonical(session, authority, selection, actor_id)
+            self._canonical(session, authority, selection, actor_id, historical=historical)
             PostgresHttpFixtureWorkRepository._actor_current(session, selection.project_id, actor_id)
             actor = session.get(UserIdentityRecord, actor_id)
             return selection, UserProfile(id=actor.user_id, name=actor.display_name, email=actor.email, role=actor.role), authority
 
     def require_running(self, selection, authority, actor_id):
+        self._require_running(selection, authority, actor_id, archive_only=False)
+
+    def require_archived_completion(self, selection, authority, actor_id):
+        self._require_running(selection, authority, actor_id, archive_only=True)
+
+    def has_archived_result(self, authority):
+        # This index lookup is only a hint. Recovery independently verifies the
+        # exact command, all native bytes and every required phase before commit.
+        with session_scope() as session:
+            return session.scalar(select(Result.claim_id).join(Binding, Result.claim_id == Binding.claim_id)
+                .where(Binding.invocation_id == authority.invocation_id).limit(1)) is not None
+
+    def _require_running(self, selection, authority, actor_id, *, archive_only):
         with session_scope() as session:
             # Callbacks can run while the journal owns the original command lock.
             # Validate a read snapshot, never lock it on a second connection.
             command, confirmed = self._canonical(session, authority, selection, actor_id, historical=True)
-            self._original(session, command)
-            now = session.scalar(select(func.clock_timestamp()))
-            if command.status != "running" or not 0 <= (now - confirmed).total_seconds() <= 900:
-                raise HttpFixtureInvalid("fixture job is no longer running with fresh original confirmation")
+            _, intent = self._original(session, command)
+            if command.status != "running":
+                raise HttpFixtureInvalid("fixture job is no longer running")
+            if archive_only:
+                if intent is None:
+                    raise HttpFixtureInvalid("fixture recovery needs its original bound command")
+            else:
+                now = session.scalar(select(func.clock_timestamp()))
+                if not 0 <= (now - confirmed).total_seconds() <= 900:
+                    raise HttpFixtureInvalid("fixture job no longer has fresh original confirmation")
             PostgresHttpFixtureWorkRepository._actor_current(session, selection.project_id, actor_id)
-            row = session.get(Intent, authority.invocation_id)
-            if row is not None and self._verify(session, row)["request_digest"] != authority.request_digest:
+            if intent is not None and intent["request_digest"] != authority.request_digest:
                 raise HttpFixtureInvalid("fixture job lost its original intent")
 
     @classmethod

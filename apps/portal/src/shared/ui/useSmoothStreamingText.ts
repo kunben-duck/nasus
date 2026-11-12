@@ -10,10 +10,11 @@ function charactersPerFrame(remaining: number) {
 }
 
 export function useSmoothStreamingText(content: string, streaming: boolean) {
-  const [visibleText, setVisibleText] = useState(streaming ? '' : content)
-  const [animating, setAnimating] = useState(streaming && content.length > 0)
+  // Persisted content is the initial baseline; only later live additions animate.
+  const [visibleText, setVisibleText] = useState(content)
+  const [animating, setAnimating] = useState(false)
   const targetCharactersRef = useRef(Array.from(content))
-  const visibleCharactersRef = useRef(Array.from(streaming ? '' : content))
+  const visibleCharactersRef = useRef(Array.from(content))
   const streamingRef = useRef(streaming)
   const shouldAnimateRef = useRef(streaming)
   const frameRef = useRef<number | null>(null)

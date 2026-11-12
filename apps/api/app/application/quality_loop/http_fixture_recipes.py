@@ -30,7 +30,7 @@ class HttpFixtureRecipeRequest(GenerationValue):
 
 class HttpFixtureRecipeRepositoryPort(Protocol):
     def committed(self, request, *, actor_id, invocation_id, require_access): ...
-    def record(self, request, payload, ref, metadata, *, require_access): ...
+    def record(self, request, payload, ref, metadata, *, require_access, verify_archive): ...
     def read(self, project_id, record_id): ...
 
 
@@ -54,12 +54,17 @@ class HttpFixtureRecipeApplicationService:
 
     def _inputs(self, request):
         saved = self.plans.read(request.project_id, request.run_plan_id)
-        if (saved["metadata"]["project_id"] != request.project_id
-                or saved["metadata"]["run_plan_id"] != request.run_plan_id
-                or saved["metadata"]["artifact_hash"] != request.run_plan_artifact_hash):
+        self._require_parent(request, saved)
+        return saved
+
+    @staticmethod
+    def _require_parent(request, saved):
+        metadata = saved.get("metadata") if type(saved) is dict else None
+        if (type(metadata) is not dict or metadata.get("project_id") != request.project_id
+                or metadata.get("run_plan_id") != request.run_plan_id
+                or metadata.get("artifact_hash") != request.run_plan_artifact_hash):
             raise RunPlanIntegrityError("fixture recipe references a different saved RunPlan")
         bind_run_plan_fixture(saved["artifact"]["plan"], request.manifest)
-        return saved
 
     def record(self, request: HttpFixtureRecipeRequest, *, invocation_id, recorded_at):
         request = HttpFixtureRecipeRequest.model_validate(request.model_dump(mode="json"))
@@ -70,9 +75,13 @@ class HttpFixtureRecipeApplicationService:
             prior = self.repository.committed(request, actor_id=access.actor_id, invocation_id=invocation_id,
                 require_access=current)
             if prior is not None:
-                view = self._read(request.project_id, prior["record_id"])
+                original_access, stored, original_request = self._registered_read(request.project_id, prior["record_id"])
+                if original_request != request:
+                    raise RunPlanIntegrityError("fixture recipe replay cannot rebind its request")
+                view = self._verified_archive(original_access, stored, original_request, saved)
                 if acceptance_digest(view["metadata"]) != acceptance_digest(prior):
                     raise RunPlanIntegrityError("fixture recipe replay cannot replace original history")
+                current()
                 return prior
             plan = saved["artifact"]["plan"]
             binding = bind_run_plan_fixture(plan, request.manifest)
@@ -88,6 +97,7 @@ class HttpFixtureRecipeApplicationService:
                 raise RunPlanIntegrityError("fixture recipe archive write differs")
 
             def verify_before_commit():
+                current()
                 original = self.artifacts.read(request.project_id, ref, digest)
                 if (acceptance_digest(original) != acceptance_digest(payload)
                         or acceptance_digest(validate_recipe_archive(original, payload["request"], self._inputs(request)))
@@ -95,23 +105,31 @@ class HttpFixtureRecipeApplicationService:
                     raise RunPlanIntegrityError("fixture recipe original changed before commit")
                 current()
 
-            result = self.repository.record(request, payload, ref, metadata, require_access=verify_before_commit)
+            result = self.repository.record(request, payload, ref, metadata, require_access=current,
+                verify_archive=verify_before_commit)
             current()
             return result
 
-    def _read_with_plan(self, project_id, record_id):
+    def _registered_read(self, project_id, record_id):
         access = self._access(project_id)
         stored = self.repository.read(project_id, record_id)
         request = HttpFixtureRecipeRequest.model_validate(stored["request"])
         if request.project_id != project_id or stored["metadata"]["record_id"] != record_id:
             raise RunPlanIntegrityError("fixture recipe history scope differs")
-        saved = self._inputs(request)
+        return access, stored, request
+
+    def _verified_archive(self, access, stored, request, saved):
         self.authorization.require_current(access)
-        archive = self.artifacts.read(project_id, stored["artifact_ref"], stored["metadata"]["artifact_hash"])
+        archive = self.artifacts.read(request.project_id, stored["artifact_ref"], stored["metadata"]["artifact_hash"])
         if acceptance_digest(validate_recipe_archive(archive, stored["request"], saved)) != acceptance_digest(stored["metadata"]):
             raise RunPlanIntegrityError("fixture recipe metadata differs from original private bytes")
         self.authorization.require_current(access)
-        return {"metadata": deepcopy(stored["metadata"]), "archive": archive, "historical_not_live": True}, saved
+        return {"metadata": deepcopy(stored["metadata"]), "archive": archive, "historical_not_live": True}
+
+    def _read_with_plan(self, project_id, record_id):
+        access, stored, request = self._registered_read(project_id, record_id)
+        saved = self._inputs(request)
+        return self._verified_archive(access, stored, request, saved), saved
 
     def _read(self, project_id, record_id):
         return self._read_with_plan(project_id, record_id)[0]
@@ -124,6 +142,18 @@ class HttpFixtureRecipeApplicationService:
         """Return the exact fully verified parent from this read, never a cached head."""
         with self._session():
             return self._read_with_plan(project_id, record_id)
+
+    def read_with_native_environment(self, project_id, record_id, environment_id, *, environment_records):
+        """Verify both archives against one original plan, within this read only."""
+        with self._session():
+            access, stored, request = self._registered_read(project_id, record_id)
+            pair = environment_records.read_with_plan(project_id, environment_id)
+            if type(pair) is not tuple or len(pair) != 2 or type(pair[0]) is not dict:
+                raise RunPlanIntegrityError("fixture recipe requires a complete verified environment and parent")
+            environment, saved = pair
+            self._require_parent(request, saved)
+            recipe = self._verified_archive(access, stored, request, saved)
+            return recipe, saved, environment
 
     def receipt(self, project_id, record_id):
         return {"metadata": self.read(project_id, record_id)["metadata"], "historical_not_live": True}

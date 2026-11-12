@@ -6,6 +6,7 @@ from .native_build_execution import execute_native_build
 from .native_build_inputs import NativeBuildSelection, NativeBuildCommand, NativeBuildTarget, NativeBuildOutcomeUnknown
 from .native_build_ports import NativeBuildPort, NativeBuildArtifactPort
 from ...domain.quality_loop.native_build import NativeBuildRequest, build_receipt
+from ...domain.quality_loop.build_profiles import JAVA_BUILD, artifact_profile
 from ...domain.system_image.source_snapshots import snapshot_digest
 from ...domain.system_image.source_access import SourceAccessDenied
 
@@ -35,13 +36,20 @@ class NativeBuildApplicationService:
     def _request(self, selection):
         source = self.sources.read(**{key: getattr(selection, key) for key in
             ("project_id", "image_revision_id", "image_artifact_hash", "binding_id", "source_revision_id")})
-        return NativeBuildRequest(source, selection.artifact_path, selection.expected_artifact_hash)
+        return NativeBuildRequest(source, selection.artifact_path, selection.expected_artifact_hash,
+            artifact_profile(selection.artifact_path).adapter)
+
+    def _selected_builder(self, request):
+        if request.adapter == JAVA_BUILD:
+            return self.builder
+        return self.builder.for_adapter(request.adapter)
 
     def preview(self, selection: NativeBuildSelection):
         selection = NativeBuildSelection.model_validate(selection.model_dump(mode="json"))
         access = self._access(selection.project_id, execute=True)
         access.require_binding(selection.binding_id)
-        request, policy = self._request(selection), self.builder.policy()
+        request = self._request(selection)
+        policy = self._selected_builder(request).policy()
         self.authorization.require_current(access)
         command = NativeBuildCommand(**selection.model_dump(mode="json"), request_digest=request.digest,
             operator_policy_digest=snapshot_digest(policy), source_scope_digest=access.fingerprint)
@@ -85,7 +93,8 @@ class NativeBuildApplicationService:
         if prior["reservation"] is not None:
             raise NativeBuildOutcomeUnknown("native build was reserved without a committed result; never automatically rebuild")
         request = await asyncio.to_thread(self._request, command.selection())
-        policy = await asyncio.to_thread(self.builder.policy)
+        builder = self._selected_builder(request)
+        policy = await asyncio.to_thread(builder.policy)
         request_digest = await asyncio.to_thread(lambda: request.digest)
         if (request_digest != command.request_digest or snapshot_digest(policy) != command.operator_policy_digest
                 or access.fingerprint != command.source_scope_digest):
@@ -94,7 +103,7 @@ class NativeBuildApplicationService:
         def current():
             require_work()
             self.authorization.require_current(access)
-            if snapshot_digest(self.builder.policy()) != command.operator_policy_digest:
+            if snapshot_digest(builder.policy()) != command.operator_policy_digest:
                 raise ValueError("native build operator policy changed")
 
         source_pin = await asyncio.to_thread(request.source.metadata)
@@ -103,7 +112,7 @@ class NativeBuildApplicationService:
         # Source, policy and lease ports perform synchronous I/O. Keep their
         # guards off the event loop so renewal and cancellation remain runnable.
         await asyncio.to_thread(current)
-        output = await execute_native_build(self.builder, request, require_work=current)
+        output = await execute_native_build(builder, request, require_work=current)
         if output.toolchain["image_id"] != policy["image_id"]:
             raise ValueError("native builder differs from the confirmed toolchain")
         receipt = await asyncio.to_thread(build_receipt, request, output)

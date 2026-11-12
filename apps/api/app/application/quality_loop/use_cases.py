@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Callable, Optional
 
 from .asset_packs import QualityAssetPackApplicationService
 from .asset_progress import QualityAssetProgressApplicationService
@@ -46,6 +47,7 @@ class QualityLoopApplicationService:
         quality_image_updates: QualityImageUpdateApplicationService,
         quality_steps: QualityStepCompletionApplicationService,
         max_healing_depth: int = 2,
+        legacy_write_guard: Optional[Callable[[str, str, Optional[str]], None]] = None,
     ) -> None:
         self.read_model_refresh = read_model_refresh
         self.context_queries = context_queries
@@ -59,12 +61,24 @@ class QualityLoopApplicationService:
         self.quality_image_updates = quality_image_updates
         self.run_execution = run_execution
         self.quality_steps = quality_steps
+        self.legacy_write_guard = legacy_write_guard
+
+    def _require_legacy_write(self, invocation, project_id, us_id):
+        if self.legacy_write_guard is None:
+            return
+        try:
+            self.legacy_write_guard(project_id, us_id, invocation.input_payload.get("version_id"))
+        except (ValueError, KeyError, PermissionError) as exc:
+            raise QualityLoopApplicationError(
+                str(exc), next_tools=["query.quality.requirements"],
+            ) from exc
 
     def refresh_asset_pack(self, invocation: ToolInvocation) -> QualityLoopUseCaseResult | None:
         scope = self.resolve_scope(invocation)
         if scope is None:
             return None
         project_id, us_id = scope
+        self._require_legacy_write(invocation, project_id, us_id)
         self.asset_progress.ensure_asset_lanes(project_id, us_id)
         pack, pack_refs = self.asset_packs.refresh_pack(project_id, us_id)
         summary = f"Refreshed QualityAssetPack {pack.id if pack else 'current'}."
@@ -83,6 +97,7 @@ class QualityLoopApplicationService:
         if scope is None:
             return None
         project_id, us_id = scope
+        self._require_legacy_write(invocation, project_id, us_id)
         query_keys = self.query_keys_for(invocation, project_id, us_id)
         outcome = self.run_execution.execute_automation(
             project_id,
@@ -110,6 +125,7 @@ class QualityLoopApplicationService:
                 next_tools=["run.progress.get", "us.status.get"],
             )
         project_id, us_id, source_run = scope
+        self._require_legacy_write(invocation, project_id, us_id)
         query_keys = self.query_keys_for(invocation, project_id, us_id)
         query_keys.append(["run", project_id, source_run.id])
         outcome = self.run_execution.retry_automation(
@@ -224,6 +240,7 @@ class QualityLoopApplicationService:
         if scope is None:
             return None
         project_id, us_id = scope
+        self._require_legacy_write(invocation, project_id, us_id)
         release = self.release_readiness.upsert_release_readiness(project_id, us_id)
         self.read_model_refresh.refresh_project(project_id)
         summary = (
@@ -256,6 +273,7 @@ class QualityLoopApplicationService:
             )
 
         project_id, us_id, run = scope
+        self._require_legacy_write(invocation, project_id, us_id)
         query_keys = self.query_keys_for(invocation, project_id, us_id)
         query_keys.append(["run", project_id, run.id])
         report = self.failure_reports.upsert_failure_report(
@@ -288,6 +306,9 @@ class QualityLoopApplicationService:
         )
 
     async def complete_quality_step(self, invocation: ToolInvocation, *, step: str) -> QualityLoopUseCaseResult | None:
+        scope = self.resolve_scope(invocation)
+        if scope is not None:
+            self._require_legacy_write(invocation, *scope)
         return await self.quality_steps.complete_quality_step(invocation, step=step)
 
     @staticmethod

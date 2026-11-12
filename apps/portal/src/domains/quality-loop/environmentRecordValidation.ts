@@ -42,22 +42,24 @@ export async function originalObservationIdentity(command: string, prefix: 'nasu
   return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-')
 }
 export async function verifyEnvironmentInventory(value: EnvironmentInventory, hash: string, time: string) {
+  const python = value?.schema === 'nasus.owned-target-environment.v2' && value.profile === 'nasus.python312-django-pg.v1'
+  const roles = python ? ['pg'] : ['pg', 'redis']
   exactKeys(value, ['schema', 'project_id', 'environment_id', 'operator_policy_digest', 'artifact_hash', 'target', 'dependency_instances',
-    'network_id', 'namespace_origin', 'native_artifact_attested', 'isolation_attested', ...inventoryFalseFields, ...environmentZeroCounts])
-  requireRunPlan(value.schema === 'nasus.owned-target-environment.v1' && identity(value.project_id) && identity(value.environment_id)
+    'network_id', 'namespace_origin', 'native_artifact_attested', 'isolation_attested', ...inventoryFalseFields, ...environmentZeroCounts, ...(python ? ['profile'] : [])])
+  requireRunPlan((value.schema === 'nasus.owned-target-environment.v1' || python) && identity(value.project_id) && identity(value.environment_id)
     && generationDigest(value.operator_policy_digest) && generationDigest(value.artifact_hash) && value.namespace_origin === 'http://127.0.0.1:8080'
     && value.native_artifact_attested === true && value.isolation_attested === true
     && inventoryFalseFields.every((key) => (value as unknown as Record<string, unknown>)[key] === false)
     && environmentZeroCounts.every((key) => value[key] === 0) && /^[0-9a-f]{64}$/.test(value.network_id) && utc(time)
-    && Array.isArray(value.dependency_instances) && value.dependency_instances.length === 2)
+    && Array.isArray(value.dependency_instances) && value.dependency_instances.length === roles.length)
   exactKeys(value.target, ['container_id', 'image_id', 'started_at', 'user'])
   for (const item of value.dependency_instances) exactKeys(item, ['container_id', 'image_id', 'started_at', 'user', 'role'])
   const instances = [value.target, ...value.dependency_instances]
-  requireRunPlan(value.target.user === '65534:65534' && generationEqual(value.dependency_instances.map((v) => v.role).sort(), ['pg', 'redis'])
+  requireRunPlan(value.target.user === '65534:65534' && generationEqual(value.dependency_instances.map((v) => v.role).sort(), roles)
     && instances.every((v) => typeof v.container_id === 'string' && /^[0-9a-f]{64}$/.test(v.container_id) && generationDigest(v.image_id)
       && typeof v.started_at === 'string' && v.started_at.length > 0 && v.started_at.length <= 64
       && typeof v.user === 'string' && /^[1-9][0-9]{0,4}:[1-9][0-9]{0,4}$/.test(v.user) && v.user.split(':').every((part) => Number(part) <= 65535))
-    && new Set(instances.map((v) => v.container_id)).size === 3 && instances.every((v) => v.container_id !== value.network_id)
+    && new Set(instances.map((v) => v.container_id)).size === roles.length + 1 && instances.every((v) => v.container_id !== value.network_id)
     && await canonicalDigest(value) === hash)
 }
 export async function expectedEnvironmentMetadata(archive: EnvironmentRecordArchive): Promise<EnvironmentRecordMetadata> {

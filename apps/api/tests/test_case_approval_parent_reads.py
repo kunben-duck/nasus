@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from apps.api.app.application.quality_loop.automation_script_inputs import ScriptExecutionRequest, ScriptExecutionSelection
+from apps.api.app.application.quality_loop.case_approvals import CaseApprovalReviewInput
 from apps.api.app.domain.quality_loop.acceptance_specification import acceptance_digest
 from apps.api.app.domain.quality_loop.case_approval import CaseApprovalIntegrityError
 from apps.api.app.domain.system_image.source_access import SourceAccessDenied
@@ -26,6 +27,18 @@ def test_parent_read_returns_complete_verified_inputs_without_changing_public_re
     historical["cases"].clear()
     current["required_constraints"].clear()
     assert service.read_with_inputs(request.project_id, row["revision_id"]) == (public, state.prepared, state.prepared)
+
+
+def test_archive_replay_checks_history_and_access_without_preparing_live_inputs():
+    service, request, state = admission_ports()
+    row = approve(service, request)
+    state.calls.clear()
+    value, prepared = service.replay_inputs(request.project_id, row["revision_id"])
+    assert value == {"revision": row, "basis": state.archives[row["revision_id"]]["basis"]}
+    assert prepared == state.prepared and state.calls == ["historical"]
+    state.accessible = False
+    with pytest.raises(SourceAccessDenied):
+        service.replay_inputs(request.project_id, row["revision_id"])
 
 
 @pytest.mark.parametrize("changed", ["mapping", "withdrawal", "input_pin"])
@@ -84,14 +97,15 @@ def test_parent_read_rechecks_access_after_live_input_verification():
         service.read_with_inputs(request.project_id, row["revision_id"])
 
 
-def test_parent_read_rejects_a_corrupt_unselected_predecessor():
+@pytest.mark.parametrize("reader", ["replay_inputs", "read_with_inputs"])
+def test_parent_read_rejects_a_corrupt_unselected_predecessor(reader):
     service, request, state = admission_ports()
     row = approve(service, request)
     withdrawn = service.review(request.model_copy(update={"decision": "withdraw", "expected_previous_revision_id": row["revision_id"]}),
         invocation_id="withdraw-original", recorded_at="2026-10-13T00:01:00+00:00")
     state.archives[row["revision_id"]]["request"]["reason"] = "Changed original approval"
     with pytest.raises(CaseApprovalIntegrityError):
-        service.read_with_inputs(request.project_id, withdrawn["revision_id"])
+        getattr(service, reader)(request.project_id, withdrawn["revision_id"])
 
 
 def saved_script():
@@ -121,13 +135,13 @@ def test_script_reads_reuse_parents_and_preserve_the_complete_legacy_port_respon
     service.inputs = SimpleNamespace(prepare=no_duplicate_input, replay=no_duplicate_input)
     value = service.read(selected.project_id, result["script_revision_id"])
     assert value == control and value["result"]["prepared"] == prepared
-    assert state.calls == ["historical", "current", "historical", "current"]
+    assert state.calls == ["historical", "historical", "current"]
     assert deps["provider"].calls == 1 and value["current_use"]["execution_authorized"] is False
 
 
-@pytest.mark.parametrize("changed", ["mapping", "access"])
+@pytest.mark.parametrize("changed", ["mapping", "access", "withdrawal"])
 def test_script_parent_reuse_does_not_borrow_authority_across_native_archive_reads(changed):
-    service, selected, deps, _, _, state, result = saved_script()
+    service, selected, deps, _, admissions, state, result = saved_script()
     original = service.read(selected.project_id, result["script_revision_id"])
     reader = service.replies.read
 
@@ -135,8 +149,13 @@ def test_script_parent_reuse_does_not_borrow_authority_across_native_archive_rea
         value = reader(*args)
         if changed == "mapping":
             state.current = False
-        else:
+        elif changed == "access":
             state.accessible = False
+        else:
+            ident = selected.case_approval_revision_id
+            request = CaseApprovalReviewInput.model_validate(state.archives[ident]["request"])
+            admissions.review(request.model_copy(update={"decision": "withdraw", "expected_previous_revision_id": ident}),
+                invocation_id="withdraw-during-script-read", recorded_at="2026-10-13T00:01:00+00:00")
         return value
 
     service.replies.read = change_authority
@@ -154,19 +173,11 @@ def test_script_parent_reuse_does_not_borrow_authority_across_native_archive_rea
 def test_script_parent_port_cannot_substitute_complete_inputs_or_admission(fault):
     service, selected, deps, _, admissions, _, result = saved_script()
     reader = admissions.read_with_inputs
-    calls = []
+    replay = admissions.replay_inputs
 
-    def substitute(*args):
-        value, historical, current = deepcopy(reader(*args))
-        calls.append(1)
-        if fault in {"missing_live", "live_basis"}:
-            if len(calls) == 2:
-                if fault == "missing_live":
-                    current = None
-                else:
-                    current["cases"][0]["steps"][0] = "Substituted original step"
-                    current["input_digest"] = acceptance_digest({key: item for key, item in current.items() if key != "input_digest"})
-        elif fault == "project":
+    def substitute_historical(*args):
+        value, historical = deepcopy(replay(*args))
+        if fault == "project":
             historical["project_id"] = "other"
         elif fault == "mapping":
             historical["mapping_pin"]["revision_id"] = "other"
@@ -179,9 +190,21 @@ def test_script_parent_port_cannot_substitute_complete_inputs_or_admission(fault
         else:
             historical["obligations"][0]["oracle"]["expected_result"] = "Substituted expected behavior"
             historical["input_digest"] = acceptance_digest({key: item for key, item in historical.items() if key != "input_digest"})
+        return value, historical
+
+    def substitute_current(*args):
+        value, historical, current = deepcopy(reader(*args))
+        if fault == "missing_live":
+            current = None
+        else:
+            current["cases"][0]["steps"][0] = "Substituted original step"
+            current["input_digest"] = acceptance_digest({key: item for key, item in current.items() if key != "input_digest"})
         return value, historical, current
 
-    admissions.read_with_inputs = substitute
+    if fault in {"missing_live", "live_basis"}:
+        admissions.read_with_inputs = substitute_current
+    else:
+        admissions.replay_inputs = substitute_historical
     with pytest.raises(ValueError):
         service.read(selected.project_id, result["script_revision_id"])
     assert deps["provider"].calls == 1

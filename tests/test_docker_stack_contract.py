@@ -157,6 +157,14 @@ def test_docker_stack_verifier_checks_runtime_contracts():
     assert "system_image.sources.ingest" in script
     assert "system_image.context.materialize" in script
     assert "system_image.baseline.initialize" in script
+    assert 'clarification.get("missing_context") == ["build_request"]' in script
+    assert 'trace_by_tool["system_image.build.plan"]["input_payload"]["source_manifest_id"] == manifest_id' in script
+    assert '"system_image.build.authorize": "waiting_confirmation"' in script
+    assert 'resumed_goal["pause_reason"] == "structural_candidate_review"' in script
+    assert 'built["execution_authorizations"][0]["publication_allowed"] is False' in script
+    assert 'not {"implements", "impacts", "covers", "validates"}.intersection(relationship_types)' in script
+    assert "structure_candidate.json" in script
+    assert 'completed_goal["workflow_id"] == recovery["workflow_id"]' in script
     assert 'readiness["checks"]["code_intelligence"]["details"]["backend"] == "tree-sitter"' in script
     assert '{"CodeClass", "CodeMethod", "USWorkItem", "TestCase"}.issubset(object_types)' in script
     assert "quality.scenario.generate" in script
@@ -184,7 +192,7 @@ def test_v1_release_verifier_composes_required_gates():
     assert "npm run build:portal" in script
     assert "npm run test:runner" in script
     assert "npm run verify:production-compose" in script
-    assert '"$ROOT_DIR/scripts/test-api-postgres.py" --minio apps/api/tests tests/test_docker_stack_contract.py tests/test_ddd_boundaries.py tests/test_isolated_test_storage.py tests/test_release_gate_environment.py -q' in script
+    assert 'run_step "Run backend unit and contract tests" run_backend_gate' in script
     for key in ("ENDPOINT", "ACCESS_KEY", "SECRET_KEY"):
         assert f'export NASUS_TEST_S3_{key}="${{NASUS_TEST_S3_{key}:-$NASUS_S3_{key}}}"' in script
     assert 'source "$ROOT_DIR/scripts/dev-runtime-env.sh"' in script

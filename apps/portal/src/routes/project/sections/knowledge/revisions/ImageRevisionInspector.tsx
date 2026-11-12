@@ -6,11 +6,11 @@ import '../analysis/analysis-inspector.css'
 import './image-revisions.css'
 import type { ImageBaselineOption } from '../../../../../domains/system-image/types/baseline'
 import type { BuildReviewHandoff } from '../../../../../domains/system-image/buildReviewHandoff'
-import { ImageRevisionData } from './ImageRevisionData'
+import { ImageRevisionData, type ImageRevisionPin } from './ImageRevisionData'
 import { BuildCompletionPanel } from './BuildCompletionPanel'
 
-export function ImageRevisionInspector({ projectId, close, baselines, review, reloadReview }: {
-  projectId: string; close: () => void; baselines: ImageBaselineOption[]; review?: BuildReviewHandoff; reloadReview?: () => void
+export function ImageRevisionInspector({ projectId, close, baselines, review, reloadReview, pinnedImage }: {
+  projectId: string; close: () => void; baselines: ImageBaselineOption[]; review?: BuildReviewHandoff; reloadReview?: () => void; pinnedImage?: ImageRevisionPin
 }) {
   const { t, tx } = useI18n()
   const titleId = useId()
@@ -50,7 +50,9 @@ export function ImageRevisionInspector({ projectId, close, baselines, review, re
           </div>
           <ImageRevisionData scope={{ projectId, sessionId: `${titleId}:${generation}`, onFailure: setFailed }}
             revisionId={review.image.image_revision_id} baselines={baselines} expectedPin={review.image} />
-        </div> : <ImageRevisionSelector key={generation} baselines={baselines} scope={{ projectId, sessionId: `${titleId}:${generation}`, onFailure: setFailed }} />}
+        </div> : pinnedImage ? <ImageRevisionData key={generation} scope={{ projectId, sessionId: `${titleId}:${generation}`, onFailure: setFailed }}
+          revisionId={pinnedImage.image_revision_id} baselines={baselines} expectedPin={pinnedImage} />
+          : <ImageRevisionSelector key={generation} baselines={baselines} scope={{ projectId, sessionId: `${titleId}:${generation}`, onFailure: setFailed }} />}
     </div>
   </dialog>
 }

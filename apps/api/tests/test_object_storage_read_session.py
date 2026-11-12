@@ -273,8 +273,12 @@ def test_writes_use_an_independent_transport_not_the_read_lifetime(storage):
 
 def test_sdk_factory_uses_an_explicit_session_not_the_default_shared_session(storage, monkeypatch):
     import boto3
+    from types import SimpleNamespace
+    from apps.api.app.infrastructure.storage.object_storage import _omit_empty_continue
     value, _, _, _ = storage
-    sessions, calls, client = [], [], object()
+    sessions, calls, registrations = [], [], []
+    client = SimpleNamespace(meta=SimpleNamespace(events=SimpleNamespace(
+        register=lambda event, handler: registrations.append((event, handler)))))
     class Session:
         def __init__(self):
             sessions.append(self)
@@ -288,6 +292,7 @@ def test_sdk_factory_uses_an_explicit_session_not_the_default_shared_session(sto
     monkeypatch.setattr(boto3.session, "Session", Session)
     assert ObjectStorage._create_s3_client(value.config) is client
     assert len(sessions) == 1
+    assert registrations == [("before-sign.s3.PutObject", _omit_empty_continue)]
     assert calls == [("s3", {"endpoint_url": value.config.endpoint,
         "aws_access_key_id": value.config.access_key, "aws_secret_access_key": value.config.secret_key,
         "region_name": value.config.region})]

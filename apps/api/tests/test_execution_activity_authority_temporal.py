@@ -9,6 +9,7 @@ from temporalio.client import Client
 from temporalio.worker import Replayer, Worker
 
 from apps.api.app.application.platform.errors import PlatformApplicationError
+from apps.api.app.domain.quality_loop.run_plan_case_execution import RunPlanCaseConsentExpired
 from apps.api.app.domain.system_image.source_access import StaleSourceAccessScope
 from apps.api.app.infrastructure.config.agent_runtime_config import TemporalGatewayConfig
 from apps.api.app.infrastructure.workflow.http_fixture_runtime import TemporalHttpFixtureRuntime, build_http_fixture_activities
@@ -29,6 +30,7 @@ WORKFLOWS = (
 @pytest.mark.parametrize("runtime_type,workflow,factory,service,workflow_prefix,error_prefix", WORKFLOWS)
 @pytest.mark.parametrize("failure", (
     PermissionError("private expired original consent"),
+    RunPlanCaseConsentExpired("private expired original case command"),
     StaleSourceAccessScope("private original source revoked"),
     PlatformApplicationError("source_access_denied", "private source forbidden", 403),
 ))
@@ -76,6 +78,47 @@ def test_real_temporal_denial_ends_original_activity_without_retry_or_permission
                 await Replayer(workflows=[workflow]).replay_workflow(history)
         finally:
             if handle is not None:
+                await runtime.cancel(command_id)
+
+    asyncio.run(verify())
+
+
+@pytest.mark.skipif(not os.getenv("TEST_TEMPORAL_ADDRESS"), reason="requires an explicitly enabled Temporal server")
+def test_real_temporal_retry_preserves_the_original_id_and_enables_archive_recovery(monkeypatch):
+    import apps.api.app.bootstrap as bootstrap
+    command_id = "fixture-recovery-policy-" + uuid4().hex
+    calls = []
+
+    async def run(ident, **options):
+        calls.append((ident, options))
+        if len(calls) == 1:
+            raise RuntimeError("explicit worker acknowledgement loss")
+        return "completed"
+
+    async def fail(_ident):
+        pytest.fail("the same original retry should complete")
+
+    monkeypatch.setenv("NASUS_AGENT_WORKFLOW_RUNTIME", "temporal")
+    monkeypatch.setattr(bootstrap, "get_application_container", lambda: SimpleNamespace(
+        http_fixture_jobs=SimpleNamespace(run=run, fail=fail)))
+
+    async def verify():
+        config = TemporalGatewayConfig(address=os.environ["TEST_TEMPORAL_ADDRESS"],
+            task_queue="nasus-test-fixture-recovery-policy-" + uuid4().hex)
+        client = await asyncio.wait_for(Client.connect(config.address, namespace=config.namespace), 10)
+        runtime = TemporalHttpFixtureRuntime(config=config, client=client)
+        async with Worker(client, task_queue=runtime.task_queue, workflows=[NasusHttpFixtureWorkflow],
+                activities=build_http_fixture_activities()):
+            assert await runtime.start(command_id) is True
+            handle = client.get_workflow_handle("nasus-http-fixture:" + command_id)
+            try:
+                assert await asyncio.wait_for(handle.result(), 40) == "completed"
+                assert calls == [(command_id, {}), (command_id, {"recover_archived": True})]
+                history = await handle.fetch_history()
+                await Replayer(workflows=[NasusHttpFixtureWorkflow]).replay_workflow(history)
+                assert await runtime.start(command_id) is False
+                assert len(calls) == 2
+            finally:
                 await runtime.cancel(command_id)
 
     asyncio.run(verify())

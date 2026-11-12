@@ -155,6 +155,41 @@ def test_missing_explicit_ref_fails_without_default_branch_or_cache_fallback(tmp
         fresh.materialize(source, refresh=True)
 
 
+def test_fixed_commit_never_moves_to_the_default_head_or_falls_back(tmp_path):
+    origin = tmp_path / "origin"
+    revision = _create_repository(origin)
+    (origin / "checkout.py").write_text("def moved_head():\n    return 2\n")
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-m", "advance default branch")
+    default = _git(origin, "rev-parse", "HEAD")
+    connector = GitSourceConnector(cache_dir=tmp_path / "cache", allowed_schemes={"file"})
+    fixed = _source(origin.as_uri()).model_copy(update={"tracked_ref": revision})
+    first = connector.materialize(fixed, refresh=True)
+    assert first.revision == revision != default
+    assert (first.local_path / "checkout.py").read_text().startswith("def checkout")
+    assert f"git:tracked-ref:{revision}" in first.evidence_refs
+    assert connector.materialize(fixed, refresh=True) == first
+    restarted = GitSourceConnector(cache_dir=tmp_path / "fresh-cache", allowed_schemes={"file"})
+    assert restarted.materialize(fixed, refresh=False).revision == revision
+    with pytest.raises(GitSourceConnectorError, match="conflicts with the fixed commit"):
+        restarted.materialize(fixed.model_copy(update={"evidence_refs": [f"git:revision:{default}"]}), refresh=False)
+    with pytest.raises(GitSourceConnectorError):
+        restarted.materialize(fixed.model_copy(update={"tracked_ref": "f" * 40}), refresh=True)
+    assert _git(origin, "rev-parse", "HEAD") == default
+
+
+def test_fixed_commit_does_not_peel_an_annotated_tag_object(tmp_path):
+    origin = tmp_path / "origin"
+    revision = _create_repository(origin)
+    _git(origin, "tag", "-a", "v1", "-m", "annotated release")
+    tag = _git(origin, "rev-parse", "refs/tags/v1")
+    assert tag != revision
+    connector = GitSourceConnector(cache_dir=tmp_path / "cache", allowed_schemes={"file"})
+    source = _source(origin.as_uri()).model_copy(update={"tracked_ref": tag})
+    with pytest.raises(GitSourceConnectorError, match="did not return the requested fixed commit"):
+        connector.materialize(source, refresh=True)
+
+
 def test_invalid_tracked_ref_never_invokes_git_even_after_unvalidated_model_copy(tmp_path, monkeypatch):
     connector = GitSourceConnector(cache_dir=tmp_path / "cache")
     source = _source("https://github.com/example/repo.git").model_copy(update={"tracked_ref": "HEAD"})

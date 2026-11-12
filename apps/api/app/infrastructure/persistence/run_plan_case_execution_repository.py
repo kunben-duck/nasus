@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 
 from ...application.platform.tool_handlers.query_input import query_payload
 from ...application.platform.tool_models import EventPayload
+from ...application.quality_loop.execution_work_guard import ExecutionWorkGuard, work_poll
 from ...domain.quality_loop.acceptance_specification import acceptance_digest
 from ...domain.quality_loop.run_plan_case_execution import (
     CASE_CLAIM_SCHEMA, CASE_OUTCOME_SCHEMA, CASE_CANCEL_TOOL, CASE_LEASE_SECONDS,
@@ -60,9 +61,10 @@ class PostgresRunPlanCaseExecutionRepository:
             raise PermissionError("case work requires a current independent execution role")
 
     @staticmethod
-    def _command(session, scope, *, historical=False):
+    def _command(session, scope, *, historical=False, lock=True):
         query = select(ToolInvocationRecord).where(ToolInvocationRecord.id == scope.invocation_id)
-        command = session.scalar((query if historical else query.with_for_update()).execution_options(populate_existing=True))
+        command = session.scalar((query.with_for_update() if lock and not historical else query)
+            .execution_options(populate_existing=True))
         if command is None or type(command.input_payload) is not dict:
             raise RunPlanCaseExecutionInvalid("original independent case command is missing")
         selection = {key: value for key, value in query_payload(command.input_payload).items()
@@ -158,7 +160,7 @@ class PostgresRunPlanCaseExecutionRepository:
 
     @classmethod
     def _live(cls, session, lease, *, require_current):
-        require_current()
+        work_poll(require_current)()
         scope = restore_case_scope(asdict(lease.scope))
         cls._command(session, scope)
         cls._actor(session, scope.project_id, scope.actor_id)
@@ -169,6 +171,10 @@ class PostgresRunPlanCaseExecutionRepository:
         require_current()
         cls._command(session, scope)
         cls._actor(session, scope.project_id, scope.actor_id)
+        return cls._lease_at(session, lease, scope, row)
+
+    @staticmethod
+    def _lease_at(session, lease, scope, row):
         now = session.scalar(select(func.clock_timestamp()))
         if (row is None or row.project_id != scope.project_id or row.owner_id != lease.owner_id
                 or type(row.epoch) is not int or row.epoch != lease.epoch or row.expires_at <= now
@@ -229,17 +235,44 @@ class PostgresRunPlanCaseExecutionRepository:
             self._work(session, lease.scope, tuple(work.roster))
             self._live(session, lease, require_current=require_current)
 
+    def require_poll(self, lease, *, require_current):
+        """Read-only fence for an already verified attempt; never dispatch or renew here."""
+        scope = restore_case_scope(asdict(lease.scope))
+        require_current()
+        with session_scope() as session:
+            work = session.get(Work, scope.work_id)
+            if work is None:
+                raise RunPlanCaseWorkLost("original case work is missing")
+            self._work(session, scope, tuple(work.roster))
+            require_current()
+            self._command(session, scope, lock=False)
+            self._actor(session, scope.project_id, scope.actor_id)
+            if self._cancelled(session, scope):
+                raise RunPlanCaseWorkLost("original case command was independently cancelled")
+            row = session.scalar(select(Lease).where(Lease.work_id == scope.work_id)
+                .execution_options(populate_existing=True))
+            self._lease_at(session, lease, scope, row)
+
     def renew(self, lease, *, require_current):
         with session_scope() as session:
             TestDesignScopeRepository._lock(session, lease.scope.project_id)
-            work = session.get(Work, lease.work_id)
-            if work is None:
-                raise RunPlanCaseWorkLost("original case work is missing")
-            self._work(session, lease.scope, tuple(work.roster))
-            row, now = self._live(session, lease, require_current=require_current)
-            row.renewed_at, row.expires_at = now, now + timedelta(seconds=CASE_LEASE_SECONDS)
-            session.flush()
-            self._live(session, lease, require_current=require_current)
+            self._renew(session, lease, require_current=require_current)
+
+    def renew_poll(self, lease, *, require_current):
+        # Renewal fences the immutable work, original command and owner rows;
+        # it does not mutate evidence guarded by the project advisory lock.
+        with session_scope() as session:
+            self._renew(session, lease, require_current=work_poll(require_current))
+
+    def _renew(self, session, lease, *, require_current):
+        work = session.get(Work, lease.work_id)
+        if work is None:
+            raise RunPlanCaseWorkLost("original case work is missing")
+        self._work(session, lease.scope, tuple(work.roster))
+        row, now = self._live(session, lease, require_current=require_current)
+        row.renewed_at, row.expires_at = now, now + timedelta(seconds=CASE_LEASE_SECONDS)
+        session.flush()
+        self._live(session, lease, require_current=require_current)
 
     def inspect(self, scope, roster, *, require_access):
         require_access()
@@ -272,7 +305,8 @@ class PostgresRunPlanCaseExecutionRepository:
             self._work(session, scope, roster)
             if case not in roster:
                 raise RunPlanCaseExecutionInvalid("case claim is outside the complete original roster")
-            _, now = self._live(session, lease, require_current=require_current)
+            boundary = self._check_evidence_before_ownership_locks(require_current)
+            _, now = self._live(session, lease, require_current=work_poll(boundary))
             claim_id = case_claim_id(scope, case["case_id"])
             if session.get(Claim, claim_id) is not None:
                 raise RunPlanCaseAlreadyClaimed("original case already has a durable dispatch; never resend")
@@ -283,7 +317,7 @@ class PostgresRunPlanCaseExecutionRepository:
             session.add(self._row(Claim, value))
             self._event(session, scope, value, "quality.run_plan.case_dispatch_reserved")
             session.flush()
-            self._live(session, lease, require_current=require_current)
+            self._live(session, lease, require_current=boundary)
             return value
 
     def complete(self, lease, claim, *, artifact_ref, artifact_hash, observation, require_current):
@@ -295,7 +329,8 @@ class PostgresRunPlanCaseExecutionRepository:
                 raise RunPlanCaseExecutionInvalid("original case work is missing")
             roster = tuple(work.roster)
             self._work(session, scope, roster)
-            _, now = self._live(session, lease, require_current=require_current)
+            boundary = self._check_evidence_before_ownership_locks(require_current)
+            _, now = self._live(session, lease, require_current=work_poll(boundary))
             original = self._payload(session.get(Claim, claim["claim_id"]), CASE_CLAIM_SCHEMA)
             if original != claim or (original["owner_id"], original["epoch"]) != (lease.owner_id, lease.epoch):
                 raise RunPlanCaseWorkLost("late worker cannot commit a different owner's original case output")
@@ -312,13 +347,23 @@ class PostgresRunPlanCaseExecutionRepository:
             if prior is not None:
                 if any(prior[key] != value[key] for key in value if key != "recorded_at"):
                     raise RunPlanCaseExecutionInvalid("committed original case output cannot be replaced")
-                self._live(session, lease, require_current=require_current)
+                self._live(session, lease, require_current=boundary)
                 return prior
             session.add(self._row(Outcome, value))
             self._event(session, scope, value, "quality.run_plan.case_output_recorded")
             session.flush()
-            self._live(session, lease, require_current=require_current)
+            self._live(session, lease, require_current=boundary)
             return value
+
+    @staticmethod
+    def _check_evidence_before_ownership_locks(require_current):
+        if isinstance(require_current, ExecutionWorkGuard):
+            # Keep dependency verification inside the project mutation fence,
+            # but leave the command and lease rows available for renewal.
+            require_current.poll()
+            require_current()
+            return require_current.poll
+        return require_current
 
     def cancel(self, scope, roster, *, control_id, actor_id, require_current):
         """Independent original cancellation, not a statement that the target rolled back."""

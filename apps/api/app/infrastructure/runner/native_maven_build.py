@@ -20,6 +20,7 @@ from ...domain.quality_loop.native_build import (
 )
 from ...domain.shared.native_build_source import build_path, byte_digest
 from ...domain.system_image.source_snapshots import snapshot_digest
+from ...application.quality_loop.execution_work_guard import ExecutionWorkGuard, work_poll
 
 
 class NativeBuildFailure(NativeBuildExecutionFailed):
@@ -28,9 +29,39 @@ class NativeBuildFailure(NativeBuildExecutionFailed):
         self.code, self.log = code, log
 
 
-def bounded_command(args, *, timeout, max_bytes, require_work=None, input_body=None):
-    if require_work is not None:
-        require_work()
+def _cleanup_process_group(process):
+    try:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError as failure:
+            # On macOS an exiting group can become unsignalable before its
+            # leader is waitable. Reap with a bounded grace period, then prove
+            # the whole group is gone rather than overlooking descendants.
+            try:
+                process.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                raise failure
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise
+    except OSError:
+        # Group cleanup is still unverified. Reap the known child if possible,
+        # without masking the failure or signalling a broader set of processes.
+        process.kill()
+        process.wait()
+        raise
+    process.wait()
+
+
+def bounded_command(args, *, timeout, max_bytes, require_work=None, input_body=None, defer_result_verification=False):
+    poll = work_poll(require_work)
+    if poll is not None:
+        poll()
     if input_body is not None and (type(input_body) is not bytes or len(input_body) > 1024 * 1024):
         raise ValueError("bounded subprocess input is invalid")
     env = {key: value for key, value in os.environ.items() if key in {"PATH", "HOME", "TMPDIR"}}
@@ -50,8 +81,8 @@ def bounded_command(args, *, timeout, max_bytes, require_work=None, input_body=N
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
             while selector.get_map():
-                if require_work is not None:
-                    require_work()
+                if poll is not None:
+                    poll()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise NativeBuildFailure("native_build_timeout", bytes(output))
@@ -66,8 +97,8 @@ def bounded_command(args, *, timeout, max_bytes, require_work=None, input_body=N
         # A child may close stdout and continue running. Retain the fence and
         # cancellation checks during the remaining wait, not just pipe reads.
         while process.poll() is None:
-            if require_work is not None:
-                require_work()
+            if poll is not None:
+                poll()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise NativeBuildFailure("native_build_timeout", bytes(output))
@@ -77,17 +108,16 @@ def bounded_command(args, *, timeout, max_bytes, require_work=None, input_body=N
                 pass
         code = process.returncode
         if require_work is not None:
-            require_work()
+            # A fenced caller may verify the original inputs after it validates these raw bytes.
+            (poll if defer_result_verification and isinstance(require_work, ExecutionWorkGuard) else require_work)()
         completed = True
         return code, bytes(output)
     finally:
-        if not completed or process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-        process.stdout.close()
+        try:
+            if not completed or process.poll() is None:
+                _cleanup_process_group(process)
+        finally:
+            process.stdout.close()
 
 
 def runtime_jar_inventory(body, *, require_work=None):

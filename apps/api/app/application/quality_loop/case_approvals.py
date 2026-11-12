@@ -134,9 +134,7 @@ class CaseApprovalApplicationService:
     def read(self, project_id, revision_id):
         return self.read_with_inputs(project_id, revision_id)[0]
 
-    def read_with_inputs(self, project_id, revision_id):
-        """Return complete verified parents, without caching current authority."""
-        access = self.authorization.scope(project_id)
+    def _read_archive_chain(self, project_id, revision_id):
         revision, ref = self.repository.get(project_id, revision_id)
         request, basis, prepared = self._verify_archive(project_id, revision, ref)
         archives = self.repository.archives(project_id, revision["cohort_id"])
@@ -146,6 +144,19 @@ class CaseApprovalApplicationService:
         for item, item_ref in archives:
             if item["revision_id"] != revision_id:
                 self._verify_archive(project_id, item, item_ref)
+        return revision, request, basis, prepared, history
+
+    def replay_inputs(self, project_id, revision_id):
+        """Verify the complete archived chain without evaluating current authority."""
+        access = self.authorization.scope(project_id)
+        revision, _, basis, prepared, _ = self._read_archive_chain(project_id, revision_id)
+        self.authorization.require_current(access)
+        return {"revision": revision, "basis": basis}, prepared
+
+    def read_with_inputs(self, project_id, revision_id):
+        """Return complete verified parents, without caching current authority."""
+        access = self.authorization.scope(project_id)
+        revision, request, basis, prepared, history = self._read_archive_chain(project_id, revision_id)
         current = bool(history and history[-1]["revision_id"] == revision_id and revision["status"] == "approved")
         live_input = None
         if current:

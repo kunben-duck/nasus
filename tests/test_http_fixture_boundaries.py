@@ -59,7 +59,8 @@ def test_project_fixture_discovery_is_source_filtered_before_sql_count_and_has_n
 def test_independent_original_journal_uses_only_verified_read_ports_and_non_authoritative_phases():
     root = ROOT / "apps/api/app"
     application = (root / "application/quality_loop/http_fixture_observations.py").read_text()
-    for token in ("self.history.read", "self.jobs.read", "self.grants.execution_inputs(selection, live=False)",
+    for token in ("self.history.read_with_verified_inputs(target)", "self.history.read_execution_with_inputs(execution_target)",
+            "self.jobs.read_observation_job(execution, inputs)", "inputs.selection != selection", "self.history.read(target) != selected",
             "fixture_bindings(inputs.manifest)", "self.grants.authorization.require_current(access)", "verify_receipt"):
         assert token in application
     for path in ("domain/quality_loop/http_fixture_observation.py", "application/quality_loop/http_fixture_observations.py"):
@@ -121,7 +122,7 @@ def test_unbound_cancellation_is_append_only_and_has_no_intent_backfill_or_execu
     application = (ROOT / "apps/api/app/application/quality_loop/http_fixture_jobs.py").read_text()
     read = application.split("    def _read(", 1)[1].split("    def read(", 1)[0]
     assert read.index("self.grants.execution_inputs(selection, live=False)") < read.index("self.repository.preparation_state")
-    assert read.index("return preparation") < read.index("self.execution.read")
+    assert read.index("return preparation") < read.index("self.execution.read_resolved_history(inputs")
 
 
 def test_fixture_domain_and_application_do_not_import_runtime_or_persistence_adapters():
@@ -163,7 +164,11 @@ def test_backend_fixture_journal_preserves_attempt_identity_and_requires_pg_s3()
     source = (ROOT / "apps/api/app/infrastructure/persistence/http_fixture_journal_repository.py").read_text()
     assert 'engine.dialect.name != "postgresql"' in source
     assert "scope.project_id, scope.attempt_id, scope.case_id, phase" in source
-    assert "require_current()" in source and "self._event(session" in source
+    for section in (source.split("    def _claim(", 1)[1].split("    def complete(", 1)[0],
+                    source.split("    def _complete(", 1)[1]):
+        assert "current = work_poll(require_current)" in section
+        assert section.index("self._event(session") < section.rindex("current()")
+        assert "self.work_fence.require(session" in section and "self.consent_fence.require(session" in section
     models = (ROOT / "apps/api/app/infrastructure/persistence/http_fixture_journal_models.py").read_text()
     assert 'UniqueConstraint("project_id", "attempt_id", "case_id", "phase")' in models
     artifacts = (ROOT / "apps/api/app/infrastructure/storage/http_fixture_artifacts.py").read_text()
@@ -258,7 +263,9 @@ def test_native_fixture_consent_separates_policy_from_original_instance_without_
 def test_native_fixture_preflight_is_before_journal_writes_and_not_in_historical_reads():
     journal = (ROOT / "apps/api/app/infrastructure/persistence/http_fixture_journal_repository.py").read_text()
     claim = journal.split("    def claim(", 1)[1].split("    def complete(", 1)[0]
-    assert claim.index("preflight(scope, phase, command") < claim.index("with session_scope()")
+    assert claim.index("preflight(scope, phase, command") < claim.index("session_scope() as session")
+    assert claim.index("session_scope() as session") < claim.index("current_scope(scope)") < claim.index("session.add(")
+    assert claim.rindex("current_scope(scope)") > claim.index("session.flush()")
     inspect = journal.split("    def inspect(", 1)[1].split("    def claim(", 1)[0]
     assert "preflight" not in inspect
     access = (ROOT / "apps/api/app/application/quality_loop/http_fixture_journal_access.py").read_text()
@@ -267,7 +274,12 @@ def test_native_fixture_preflight_is_before_journal_writes_and_not_in_historical
     assert "not observed.dependency_health_verified or not observed.target_health_verified" in access
     assert "execute_owned_http" not in access and "session_scope" not in access
     health = (ROOT / "apps/api/app/application/quality_loop/run_plan_environment_health.py").read_text()
-    assert "def current():" in health and "require_work()" in health
+    assert "check_work = work_poll(require_work)" in health and "def current():" in health
+    inspect_health = health.split("    def inspect(self, request", 1)[1]
+    assert inspect_health.index("original_inputs.original_inputs(request, current=True)") < inspect_health.index("observed = self._probe(")
+    assert inspect_health.rindex("original_inputs.original_inputs(request, current=True)") > inspect_health.index("observed = self._probe(")
+    assert access.index("before, original = self._read_bound_scope(scope)") < access.index(".probe_pinned_inventory(") < access.index("after, latest_environment = self._read_bound_scope(scope)")
+    assert "self.original_inputs.authorization.require_current(access)" in health
 
 
 def test_private_worker_is_composed_through_application_and_owned_adapters():

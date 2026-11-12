@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from .acceptance_specification import acceptance_digest
 from .http_runner_oracles import strict_http_json
 from .native_environment import NativeEnvironmentInvalid, NativeEnvironmentObservation
+from .environment_profiles import inventory_profile
 from ..shared.native_build_source import byte_digest
 
 
@@ -22,7 +23,8 @@ def health_response(check):
     _require(type(check) is dict and set(check) == {"role", "probe", "container_id", "image_id", "started_at",
         "response_base64", "response_hash", "byte_count"})
     _require(type(check["role"]) is str and check["role"] in HEALTH_PROBES
-        and check["probe"] == HEALTH_PROBES[check["role"]]
+        and (check["probe"] == HEALTH_PROBES[check["role"]]
+            or check["role"] == "target" and check["probe"] == "target_realworld_tags")
         and type(check["response_base64"]) is str and len(check["response_base64"]) <= 4 * ((MAX_HEALTH_RESPONSE_BYTES + 2) // 3)
         and type(check["byte_count"]) is int and 0 < check["byte_count"] <= MAX_HEALTH_RESPONSE_BYTES)
     try:
@@ -45,6 +47,8 @@ def healthy(check):
         _require(len(status) == 3 and status.isdigit() and 100 <= int(status) <= 599)
         parsed = strict_http_json(raw.decode("utf-8", errors="strict"))
         _require(type(parsed) is dict)
+        if check["probe"] == "target_realworld_tags":
+            return status == b"200" and type(parsed.get("tags")) is list and all(type(tag) is str for tag in parsed["tags"])
         return status == b"200" and parsed.get("status") == "UP"
     except (ValueError, TypeError, UnicodeError, RecursionError):
         raise NativeEnvironmentInvalid("target health response is not a complete original HTTP observation") from None
@@ -59,8 +63,10 @@ class NativeEnvironmentHealthObservation:
 
     def __post_init__(self):
         NativeEnvironmentObservation(self.inventory, self.inventory_hash, self.observed_at)
-        _require(type(self.checks) is tuple and len(self.checks) == 3
-            and tuple(item.get("role") for item in self.checks if type(item) is dict) == ("pg", "redis", "target"))
+        profile = inventory_profile(self.inventory)
+        _require(type(self.checks) is tuple and len(self.checks) == len(profile.dependencies) + 1
+            and tuple(item.get("role") for item in self.checks if type(item) is dict) == (*profile.dependencies, "target"))
+        _require(self.checks[-1]["probe"] == profile.health_probe)
         members = {item["role"]: item for item in self.inventory["dependency_instances"]}
         members["target"] = self.inventory["target"]
         for check in self.checks:
@@ -71,11 +77,11 @@ class NativeEnvironmentHealthObservation:
 
     @property
     def dependency_health_verified(self):
-        return all(healthy(item) for item in self.checks[:2])
+        return all(healthy(item) for item in self.checks[:-1])
 
     @property
     def target_health_verified(self):
-        return healthy(self.checks[2])
+        return healthy(self.checks[-1])
 
     def payload(self):
         return {"schema": HEALTH_SCHEMA, "inventory": self.inventory, "inventory_hash": self.inventory_hash,

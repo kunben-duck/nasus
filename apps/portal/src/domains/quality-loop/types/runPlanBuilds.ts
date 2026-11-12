@@ -1,12 +1,13 @@
 import type { RunPlanSources } from './runPlans'
+import type { NativeBuildAdapter } from '../nativeBuildProfiles'
 
 export interface NativeBuildReference { invocation_id: string; build_id: string; artifact_hash: string; receipt_digest: string }
 export interface NativeBuildReceipt {
-  schema: 'nasus.native-build.v1'; adapter: 'nasus.offline-java21-maven3911.v1'; request_digest: string
+  schema: 'nasus.native-build.v1'; adapter: NativeBuildAdapter; request_digest: string
   source: { pin: Omit<RunPlanSources, 'source_members'> & { binding_id: string; source_revision_id: string; [key: string]: unknown }
     files: { path: string; content_hash: string; byte_count: number }[]; file_mode_attested: false }
   artifact: { path: string; content_hash: string; byte_count: number }
-  toolchain: { java: '21'; maven: '3.9.11'; network: 'none'; dependency_cache: 'operator_read_only'; [key: string]: unknown }
+  toolchain: { java?: '21'; maven?: '3.9.11'; python?: '3.12'; zipapp?: '1'; network: 'none'; dependency_cache: 'operator_read_only'; [key: string]: unknown }
   native_build_verified: true; execution_authorized: false; executed_on_target_count: 0; passed_count: 0
   reproducible_build_verified: false; dependency_supply_chain_verified: false; [key: string]: unknown
 }

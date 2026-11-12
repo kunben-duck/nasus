@@ -3,14 +3,14 @@ from typing import Any, Dict, Literal, Optional, Tuple
 
 from pydantic import Field, model_serializer, model_validator
 
-from .http_fixture_execution import HttpFixtureExecutionSelection
+from .http_fixture_execution import HttpFixtureExecutionInputs, HttpFixtureExecutionSelection
 from .http_fixture_history import HttpFixtureHistoryItem, HttpFixtureHistoryTarget
 from .test_design_output import Digest, GenerationValue
 from ...domain.quality_loop.acceptance_specification import acceptance_digest
 from ...domain.quality_loop.http_fixture_observation import (
     FIXTURE_OBSERVATION_SCHEMA, FIXTURE_OBSERVATION_KIND, HttpFixtureObservationChanged, classify_original_observation,
 )
-from ...domain.quality_loop.http_fixtures import fixture_bindings
+from ...domain.quality_loop.http_fixtures import HttpFixtureInvalid, fixture_bindings
 
 
 class HttpFixturePhasePin(GenerationValue):
@@ -60,29 +60,32 @@ class HttpFixtureObservationApplicationService:
         self.jobs, self.history, self.grants = jobs, jobs.history, jobs.grants
 
     def read(self, target: HttpFixtureHistoryTarget):
-        from .http_fixture_jobs import HttpFixtureJobTarget
-
         target = HttpFixtureHistoryTarget.model_validate(target.model_dump(mode="json"))
         with self.grants.recipes.verified_read_session():
             access = self.jobs._access(target.project_id)
-            selected = self.history.read(target)
-            execution = None if selected.stage == "grant" else self.history.read(
-                HttpFixtureHistoryTarget(project_id=target.project_id, invocation_id=selected.original_execution_id))
+            selected, inputs = self.history.read_with_verified_inputs(target)
+            execution = selected if selected.stage == "execute" else None
+            execution_target = None
+            if selected.stage == "cancel":
+                execution_target = HttpFixtureHistoryTarget(project_id=target.project_id,
+                    invocation_id=selected.original_execution_id)
+                execution, inputs = self.history.read_execution_with_inputs(execution_target)
             phases, job = [], None
             if execution and execution.status not in {"pending", "waiting_confirmation", "waiting_approval"}:
                 selection = HttpFixtureExecutionSelection(project_id=execution.project_id,
                     grant_id=execution.grant_id, grant_digest=execution.grant_digest, operation=execution.operation)
-                inputs = self.grants.execution_inputs(selection, live=False)
+                if not isinstance(inputs, HttpFixtureExecutionInputs) or inputs.selection != selection:
+                    raise HttpFixtureInvalid("fixture observation requires the verified original execution inputs")
                 names = ("setup",) if selection.operation == "setup" else tuple(
                     "cleanup:" + binding for binding in fixture_bindings(inputs.manifest))
                 phases = [{"phase": phase, "claim_id": "fixture_" + acceptance_digest(
                     [target.project_id, inputs.scope.attempt_id, inputs.scope.case_id, phase]).removeprefix("sha256:")}
                     for phase in names]
-                job = self.jobs.read(HttpFixtureJobTarget(project_id=target.project_id, invocation_id=execution.invocation_id))
+                job = self.jobs.read_observation_job(execution, inputs)
             # A concurrent confirmation or terminal transition requires a fresh
             # explicit read of this same ID, never another dispatch/attempt.
-            if self.history.read(target) != selected or execution and self.history.read(
-                    HttpFixtureHistoryTarget(project_id=target.project_id, invocation_id=execution.invocation_id)) != execution:
+            if (self.history.read(target) != selected or
+                    (execution_target is not None and self.history.read(execution_target) != execution)):
                 raise HttpFixtureObservationChanged("original command changed during journal inspection")
             state = classify_original_observation(selected.model_dump(mode="json"),
                 execution.model_dump(mode="json") if execution else None, phases, job)

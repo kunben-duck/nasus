@@ -17,13 +17,13 @@ def measure_fixture_parent_reuse(v, url, expected, monkeypatch):
     if not report_path:
         return
     service = _grant_service()
-    original = service.recipes.read_with_plan
+    original = service.recipes.read_with_native_environment
     with monkeypatch.context() as scoped:
-        # Same full read algorithm, deliberately discarding its verified parent.
-        scoped.setattr(service.recipes, "read_with_plan", None)
+        # The previous path verifies the recipe and environment with separate full plan reads.
+        scoped.setattr(service.recipes, "read_with_native_environment", None)
         control = measure_context_http_read(v, url, expected, monkeypatch)
     production = measure_context_http_read(v, url, expected, monkeypatch)
-    assert service.recipes.read_with_plan == original
+    assert service.recipes.read_with_native_environment == original
     for key in ("response_hash", "response_contract_hash", "response_bytes", "distinct_objects", "distinct_read_inventory_hash", "fact_writes"):
         assert control[key] == production[key], key
     assert production["object_reads"] < control["object_reads"]
@@ -32,8 +32,9 @@ def measure_fixture_parent_reuse(v, url, expected, monkeypatch):
     held = production["connections"]["live"]
     assert held["checkout"] == held["begin"] == held["read_only_setups"] == held["rollback"] == 1
     assert held.get("commit", 0) == 0 and held["authorization_queries"] > 0
-    report = {"schema": "nasus.fixture-parent-read-reuse.v1", "verified_at": datetime.now(timezone.utc).isoformat(),
+    report = {"schema": "nasus.fixture-parent-read-reuse.v2", "verified_at": datetime.now(timezone.utc).isoformat(),
         "control": control, "production": production, "sample_order": "control_then_production_one_pair",
+        "comparison": "separate_vs_paired_verified_recipe_environment_parent",
         "source_revision": v.get("exweb_commit"), "source_file_count": v.get("exweb_file_count"),
         "source_kind": "fixed_exweb_git" if v.get("exweb_commit") else "protocol_source_specimen",
         "same_complete_object_set_and_bytes": True, "same_response": True,

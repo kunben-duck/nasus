@@ -61,12 +61,15 @@ def test_fixture_grant_confirmation_expiry_rolls_back_full_transaction(native_sc
         clock = original_clock()
         return clock + text("INTERVAL '901 seconds'") if len(checks) >= expires_after_check else clock
 
-    def issue(*args, require_access, **kwargs):
-        def checked():
-            require_access()
-            checks.append("full original source validation completed")
+    def issue(*args, require_access, verify_inputs, **kwargs):
+        def checkpoint(callback, label):
+            def checked():
+                callback()
+                checks.append(label)
+            return checked
         try:
-            return original_issue(*args, require_access=checked, **kwargs)
+            return original_issue(*args, require_access=checkpoint(require_access, "acl"),
+                verify_inputs=checkpoint(verify_inputs, "inputs"), **kwargs)
         except Exception as exc:
             errors.append(type(exc).__name__)
             raise
@@ -89,7 +92,7 @@ def test_fixture_grant_confirmation_expiry_rolls_back_full_transaction(native_sc
     assert pending.status_code == 200 and pending.json()["status"] == "waiting_confirmation", pending.text
     result = confirm(value, pending.json())
     assert result.status_code == 200 and result.json()["status"] == "failed", result.text
-    assert errors == ["RunPlanIntegrityError"] and len(checks) == expires_after_check
+    assert errors == ["RunPlanIntegrityError"] and checks == ["acl", "inputs"][:expires_after_check]
     assert len(written) == (1 if expires_after_check == 2 else 0)
     assert count(value, HttpFixtureGrantRecord) == count(value, HttpFixtureDispatchRecord) == 0
     with session_scope() as session:

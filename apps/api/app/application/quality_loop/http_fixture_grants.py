@@ -1,4 +1,5 @@
 """Separate preparation/cleanup consent; never bypass live target or worker gates."""
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Literal, Optional, Protocol
 
@@ -46,9 +47,10 @@ class HttpFixtureGrantRequest(GenerationValue):
 
 
 class HttpFixtureGrantRepositoryPort(Protocol):
-    def issue(self, request, scope, source_scope_digest, *, actor_id, invocation_id, require_access, native_environment=None): ...
+    def issue(self, request, scope, source_scope_digest, *, actor_id, invocation_id, require_access, verify_inputs,
+              native_environment=None): ...
     def read(self, project_id, record_id): ...
-    def require_live(self, project_id, record_id, *, actor_id, scope, operation, source_scope_digest): ...
+    def require_live(self, project_id, record_id, *, actor_id, scope, operation, source_scope_digest) -> dict: ...
 
 
 @dataclass(frozen=True)
@@ -76,7 +78,13 @@ class HttpFixtureGrantApplicationService:
         scope, native, _ = self._resolved_inputs_with_recipe(request, current=current)
         return scope, native
 
-    def _resolved_inputs_with_recipe(self, request, *, current=False):
+    def _recipe_inputs(self, request):
+        read_pair = getattr(self.recipes, "read_with_native_environment", None)
+        if (request.policy_revision == NATIVE_GRANT_SCHEMA and callable(read_pair)
+                and callable(getattr(self.environment_records, "read_with_plan", None))):
+            with fixture_phase("grant_paired_parents"):
+                return read_pair(request.project_id, request.recipe_id, request.environment_record_id,
+                    environment_records=self.environment_records)
         read_with_plan = getattr(self.recipes, "read_with_plan", None)
         with fixture_phase("grant_recipe_parent"):
             if callable(read_with_plan):
@@ -85,6 +93,10 @@ class HttpFixtureGrantApplicationService:
                 recipe = self.recipes.read(request.project_id, request.recipe_id)
                 original = recipe["archive"]["request"]
                 saved = self.recipes.plans.read(request.project_id, original["run_plan_id"])
+        return recipe, saved, None
+
+    def _resolved_inputs_with_recipe(self, request, *, current=False):
+        recipe, saved, environment = self._recipe_inputs(request)
         if recipe["metadata"]["artifact_hash"] != request.recipe_artifact_hash:
             raise RunPlanIntegrityError("fixture consent cannot replace the original registered definition")
         original = recipe["archive"]["request"]
@@ -103,9 +115,10 @@ class HttpFixtureGrantApplicationService:
         if request.policy_revision == NATIVE_GRANT_SCHEMA:
             if self.environment_records is None:
                 raise RunPlanIntegrityError("original native environment reader is required; no legacy fallback")
-            with fixture_phase("grant_environment_record"):
-                view = self.environment_records.read(request.project_id, request.environment_record_id)
-            native = native_fixture_environment(saved, original["manifest"], view)
+            if environment is None:
+                with fixture_phase("grant_environment_record"):
+                    environment = self.environment_records.read(request.project_id, request.environment_record_id)
+            native = native_fixture_environment(saved, original["manifest"], environment)
             if (native["record_id"] != request.environment_record_id
                     or native["artifact_hash"] != request.environment_record_artifact_hash):
                 raise RunPlanIntegrityError("native fixture consent environment record was rebound")
@@ -125,18 +138,20 @@ class HttpFixtureGrantApplicationService:
     def issue(self, request, *, invocation_id):
         request = HttpFixtureGrantRequest.model_validate(request.model_dump(mode="json"))
         access = self._access(request.project_id)
+        current = lambda: self.authorization.require_current(access)
         with self.recipes.verified_read_session():
             scope, native = self._resolved_inputs(request, current=True)
 
-            def require_access():
+            def verify_inputs():
+                current()
                 if self._resolved_inputs(request, current=True) != (scope, native):
                     raise RunPlanIntegrityError("fixture consent original scope changed before commit")
-                self.authorization.require_current(access)
+                current()
 
             options = {"native_environment": native} if native is not None else {}
             result = self.repository.issue(request, scope, access.fingerprint, actor_id=access.actor_id,
-                invocation_id=invocation_id, require_access=require_access, **options)
-            require_access()
+                invocation_id=invocation_id, require_access=current, verify_inputs=verify_inputs, **options)
+            verify_inputs()
             return result
 
     def read(self, project_id, record_id):
@@ -162,16 +177,21 @@ class HttpFixtureGrantApplicationService:
         with self.recipes.verified_read_session():
             access = self._access(project_id)
             original = self._read_with_inputs(project_id, record_id, current=True)
-            value, request = original.metadata, original.request
-            if (not isinstance(scope, HttpFixtureScope) or type(operation) is not str
-                    or operation != request.operation or original.scope != scope
-                    or value["actor_id"] != access.actor_id or value["source_scope_digest"] != access.fingerprint):
-                raise SourceAccessDenied("fixture grant is not this actor's exact current operation and scope")
-            with fixture_phase("grant_live_permission"):
-                self.repository.require_live(project_id, record_id, actor_id=access.actor_id, scope=scope,
-                    operation=operation, source_scope_digest=access.fingerprint)
-            self.authorization.require_current(access)
-            return value
+            return self._require_live_original(project_id, record_id, scope, operation, access, original)
+
+    def _require_live_original(self, project_id, record_id, scope, operation, access, original):
+        value, request = original.metadata, original.request
+        if (not isinstance(scope, HttpFixtureScope) or type(operation) is not str
+                or operation != request.operation or original.scope != scope
+                or value["actor_id"] != access.actor_id or value["source_scope_digest"] != access.fingerprint):
+            raise SourceAccessDenied("fixture grant is not this actor's exact current operation and scope")
+        with fixture_phase("grant_live_permission"):
+            live = self.repository.require_live(project_id, record_id, actor_id=access.actor_id, scope=scope,
+                operation=operation, source_scope_digest=access.fingerprint)
+        if type(live) is not dict or acceptance_digest(live) != acceptance_digest(value):
+            raise RunPlanIntegrityError("fixture permission changed during original input resolution")
+        self.authorization.require_current(access)
+        return value
 
     def dispatch_consent(self, project_id, record_id, scope, operation):
         value = self.require_operation(project_id, record_id, scope, operation)
@@ -180,6 +200,14 @@ class HttpFixtureGrantApplicationService:
 
     def execution_inputs(self, selection, *, live):
         """Resolve complete original native inputs; historical reads grant no new work."""
+        return self._execution_inputs(selection, live=live)[0]
+
+    def history_execution_inputs(self, selection):
+        """Return lineage from the same authorized historical read, never a live grant."""
+        inputs, original = self._execution_inputs(selection, live=False)
+        return inputs, original.request, deepcopy(original.recipe["metadata"])
+
+    def _execution_inputs(self, selection, *, live):
         from .http_fixture_execution import HttpFixtureExecutionInputs, HttpFixtureExecutionSelection
         from .run_plan_observation_archives import RunPlanObservationArchiveParent
         selection = HttpFixtureExecutionSelection.model_validate(selection.model_dump(mode="json"))
@@ -195,16 +223,17 @@ class HttpFixtureGrantApplicationService:
                 actor_id=metadata["actor_id"], source_scope_digest=metadata["source_scope_digest"],
                 scope=scope, operation=selection.operation)
             if live:
-                # Dispatch independently rechecks the complete current inputs and PG permission.
-                if consent != self.dispatch_consent(selection.project_id, selection.grant_id, scope, selection.operation):
-                    raise RunPlanIntegrityError("fixture permission changed before worker input resolution")
+                # Verify the live PG permission against the full archive proof just read here.
+                # Claim and native dispatch still independently verify the complete inputs.
+                self._require_live_original(selection.project_id, selection.grant_id, scope, selection.operation,
+                    access, original_inputs)
             recipe = original_inputs.recipe
             original = recipe["archive"]["request"]
             parent = RunPlanObservationArchiveParent(project_id=selection.project_id,
                 run_plan_id=original["run_plan_id"], run_plan_artifact_hash=original["run_plan_artifact_hash"],
                 plan_digest=scope.parent_digest)
             self.authorization.require_current(access)
-            return HttpFixtureExecutionInputs(selection, scope, parent, original["manifest"], native, consent, access)
+            return HttpFixtureExecutionInputs(selection, scope, parent, original["manifest"], native, consent, access), original_inputs
 
     def inspect_history_request(self, request):
         """Verify a saved command's inputs without issuing or renewing a grant."""

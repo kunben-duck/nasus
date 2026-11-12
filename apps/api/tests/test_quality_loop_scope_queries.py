@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import pytest
 
 from apps.api.app.application.platform.tool_models import ToolInvocation
 from apps.api.app.application.quality_loop.ports import (
@@ -182,3 +183,21 @@ def test_query_keys_keep_conversation_and_quality_projections() -> None:
         ["runs", "proj_a"],
         ["governance", "proj_a"],
     ]
+
+
+@pytest.mark.parametrize("run_us,evidence_us", [("US-original", None), (None, "US-original"),
+    ("US-original", "US-original"), ("US-other", "US-original")])
+def test_failure_scope_never_reassigns_an_original_run_within_the_same_project(run_us, evidence_us):
+    run = failed_run("run_a").model_copy(update={"us_id": run_us})
+    workspace = InMemoryQualityLoopScopeWorkspace(
+        us_owners={"US-original": "proj_a", "US-other": "proj_a"},
+        project_us={"proj_a": ["US-other", "US-original"]}, run_owners={"run_a": "proj_a"},
+        run_details={"proj_a": [run]},
+        evidence_us={("proj_a", "run_a"): evidence_us} if evidence_us else {},
+    )
+    service = QualityLoopScopeQueryApplicationService(workspace)
+    assert service.resolve_failure_scope(invocation(input_payload={
+        "project_id": "proj_a", "run_id": "run_a", "us_id": "US-other"})) is None
+    if run_us != "US-other":
+        assert service.resolve_failure_scope(invocation(input_payload={
+            "project_id": "proj_a", "run_id": "run_a", "us_id": "US-original"})) == ("proj_a", "US-original", run)

@@ -4,9 +4,12 @@ from copy import deepcopy
 from dataclasses import asdict
 from typing import Protocol
 
+from .execution_work_guard import work_poll
+from .http_fixture_diagnostics import fixture_phase
 from .http_fixtures import HttpFixtureLifecycleApplicationService
-from .run_plan_environments import RunPlanEnvironmentQuery
+from .run_plan_environment_health import PinnedEnvironmentHealthPort
 from .runner_port import AutomationRunnerCommand
+from ...domain.quality_loop.environment_observation_record import validate_environment_envelope
 from ...domain.quality_loop.native_environment import NativeEnvironmentInvalid
 from ...domain.quality_loop.native_environment_health import NativeEnvironmentHealthObservation
 from ...domain.quality_loop.run_plan import RunPlanChanged
@@ -21,7 +24,8 @@ from ...domain.quality_loop.http_fixtures import (
 class HttpFixtureSavedPlanAccessPort(Protocol):
     def verified_read_session(self): ...
     def require_scope(self, scope) -> dict: ...
-    def command(self, scope, phase, *, setup_receipt=None): ...
+    def command_with_parent(self, scope, phase, *, setup_receipt=None) -> tuple[dict, AutomationRunnerCommand]: ...
+    def cleanup_commands_from_receipt(self, scope, setup_receipt) -> tuple[tuple[str, AutomationRunnerCommand], ...]: ...
 
 
 class HttpFixtureExecutionArtifactPort(Protocol):
@@ -46,8 +50,8 @@ class SavedRunPlanHttpFixtureAccess:
         reader = getattr(self.plans, "verified_read_session", None)
         return reader() if callable(reader) else nullcontext()
 
-    def _inventory_hash(self, scope, view, environment=None):
-        return view["artifact"]["plan"]["selection"]["environment"]["inventory_hash"]
+    def _original_environment(self, view, environment=None):
+        return None
 
     def _scope_inputs(self, scope):
         return self.plans.read(scope.project_id, self.parent.run_plan_id), None
@@ -57,10 +61,16 @@ class SavedRunPlanHttpFixtureAccess:
         return deepcopy(self.parent.model_dump(mode="json"))
 
     def _read_scope(self, scope):
+        return self._read_bound_scope(scope)[0]
+
+    def _require_manifest_identity(self, scope):
         if (scope.project_id != self.parent.project_id or scope.parent_digest != self.parent.plan_digest
                 or scope.case_id != self.manifest["case_id"]
                 or scope.data_manifest_hash != acceptance_digest(self.manifest)):
             raise HttpFixtureInvalid("fixture scope differs from the original saved plan and manifest")
+
+    def _read_bound_scope(self, scope):
+        self._require_manifest_identity(scope)
         with self.verified_read_session():
             view, environment = self._scope_inputs(scope)
             try:
@@ -76,16 +86,32 @@ class SavedRunPlanHttpFixtureAccess:
                     raise HttpFixtureInvalid("fixture plan body differs from its original project and digest")
                 selection = artifact["plan"]["selection"]
                 if (selection["environment"]["environment_id"] != scope.environment_id
-                        or self._inventory_hash(scope, view, environment) != scope.inventory_hash
                         or selection["environment"]["base_url"] != "http://127.0.0.1:8080"
                         or selection["target_build"]["artifact_hash"] != scope.artifact_hash):
                     raise HttpFixtureInvalid("fixture target differs from the original RunPlan selection")
+                original = self._original_environment(view, environment)
+                inventory_hash = (original["metadata"]["inventory_hash"] if original is not None
+                                  else selection["environment"]["inventory_hash"])
+                if inventory_hash != scope.inventory_hash:
+                    raise HttpFixtureInvalid("fixture target differs from the original RunPlan selection")
             except (KeyError, TypeError, UnicodeError, RecursionError):
                 raise HttpFixtureInvalid("fixture original saved plan cannot be verified") from None
-        return view
+        return view, original
 
     def command(self, scope, phase, *, setup_receipt=None):
-        self.require_scope(scope)
+        return self.command_with_parent(scope, phase, setup_receipt=setup_receipt)[1]
+
+    def command_with_parent(self, scope, phase, *, setup_receipt=None):
+        parent = self.require_scope(scope)
+        return parent, self._command_for_phase(scope, phase, setup_receipt)
+
+    def cleanup_commands_from_receipt(self, scope, setup_receipt):
+        """Derive history lookup keys from a verified receipt; this grants no access or dispatch."""
+        self._require_manifest_identity(scope)
+        phases = ("cleanup:" + binding for binding in fixture_bindings(self.manifest))
+        return tuple((phase, self._command_for_phase(scope, phase, setup_receipt)) for phase in phases)
+
+    def _command_for_phase(self, scope, phase, setup_receipt):
         if phase == "setup":
             steps = tuple(self.manifest["setup_steps"])
         elif type(phase) is str and phase.startswith("cleanup:"):
@@ -104,7 +130,7 @@ class SavedRunPlanHttpFixtureAccess:
 class NativeSavedRunPlanHttpFixtureAccess(SavedRunPlanHttpFixtureAccess):
     """An explicit original observation, never latest inventory or legacy promotion."""
     def __init__(self, plans, parent, manifest, environment_records: HttpFixtureEnvironmentReadPort,
-                 native_environment, *, environment_health=None):
+                 native_environment, *, environment_health: PinnedEnvironmentHealthPort = None):
         super().__init__(plans, parent, manifest)
         if (environment_records is None or type(native_environment) is not dict
                 or set(native_environment) != {"record_id", "artifact_hash", "inventory_hash", "operator_policy_digest"}):
@@ -112,6 +138,12 @@ class NativeSavedRunPlanHttpFixtureAccess(SavedRunPlanHttpFixtureAccess):
         self.environment_records = environment_records
         self.native_environment = deepcopy(native_environment)
         self.environment_health = environment_health
+
+    def require_dispatch_scope(self, scope):
+        view = self._read_scope(scope)
+        if view.get("current_use", {}).get("inputs_current") is not True:
+            raise RunPlanChanged("native fixture dispatch requires current original inputs and script review")
+        return deepcopy(self.parent.model_dump(mode="json"))
 
     def _scope_inputs(self, scope):
         reader = getattr(self.environment_records, "read_with_plan", None)
@@ -140,12 +172,18 @@ class NativeSavedRunPlanHttpFixtureAccess(SavedRunPlanHttpFixtureAccess):
                 raise
             raise HttpFixtureInvalid("native fixture original environment cannot be verified") from exc
 
-    def _inventory_hash(self, scope, view, environment=None):
-        return self._original_environment(view, environment)["metadata"]["inventory_hash"]
+    def require_original_dispatch(self, scope, phase, command, *, setup_receipt, require_work):
+        """Verify the exact manifest command and return the parent already checked by preflight."""
+        expected = self._command_for_phase(scope, phase, setup_receipt)
+        if not isinstance(command, AutomationRunnerCommand) or command != expected:
+            raise HttpFixtureInvalid("fixture dispatch command is outside the original manifest")
+        self.require_dispatch(scope, phase, command, require_work=require_work)
+        return self.parent.model_dump(mode="json")
 
     def require_dispatch(self, scope, phase, command, *, require_work):
         """Transient live gate before a new claim; historical reads never probe Docker."""
-        require_work()
+        current = work_poll(require_work)
+        current()
         if self.environment_health is None:
             raise HttpFixtureInvalid("native fixture dispatch requires an explicit live target health port")
         if (type(phase) is not str or not (phase == "setup" or
@@ -156,26 +194,27 @@ class NativeSavedRunPlanHttpFixtureAccess(SavedRunPlanHttpFixtureAccess):
         expected = HttpFixtureLifecycleApplicationService._command(scope, phase, command.steps)
         if acceptance_digest(asdict(command)) != acceptance_digest(asdict(expected)):
             raise HttpFixtureInvalid("native fixture dispatch command differs from its original scope")
-        before = self._read_scope(scope)
-        if before.get("current_use", {}).get("inputs_current") is not True:
-            raise RunPlanChanged("native fixture dispatch requires current original inputs and script review")
-        original = self._original_environment(before)
-        query = RunPlanEnvironmentQuery.model_validate(original["archive"]["request"])
-        require_work()
-        value = self.environment_health.inspect(query, require_work=require_work)
-        require_work()
-        if (type(value) is not dict or acceptance_digest(value.get("request")) != acceptance_digest(query.model_dump(mode="json"))
-                or not isinstance(value.get("observation"), NativeEnvironmentHealthObservation)):
-            raise NativeEnvironmentInvalid("native fixture preflight requires the exact original typed health observation")
-        raw = value["observation"]
-        observed = NativeEnvironmentHealthObservation(deepcopy(raw.inventory), raw.inventory_hash,
-            deepcopy(raw.checks), raw.observed_at)
-        if (observed.inventory_hash != scope.inventory_hash
-                or acceptance_digest(observed.inventory) != acceptance_digest(original["archive"]["observation"]["inventory"])
-                or not observed.dependency_health_verified or not observed.target_health_verified):
-            raise NativeEnvironmentInvalid("native fixture original target epoch or dependency health is no longer valid")
-        after = self._read_scope(scope)
-        if (after.get("current_use", {}).get("inputs_current") is not True
-                or acceptance_digest(after) != acceptance_digest(before)):
-            raise RunPlanChanged("native fixture original inputs changed during live preflight")
-        require_work()
+        with fixture_phase("journal_preflight_parent_before"):
+            before, original = self._read_bound_scope(scope)
+            if before.get("current_use", {}).get("inputs_current") is not True:
+                raise RunPlanChanged("native fixture dispatch requires current original inputs and script review")
+            pinned = validate_environment_envelope(original["archive"])
+        with fixture_phase("journal_preflight_live_health"):
+            current()
+            value = self.environment_health.probe_pinned_inventory(pinned, require_work=require_work)
+            current()
+            if not isinstance(value, NativeEnvironmentHealthObservation):
+                raise NativeEnvironmentInvalid("native fixture preflight requires the exact original typed health observation")
+            observed = NativeEnvironmentHealthObservation(deepcopy(value.inventory), value.inventory_hash,
+                deepcopy(value.checks), value.observed_at)
+            if (observed.inventory_hash != scope.inventory_hash
+                    or acceptance_digest(observed.inventory) != acceptance_digest(original["archive"]["observation"]["inventory"])
+                    or not observed.dependency_health_verified or not observed.target_health_verified):
+                raise NativeEnvironmentInvalid("native fixture original target epoch or dependency health is no longer valid")
+        with fixture_phase("journal_preflight_parent_after"):
+            after, latest_environment = self._read_bound_scope(scope)
+            if (after.get("current_use", {}).get("inputs_current") is not True
+                    or acceptance_digest(after) != acceptance_digest(before)
+                    or latest_environment != original):
+                raise RunPlanChanged("native fixture original inputs changed during live preflight")
+        current()

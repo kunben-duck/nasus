@@ -8,14 +8,19 @@ async function comparisonFixture(request: APIRequestContext, source: string) {
   const fixture = await captureAnalysis(request, source)
   const [before] = await frozenRevisions(request, fixture.projectId, fixture.owner.headers)
   writeFileSync(join(source, 'Added.java'), 'class Added { public String health() { return "ok"; } }\n')
+  await fixture.invoke('system_image.sources.ingest')
   await fixture.invoke('system_image.context.materialize')
   const images = await frozenRevisions(request, fixture.projectId, fixture.owner.headers)
-  const after = images.find((item) => item.image_revision_id !== before.image_revision_id)!
+  const after = images.find((item) => item.manifest_id !== before.manifest_id)
+  if (!after) throw new Error('Capturing the edited source did not produce a new frozen image')
+  expect(images.find((item) => item.image_revision_id === before.image_revision_id)).toEqual(before)
   const params = new URLSearchParams({ before_image_revision_id: before.image_revision_id, before_image_hash: before.artifact_hash,
     after_image_revision_id: after.image_revision_id, after_image_hash: after.artifact_hash, limit: '20', offset: '0' })
   const response = await request.get(`${analysisApi}/v1/projects/${fixture.projectId}/system-image/code-member-delta?${params}`, { headers: fixture.owner.headers })
   expect(response.ok()).toBeTruthy()
-  return { ...fixture, before, after, expected: await response.json() }
+  const expected = await response.json()
+  expect(expected.counts.added_member).toBeGreaterThan(0)
+  return { ...fixture, before, after, expected }
 }
 
 for (const theme of ['light', 'dark']) {

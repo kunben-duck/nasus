@@ -1,5 +1,5 @@
 """Count and paginate canonical operations after SQL source-visibility filtering."""
-from sqlalchemy import and_, case, func, literal, select, true, union_all
+from sqlalchemy import and_, cast, func, literal, null, select, true, union_all
 from sqlalchemy.orm import aliased
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -21,6 +21,8 @@ class HttpFixtureHistoryRepository:
         for tool in (GRANT_TOOL, FIXTURE_COMMAND_TOOL, FIXTURE_CANCEL_TOOL):
             original = aliased(Command)
             selected = Command if tool == FIXTURE_COMMAND_TOOL else original
+            # PostgreSQL otherwise resolves the first two NULL branches as text.
+            original_input = original.input_payload if tool == FIXTURE_CANCEL_TOOL else cast(null(), Command.input_payload.type)
             recipe_join = and_(Recipe.project_id == project_id,
                 Recipe.record_id == Command.input_payload["recipe_id"].as_string(),
                 Recipe.artifact_hash == Command.input_payload["recipe_artifact_hash"].as_string())
@@ -29,7 +31,7 @@ class HttpFixtureHistoryRepository:
                 (original.id if tool == FIXTURE_CANCEL_TOOL else literal(None)).label("original_id"),
                 (original.tool_id if tool == FIXTURE_CANCEL_TOOL else literal(None)).label("original_tool"),
                 (original.status if tool == FIXTURE_CANCEL_TOOL else literal(None)).label("original_status"),
-                (original.input_payload if tool == FIXTURE_CANCEL_TOOL else literal(None)).label("original_input")).select_from(Command)
+                original_input.label("original_input")).select_from(Command)
             if tool != GRANT_TOOL:
                 if tool == FIXTURE_CANCEL_TOOL:
                     base = base.outerjoin(original, and_(original.id == Command.input_payload["invocation_id"].as_string(),
@@ -63,7 +65,7 @@ class HttpFixtureHistoryRepository:
         return select(total.c.total, total.c.invalid_total, page).select_from(total.outerjoin(page, true())).order_by(page.c.invocation_id)
 
     @staticmethod
-    def _row(row):
+    def _history_row(row):
         command = {"id": row.invocation_id, "tool_id": row.tool_id, "status": row.status, "input_payload": row.input_payload}
         original = ({"id": row.original_id, "tool_id": row.original_tool, "status": row.original_status,
             "input_payload": row.original_input} if row.original_id is not None else None)
@@ -77,7 +79,7 @@ class HttpFixtureHistoryRepository:
                 rows = session.execute(statement).all()
                 if not rows or rows[0].invalid_total != 0:
                     raise HttpFixtureInvalid("fixture history has unresolved original ancestry; no partial complete inventory")
-                return rows[0].total, [cls._row(row) for row in rows if row.invocation_id is not None]
+                return rows[0].total, [cls._history_row(row) for row in rows if row.invocation_id is not None]
         except SQLAlchemyError as exc:
             raise HttpFixtureHistoryUnavailable("original fixture history storage is unavailable") from exc
 

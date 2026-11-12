@@ -15,6 +15,7 @@ CATALOG_ENCODING_INSTRUCTIONS = (
     "v2 prefixes end at a dot; v3 also factors recurring underscore-delimited prefixes. "
     "Groups and suffixes retain registry order. "
     "relevant_tools always uses full canonical IDs and complete governance fields. "
+    "Display labels and descriptions may be shortened or omitted. "
     "Return full IDs, never a suffix or an encoded pair. Registry membership is not "
     "permission: do not infer missing inputs, confirmation, approval or execution authority."
 )

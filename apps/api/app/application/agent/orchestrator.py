@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from .agent_models import ConversationMessage, ConversationSession
+from .system_image_status_queries import system_image_status_query
 from ...domain.agent.runtime_models import (
     AgentGoalProposal,
     ClarificationRequest,
@@ -273,21 +274,7 @@ class ConversationOrchestrator:
 
     def _system_image_query_plan(self, conversation: ConversationSession) -> OrchestratorDecision:
         project_id = conversation.project_id or conversation.space_id
-        return OrchestratorDecision(
-            kind="tool_plan",
-            tool_plan=ToolInvocationPlan(
-                intent_kind="system_image_query",
-                confidence=0.88,
-                steps=[
-                    ToolPlanStep(
-                        tool_id="query.system_image.status",
-                        input_payload={"project_id": project_id},
-                        reason="Summarize source freshness, baseline readiness, relationships, and quality metrics.",
-                    )
-                ],
-                recommended_next_tools=["system_image.baseline.initialize"] if conversation.space_type == "project" else [],
-            ),
-        )
+        return system_image_status_query(project_id, recommend_initialization=conversation.space_type == "project")
 
     def _quality_loop_goal(self, conversation: ConversationSession, user_message: str) -> OrchestratorDecision:
         project_id = conversation.project_id or (conversation.space_id if conversation.space_type == "project" else "")

@@ -71,14 +71,14 @@ class Commands:
             if self.after:
                 self.after(self)
             return 0, self.body
-        assert options["max_bytes"] == 256 * 1024
         if args[1] == "container":
             assert args[2:5] == ["inspect", "--format", CONTAINER_FORMAT]
-            value = self.containers[args[-1]]
-        else:
-            assert args == ["docker", "network", "inspect", "--format", NETWORK_FORMAT, self.spec.network_id]
-            value = self.network
-        return 0, json.dumps(value).encode()
+            assert args[5:] == [self.spec.container_id, *(item.container_id for item in self.spec.dependencies)]
+            assert options["max_bytes"] == len(args[5:]) * 256 * 1024
+            return 0, b"\n".join(json.dumps(self.containers[ident]).encode() for ident in args[5:]) + b"\n"
+        assert args == ["docker", "network", "inspect", "--format", NETWORK_FORMAT, self.spec.network_id]
+        assert options["max_bytes"] == 256 * 1024
+        return 0, json.dumps(self.network).encode()
 
 
 def test_exact_original_artifact_and_owned_cohort_are_observed_without_execution(spec):
@@ -94,11 +94,35 @@ def test_exact_original_artifact_and_owned_cohort_are_observed_without_execution
             "external_egress_denial_verified", "host_access_denial_verified", "dependency_health_verified"):
         assert inventory[key] is False
     assert inventory["automated_count"] == inventory["executed_on_target_count"] == inventory["passed_count"] == 0
-    assert len(commands.calls) == 9 and len(access) >= 20
+    assert len(commands.calls) == 5 and len(access) >= 12
     assert result.observed_at.endswith("+00:00")
     assert ".Config.Env" not in CONTAINER_FORMAT and "{{json .Args}}" not in CONTAINER_FORMAT
     assert "slice .Args 0 2" in CONTAINER_FORMAT
-    assert "exec" == commands.calls[4][0][1]
+    assert [args[1] for args, _ in commands.calls] == ["container", "network", "exec", "container", "network"]
+
+
+@pytest.mark.parametrize("fault", ["missing", "extra", "reordered", "duplicate", "oversized_member"])
+def test_batched_inspection_rejects_mismatched_inventory_before_artifact_read(spec, fault):
+    commands = Commands(spec)
+
+    def batch(args, **options):
+        code, body = commands(args, **options)
+        rows = body.splitlines()
+        if fault == "missing":
+            rows.pop()
+        elif fault == "extra":
+            rows.append(rows[0])
+        elif fault == "reordered":
+            rows[1], rows[2] = rows[2], rows[1]
+        elif fault == "duplicate":
+            rows[1] = rows[0]
+        else:
+            rows[1] += b" " * (256 * 1024)
+        return code, b"\n".join(rows)
+
+    with pytest.raises(NativeEnvironmentInvalid):
+        OwnedTargetEnvironmentInspector(spec, command=batch).inspect(ARTIFACT, require_work=lambda: None)
+    assert [args[1] for args, _ in commands.calls] == ["container"]
 
 
 @pytest.mark.parametrize("field,value", [
@@ -233,7 +257,7 @@ def test_command_failure_is_redacted(spec, exception):
     assert "secret" not in str(error.value)
 
 
-@pytest.mark.parametrize("at", [1, 5, 12, 20])
+@pytest.mark.parametrize("at", [1, 5, 8, 12])
 def test_source_revocation_or_cancellation_propagates_without_recovery(spec, at):
     commands, count = Commands(spec), 0
     def current():

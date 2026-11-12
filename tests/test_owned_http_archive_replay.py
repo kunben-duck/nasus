@@ -1,4 +1,5 @@
 """Explicit archive specimens; actual fixed exweb blobs are verified separately."""
+import base64
 from dataclasses import replace
 import hashlib
 import importlib.util
@@ -29,7 +30,7 @@ def archive(tmp_path, spec, monkeypatch):
     source_body = b"explicit source protocol specimen, not exweb"
     files = [dict(path="explicit-source-" + str(index), mode="100644", git_blob=str(index)) for index in range(126)]
     probe = SimpleNamespace(source_inventory=lambda *_: files,
-        command=lambda *_: SimpleNamespace(stdout=source_body))
+        command=lambda *_args, **_kwargs: SimpleNamespace(stdout=source_body))
     fake_loader = SimpleNamespace(exec_module=lambda _: None)
     monkeypatch.setattr(reader.importlib.util, "spec_from_file_location", lambda *_: SimpleNamespace(loader=fake_loader))
     monkeypatch.setattr(reader.importlib.util, "module_from_spec", lambda _: probe)
@@ -38,8 +39,8 @@ def archive(tmp_path, spec, monkeypatch):
         cleanup=dict(verified=True, remaining_owned_resources=[]), checks={},
         http_runner=dict(inventory=inventory.inventory, inventory_hash=inventory.inventory_hash, cases=[],
             executor_sources=[], execution_authorized=False, nasus_runplan_verified=False, release_authorized=False))
-    code = "apps/runner/src/owned-http-cli.mjs"
-    report["http_runner"]["executor_sources"].append(dict(path=code, content_hash=reader.digest((ROOT / code).read_bytes())))
+    report["http_runner"]["executor_sources"] = [dict(path=code, content_hash=reader.digest((ROOT / code).read_bytes()))
+        for code in reader.EXECUTOR_SOURCE_PATHS]
     for label in sorted(reader.CASES):
         job = replace(command(), job_id="explicit-protocol-" + label, us_id=label, project_id=spec.project_id,
             base_url="http://127.0.0.1:8080", metadata=dict(target_artifact_hash=ARTIFACT))
@@ -68,10 +69,76 @@ def test_complete_enriched_sources_and_original_failures_survive_readonly_replay
     assert result["passed_jobs"] == 5 and result["failed_jobs"] == 2
     assert result["totals"]["failed"] == 2
     assert result["target_reexecuted"] is False and result["formal_coverage_verified"] is False
+    assert result["executor_sources_verified"] == 10 and result["executor_git_blobs_verified"] == 0
+
+
+def test_historical_executor_blob_must_match_the_original_archive_digest(archive, monkeypatch):
+    report_path, report = archive
+    sources = report["http_runner"]["executor_sources"]
+    source = sources[0]
+    body, oid, calls = b"older executor source, not a target command", "a" * 40, []
+    source["content_hash"] = reader.digest(body)
+    report_path.write_text(json.dumps(report))
+    repository = Path("explicit-protocol-repository")
+    with pytest.raises(ValueError):
+        reader.verify(report_path, repository)
+
+    probe = reader.importlib.util.module_from_spec(None)
+    original_git = probe.command
+
+    def local_git(args, *, env=None):
+        if env is None:
+            return original_git(args)
+        calls.append(args[4:])
+        assert args[:4] == ["git", "-C", str(ROOT), "cat-file"]
+        assert args[5] == oid and env["GIT_NO_LAZY_FETCH"] == "1"
+        return SimpleNamespace(stdout=(str(len(body)).encode() if args[4] == "-s" else body))
+
+    monkeypatch.setattr(probe, "command", local_git)
+    pins = [source["path"] + "=" + oid]
+    verified = reader.verify(report_path, repository, executor_source_blobs=pins)
+    assert verified["executor_sources_verified"] == 10 and verified["executor_git_blobs_verified"] == 1
+    assert calls == [["-s", oid], ["blob", oid]]
+    source["content_hash"] = reader.digest(b"different original")
+    report_path.write_text(json.dumps(report))
+    with pytest.raises(ValueError):
+        reader.verify(report_path, repository, executor_source_blobs=pins)
+
+
+def test_private_executor_bundle_replays_without_worktree_sources_and_cannot_be_overwritten(archive, monkeypatch):
+    report_path, report = archive
+    original = report_path.read_bytes()
+    repository = Path("explicit-protocol-repository")
+    result = reader.verify(report_path, repository, preserve_executor_sources=True)
+    assert result["executor_source_bundle_created"] and not result["executor_source_bundle_verified"]
+    path = report_path.with_suffix(".runner") / "executor-sources.json"
+    body = path.read_bytes()
+    assert path.stat().st_mode & 0o777 == 0o600 and report_path.read_bytes() == original
+    monkeypatch.setattr(reader, "ROOT", report_path.parent / "no-worktree-sources")
+    replay = reader.verify(report_path, repository)
+    assert replay["executor_source_bundle_verified"] and not replay["executor_source_bundle_created"]
+    assert replay["executor_sources_verified"] == 10 and replay["executor_git_blobs_verified"] == 0
+    with pytest.raises(ValueError):
+        reader.verify(report_path, repository, preserve_executor_sources=True)
+    assert path.read_bytes() == body
+
+    bundle = json.loads(body)
+    source = report["http_runner"]["executor_sources"][0]["path"]
+    bundle["sources"][source] = base64.b64encode(b"not the original bytes").decode("ascii")
+    path.write_text(json.dumps(bundle))
+    with pytest.raises(ValueError):
+        reader.verify(report_path, repository)
+
+
+@pytest.mark.parametrize("pin", ["../../etc/passwd=" + "a" * 40, "apps/runner/src/owned-http-cli.mjs=HEAD:path",
+    "apps/runner/src/owned-http-cli.mjs=--filters", "apps/runner/src/owned-http-cli.mjs"])
+def test_executor_blob_pins_reject_paths_and_git_expressions(pin):
+    with pytest.raises(ValueError):
+        reader.executor_blob_pins([pin])
 
 
 @pytest.mark.parametrize("fault", ["missing-source", "source-bytes", "source-identity", "missing-case", "duplicate-case", "inventory", "cleanup",
-    "wire", "response", "passed-flag", "executor-code", "formal-authority"])
+    "wire", "response", "passed-flag", "executor-code", "executor-missing", "executor-duplicate", "formal-authority"])
 def test_bad_or_incomplete_archives_cannot_be_reported_as_verified(archive, fault):
     report_path, report = archive
     runner = report["http_runner"]
@@ -88,6 +155,8 @@ def test_bad_or_incomplete_archives_cannot_be_reported_as_verified(archive, faul
         path.write_bytes(path.read_bytes() + b" ")
     if fault == "passed-flag": report["checks"]["runner_" + runner["cases"][0]["case_id"]] = True
     if fault == "executor-code": runner["executor_sources"][0]["content_hash"] = "sha256:" + "0" * 64
+    if fault == "executor-missing": runner["executor_sources"].pop()
+    if fault == "executor-duplicate": runner["executor_sources"][-1] = runner["executor_sources"][0]
     if fault == "formal-authority": runner["execution_authorized"] = True
     report_path.write_text(json.dumps(report))
     with pytest.raises(ValueError): reader.verify(report_path, Path("explicit-protocol-repository"))

@@ -18,7 +18,7 @@ def test_actual_source_revocation_after_admission_parent_rejects_script_read(nat
     original = read_draft(v, command).json()
     grant_member(v)
     service = v["script_service"]
-    reader = service.admissions.read_with_inputs
+    reader = service.admissions.replay_inputs
     calls = []
 
     def revoke(*args):
@@ -28,11 +28,11 @@ def test_actual_source_revocation_after_admission_parent_rejects_script_read(nat
             restrict_source(v)
         return value
 
-    monkeypatch.setattr(service.admissions, "read_with_inputs", revoke)
+    monkeypatch.setattr(service.admissions, "replay_inputs", revoke)
     with actor_scope(UserProfile.model_validate(v["member"])), pytest.raises(SourceAccessDenied):
         service.read(v["project_id"], original["metadata"]["script_revision_id"])
     assert len(calls) == 1 and len(v["script_calls"]) == 1
-    monkeypatch.setattr(service.admissions, "read_with_inputs", reader)
+    monkeypatch.setattr(service.admissions, "replay_inputs", reader)
     assert read_draft(v, command).json() == original
 
 

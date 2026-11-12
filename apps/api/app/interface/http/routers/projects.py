@@ -2,14 +2,30 @@ from __future__ import annotations
 
 from typing import Any, List, Literal, Optional
 
-from fastapi import APIRouter, File, Form, Response, UploadFile
+from fastapi import APIRouter, File, Form, Header, Query, Response, UploadFile
 
 from ....application.platform.project_models import ProjectCreateRequest, VersionCreateRequest, VersionSummary
+from ....application.platform.errors import PlatformApplicationError
+from ....application.quality_loop.version_delivery_models import VersionDeliveryReadModel
+from ....application.quality_loop.version_delivery_errors import delivery_error
+from ....domain.system_image.image_revision import ImageArtifactUnavailable, ImageRevisionIntegrityError
 from ....application.system_image.source_uploads import SourceUploadFile, SourceUploadResult
-from ..dependencies import GovernanceApp, ProjectWorkspaceApp, SourceUploadApp, SystemImageApp
+from ..dependencies import GovernanceApp, ProjectWorkspaceApp, SourceUploadApp, SystemImageApp, VersionDeliveryApp, RequirementRevisionApp
 from ..errors import error_response
 
 router = APIRouter()
+
+
+@router.get("/v1/projects/{project_id}/versions/{version_id}/requirements")
+def get_version_requirements(project_id: str, version_id: str, requirements: RequirementRevisionApp,
+                             response: Response, us_id: Optional[str] = None,
+                             offset: int = Query(0, ge=0, le=100000), limit: int = Query(20, ge=1, le=50)):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return requirements.list(project_id, version_id, us_id=us_id, offset=offset, limit=limit)
+    except (ValueError, KeyError, PermissionError, ImageArtifactUnavailable, ImageRevisionIntegrityError) as exc:
+        error = delivery_error(exc)
+        raise error_response(error.code, error.message, error.status_code) from exc
 
 
 @router.post(
@@ -120,15 +136,27 @@ async def create_version(
     project_id: str,
     payload: VersionCreateRequest,
     project_workspace: ProjectWorkspaceApp,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key", min_length=1, max_length=128),
 ) -> VersionSummary:
     try:
-        return await project_workspace.create_version(project_id, payload)
+        return await project_workspace.create_version(project_id, payload, idempotency_key=idempotency_key)
+    except PlatformApplicationError:
+        raise
     except ValueError as exc:
         raise error_response("validation_error", str(exc)) from exc
     except KeyError as exc:
         raise error_response("not_found", f"project {project_id} was not found", 404) from exc
     except RuntimeError as exc:
         raise error_response("tool_invocation_failed", str(exc), 500) from exc
+
+
+@router.get("/v1/projects/{project_id}/versions/{version_id}/delivery", response_model=VersionDeliveryReadModel)
+def get_version_delivery(project_id: str, version_id: str, delivery: VersionDeliveryApp, response: Response):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return delivery.read(project_id, version_id)
+    except (ValueError, KeyError, PermissionError, ImageArtifactUnavailable, ImageRevisionIntegrityError) as exc:
+        raise delivery_error(exc) from exc
 
 
 @router.get("/v1/projects/{project_id}/workspaces/{us_id}")

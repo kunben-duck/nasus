@@ -41,6 +41,7 @@ class SQLAlchemyProjectAccessReadModel:
                 id=row.id,
                 project_id=row.project_id,
                 initiator_id=row.initiator_id,
+                space_type=row.space_type,
             )
 
     def invocation_scope(self, invocation_id: str) -> InvocationAccessScope | None:

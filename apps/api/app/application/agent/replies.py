@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Any, AsyncIterator
 
 from .reply_ports import (
@@ -56,6 +57,7 @@ class AgentReplyApplicationService:
         prompt_id: str = "agent_conversation_reply",
         purpose: str = "agent.conversation_reply",
         tool_invocation_id: str | None = None,
+        reference_context: str = "",
     ) -> AgentReply:
         memory_context = await self._memory.build_context(
             conversation,
@@ -74,7 +76,7 @@ class AgentReplyApplicationService:
             settings=settings,
             system_prompt=effective_system_prompt,
             user_message=user_message,
-            context_snapshot=memory_context.context_snapshot,
+            context_snapshot=memory_context.context_snapshot + reference_context,
             history_snapshot=memory_context.history_snapshot,
             fallback_text=fallback_text,
             custom_api_key=self._model_settings.get_custom_model_api_key("chat"),
@@ -113,7 +115,10 @@ class AgentReplyApplicationService:
         prompt_id: str = "agent_conversation_reply",
         purpose: str = "agent.conversation_reply",
         tool_invocation_id: str | None = None,
+        reference_context: str = "",
     ) -> AsyncIterator[AgentReplyStreamEvent]:
+        started = time.monotonic()
+        first_token_latency_ms = None
         memory_context = await self._memory.build_context(
             conversation,
             trace_retrieval=True,
@@ -136,7 +141,7 @@ class AgentReplyApplicationService:
             settings=settings,
             system_prompt=effective_system_prompt,
             user_message=user_message,
-            context_snapshot=memory_context.context_snapshot,
+            context_snapshot=memory_context.context_snapshot + reference_context,
             history_snapshot=memory_context.history_snapshot,
             fallback_text=fallback_text,
             custom_api_key=self._model_settings.get_custom_model_api_key("chat"),
@@ -151,6 +156,8 @@ class AgentReplyApplicationService:
                 tool_invocation_id=tool_invocation_id,
             ),
         ):
+            if event.delta and first_token_latency_ms is None:
+                first_token_latency_ms = round((time.monotonic() - started) * 1000)
             metadata = {
                 **base_metadata,
                 "llm_provider": event.provider,
@@ -160,6 +167,7 @@ class AgentReplyApplicationService:
                 "input_tokens": event.input_tokens,
                 "output_tokens": event.output_tokens,
                 "usage_source": event.usage_source,
+                "first_token_latency_ms": first_token_latency_ms,
             }
             if event.llm_call_id:
                 metadata["llm_call_id"] = event.llm_call_id

@@ -80,9 +80,48 @@ function specimenCommand(calls, { changedArtifact = false, externalNetwork = fal
       assert.equal(args[3], OWNED_NETWORK_FORMAT)
       return Buffer.from(JSON.stringify({ ...cohort.network, Internal: !externalNetwork }))
     }
-    if (args[2] === 'sha256sum') return Buffer.from((changedArtifact ? 'e'.repeat(64) : artifactHash.slice(7)) + '  /app/target.jar\n')
+    if (args[2] === 'sha256sum') return Buffer.from((changedArtifact ? 'e'.repeat(64) : artifactHash.slice(7)) + '  ' + args[3] + '\n')
     return Buffer.from('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"value":true}')
   }
+}
+
+function pythonCohort() {
+  const value = cohortSpecimen(), target = value.containers[containerId]
+  target.Path = 'python'; target.Args = ['/app/target.pyz', 'runserver', '0.0.0.0:8080', '--noreload']
+  target.Mounts[0].Destination = '/app/target.pyz'
+  delete value.containers['2'.repeat(64)]; delete value.network.Containers['2'.repeat(64)]
+  value.inventory.schema = 'nasus.owned-target-environment.v2'
+  value.inventory.profile = 'nasus.python312-django-pg.v1'
+  value.inventory.dependency_instances = value.inventory.dependency_instances.slice(0, 1)
+  return value
+}
+
+test('registered Python transport checks the exact zipapp and PG without invented Redis', async () => {
+  assert.ok(OWNED_CONTAINER_FORMAT.includes('(eq .Path "python") (eq (len .Args) 4)'))
+  const calls = [], cohort = pythonCohort(), signal = AbortSignal.timeout(5000)
+  const transport = await ownedDockerHttpTransport({ containerId, imageId, artifactHash,
+    expectedInventory: cohort.inventory, signal, command: specimenCommand(calls, { cohort }) })
+  await transport.request({ method: 'GET', path: '/api/tags', headers_json: '{}', body_json: 'null' },
+    new URL('http://127.0.0.1:8080'), null, signal, 1024)
+  assert.ok(calls.some(({ args }) => args[2] === 'sha256sum' && args[3] === '/app/target.pyz'))
+  assert.equal(calls.some(({ args }) => args.includes('2'.repeat(64))), false)
+})
+
+for (const fault of ['unknown', 'legacy', 'missing', 'artifact', 'command', 'extra-args', 'redis', 'unowned-member']) {
+  test(`Python transport rejects altered profile or runtime: ${fault}`, async () => {
+    const calls = [], cohort = pythonCohort(), target = cohort.containers[containerId]
+    if (fault === 'unknown') cohort.inventory.profile = 'caller-command'
+    if (fault === 'legacy') cohort.inventory.schema = 'nasus.owned-target-environment.v1'
+    if (fault === 'missing') delete cohort.inventory.profile
+    if (fault === 'artifact') target.Mounts[0].Destination = '/tmp/unknown.pyz'
+    if (fault === 'command') target.Args[1] = 'shell'
+    if (fault === 'extra-args') target.Args.push('--settings=other.settings')
+    if (fault === 'redis') cohort.inventory.dependency_instances[0].role = 'redis'
+    if (fault === 'unowned-member') cohort.network.Containers['4'.repeat(64)] = { Name: 'foreign' }
+    await assert.rejects(ownedDockerHttpTransport({ containerId, imageId, artifactHash,
+      expectedInventory: cohort.inventory, signal: AbortSignal.timeout(5000), command: specimenCommand(calls, { cohort }) }))
+    assert.equal(calls.some(({ args }) => args.includes('curl')), false)
+  })
 }
 
 test('owned transport uses exact container loopback and raw POST, never host ports or redirects', async () => {

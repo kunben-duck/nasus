@@ -41,6 +41,7 @@ class AutomationCaseAdmissionPort(Protocol):
     def read(self, project_id, revision_id): ...
     def resolve(self, project_id, revision_id, artifact_hash, prepared): ...
     def read_with_inputs(self, project_id, revision_id): ...
+    def replay_inputs(self, project_id, revision_id): ...
 
 
 class AutomationScriptGenerationApplicationService:
@@ -63,10 +64,15 @@ class AutomationScriptGenerationApplicationService:
             selection.case_approval_artifact_hash, current=not historical)
 
     def _admission_input(self, request, *, current=False):
-        value, historical, live = self.admissions.read_with_inputs(request.project_id, request.case_approval_revision_id)
-        if current and value.get("current_use", {}).get("case_admission_current") is not True:
-            raise CaseApprovalChanged("case admission was withdrawn, superseded or lost current authority")
-        prepared = live if current else historical
+        args = (request.project_id, request.case_approval_revision_id)
+        replay = getattr(self.admissions, "replay_inputs", None)
+        if not current and callable(replay):
+            value, prepared = replay(*args)
+        else:
+            value, historical, live = self.admissions.read_with_inputs(*args)
+            if current and value.get("current_use", {}).get("case_admission_current") is not True:
+                raise CaseApprovalChanged("case admission was withdrawn, superseded or lost current authority")
+            prepared = live if current else historical
         if not isinstance(prepared, dict):
             raise CaseApprovalIntegrityError("case admission must return its complete verified input")
         verify_automation_case_admission(prepared, value, request.case_approval_revision_id,

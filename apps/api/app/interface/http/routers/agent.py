@@ -13,6 +13,7 @@ from ....application.agent.agent_models import (
 )
 from ....domain.agent.plan_policy import AgentPlanPolicyViolation
 from ....application.agent.resume_inputs import AgentGoalResumeRequest
+from ....application.platform.errors import PlatformApplicationError
 from ..dependencies import AgentApp
 from ..errors import error_response
 from ...sse import SSE_RESPONSE_HEADERS, encode_event, encode_heartbeat
@@ -85,6 +86,8 @@ async def get_agent_memory_context(
         )
     except KeyError as exc:
         raise error_response("not_found", "agent memory context target was not found", 404) from exc
+    except PermissionError as exc:
+        raise error_response("source_access_denied", "History is unavailable in the current access scope", 403) from exc
 
 
 @router.post("/v1/agent-memory/checkpoints")
@@ -93,6 +96,10 @@ async def create_agent_memory_checkpoint(payload: AgentMemoryCheckpointRequest, 
         return await agent.create_agent_memory_checkpoint(payload)
     except KeyError as exc:
         raise error_response("not_found", "agent memory checkpoint target was not found", 404) from exc
+    except PermissionError as exc:
+        raise error_response("source_access_denied", "History is unavailable in the current access scope", 403) from exc
+    except PlatformApplicationError:
+        raise
     except ValueError as exc:
         raise error_response("validation_error", str(exc), 400) from exc
 

@@ -7,14 +7,16 @@ from types import SimpleNamespace
 
 import pytest
 
+from apps.api.app.application.quality_loop.execution_work_guard import ExecutionWorkGuard
 from apps.api.app.application.quality_loop.run_plan_case_execution import RunPlanCaseExecutionApplicationService
 from apps.api.app.application.quality_loop.run_plan_case_inputs import PreparedFixtureBoundCaseInputs
 from apps.api.app.application.quality_loop.run_plan_cases import RunPlanCaseApplicationService
+from apps.api.app.application.quality_loop.run_plan_inputs import RunPlanRequest
 from apps.api.app.application.quality_loop.runner_port import FixtureBoundHttpCommand, OwnedTargetHttpExecution
 from apps.api.app.domain.quality_loop.acceptance_specification import acceptance_digest
-from apps.api.app.domain.quality_loop.run_plan import compile_run_plan
+from apps.api.app.domain.quality_loop.run_plan import compile_run_plan, run_plan_artifact_schema
 from apps.api.app.domain.quality_loop.run_plan_case_execution import (
-    FixtureBoundRunPlanCaseScope, RunPlanCaseExecutionInvalid, restore_case_scope, execution_roster, case_work_schema,
+    FixtureBoundRunPlanCaseScope, RunPlanCaseExecutionInvalid, RunPlanCaseWorkLost, restore_case_scope, execution_roster, case_work_schema,
 )
 from apps.api.app.domain.shared.native_build_source import byte_digest
 from apps.api.app.infrastructure.runner.adapters import HttpAutomationRunner
@@ -43,7 +45,7 @@ def fixture_saved_inputs():
 
 
 @pytest.fixture
-def fixture_inputs(spec, monkeypatch):
+def fixture_inputs(spec, monkeypatch, *, seal_archive=None):
     from apps.api.tests import test_run_plan_case_inputs as module
     original_inventory = module.inventory_for
 
@@ -53,7 +55,7 @@ def fixture_inputs(spec, monkeypatch):
 
     monkeypatch.setattr(module, "http_saved_inputs", fixture_saved_inputs)
     monkeypatch.setattr(module, "inventory_for", inventory)
-    return case_inputs.__wrapped__(spec, monkeypatch)
+    return case_inputs.__wrapped__(spec, monkeypatch, seal_archive=seal_archive)
 
 
 class NativeRunner:
@@ -127,6 +129,51 @@ def test_original_setup_resources_reach_the_full_native_worker_and_archive_repla
     assert history["state"]["business_coverage_verified"] is False
 
 
+@pytest.mark.parametrize("changed_after_staging", [False, True])
+def test_private_case_staging_cannot_publish_before_independent_full_commit_check(
+        fixture_inputs, monkeypatch, changed_after_staging):
+    v, app = fixture_inputs, composed(fixture_inputs)
+    prepared = v.service.prepare(v.selection, invocation_id=v.snapshot["id"])
+    actual = app.runner.execute_owned_http
+    events, changed = [], False
+
+    def verify():
+        events.append("full")
+        if changed:
+            raise RunPlanCaseWorkLost("original evidence changed after private write")
+
+    def stage(command, *, require_work, **kwargs):
+        assert isinstance(require_work, ExecutionWorkGuard)
+        events.append("stage")
+        require_work()
+        return actual(command, require_work=require_work.poll, **kwargs)
+
+    def written():
+        nonlocal changed
+        events.append("private-write")
+        changed = changed_after_staging
+
+    monkeypatch.setattr(app.journal, "require_poll", app.journal.require, raising=False)
+    monkeypatch.setattr(app.runner, "stage_owned_case_http", stage, raising=False)
+    monkeypatch.setattr(app.runner, "execute_owned_http", lambda *_, **__: pytest.fail("case staging was bypassed"))
+    app.artifacts.on_write = written
+    def execute():
+        return asyncio.run(app.worker.execute_prepared(prepared, require_current=ExecutionWorkGuard(verify, lambda: None)))
+
+    if changed_after_staging:
+        with pytest.raises(RunPlanCaseWorkLost, match="original evidence changed after private write"):
+            execute()
+        assert events == ["full", "stage", "full", "private-write", "full"]
+        assert len(app.journal.claims) == 1 and app.journal.outcomes == []
+        history = app.worker.read(prepared.plan, prepared.scope, require_access=lambda: None,
+            fixture_inputs=prepared.fixture_inputs)
+        assert history["state"]["state"] == "outcome_unknown" and history["observations"] == []
+    else:
+        assert execute()["state"]["state"] == "observed"
+        assert events == ["full", "stage", "full", "private-write", "full"] * len(prepared.fixture_inputs)
+        assert len(app.journal.outcomes) == len(prepared.fixture_inputs)
+
+
 @pytest.mark.parametrize("fault", ["missing", "reordered", "wire", "value", "extra", "other_scope", "other_pin"])
 def test_forged_or_incomplete_handoff_rejected_before_lease_claim_or_native_dispatch(fixture_inputs, fault):
     v, app = fixture_inputs, composed(fixture_inputs)
@@ -185,9 +232,26 @@ def test_new_scope_protocol_cannot_downgrade_or_drop_the_full_original_roster(fi
     assert len(execution_roster(prepared.plan, prepared.scope)) == len(prepared.plan["prepared"]["cases"])
 
 
-def portal_specimen():
+def seal_portal_archive(saved):
+    artifact, metadata = saved["artifact"], saved["metadata"]
+    plan = artifact["plan"]
+    request = RunPlanRequest.model_validate({**plan["selection"], "plan_digest": plan["plan_digest"],
+        "source_scope_digest": acceptance_digest("source-acl")}).model_dump(mode="json")
+    record = {"invocation_id": "original-plan-command", "actor_id": "admin", "recorded_at": "2026-10-12T09:00:00Z"}
+    artifact.update(schema=run_plan_artifact_schema(request["policy_revision"]), request=request, **record)
+    metadata.update(**record, artifact_hash=acceptance_digest(artifact), request_hash=acceptance_digest(request),
+        status="prepared", execution_authorized=False)
+    saved.update(historical_not_live=True, current_use={"inputs_current": True,
+        "target_verified": False, "execution_authorized": False})
+
+
+def portal_specimen(*, public_archive=False):
     with pytest.MonkeyPatch.context() as monkeypatch:
-        v = fixture_inputs.__wrapped__(spec.__wrapped__(), monkeypatch)
+        v = fixture_inputs.__wrapped__(spec.__wrapped__(), monkeypatch,
+            seal_archive=seal_portal_archive if public_archive else None)
+        if public_archive:
+            v.snapshot["input_payload"].update(idempotency_key="original-case-key",
+                case_claim_protocol="nasus.run-plan-case-preparation.v1")
         app = composed(v)
         prepared = v.service.prepare(v.selection, invocation_id=v.snapshot["id"])
         history = asyncio.run(app.service.execute(v.selection, invocation_id=v.snapshot["id"]))

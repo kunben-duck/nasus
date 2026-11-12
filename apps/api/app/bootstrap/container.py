@@ -12,6 +12,8 @@ from ..application.platform.identity_administration import (
     IdentityAdministrationApplicationService,
 )
 from ..application.platform.project_workspace import ProjectWorkspaceApplicationService
+from ..application.quality_loop.version_delivery import VersionDeliveryApplicationService
+from ..application.quality_loop.requirement_revisions import RequirementRevisionApplicationService
 from ..application.platform.readiness import ReadinessApplicationService
 from ..application.platform.use_cases import PlatformApplicationService
 from ..application.system_image import SystemImageApplicationService
@@ -65,6 +67,7 @@ from ..application.system_image.publications import ImagePublicationApplicationS
 from ..application.system_image.frozen_indexes import FrozenIndexApplicationService
 from ..application.system_image.context_retrieval import ContextRetrievalApplicationService
 from ..application.system_image.context_retrieval_jobs import ContextRetrievalJobApplicationService
+from ..application.agent.semantic_memory import SemanticConversationMemory
 from ..application.system_image.semantic_membership import SemanticMembershipApplicationService
 from ..application.system_image.link_decisions import LinkDecisionApplicationService
 from ..application.system_image.image_membership import ImageMembershipApplicationService
@@ -118,6 +121,7 @@ class ApplicationContainer:
     readiness: ReadinessApplicationService
     agent_workflow_activities: AgentWorkflowActivityApplicationService
     conversation_turns: ConversationTurnApplicationService
+    conversation_memory: SemanticConversationMemory
     evidence: EvidenceQueryApplicationService
     code_analysis: CodeAnalysisQueryApplicationService
     code_index_lifecycle: CodeIndexLifecycleApplicationService
@@ -164,6 +168,8 @@ class ApplicationContainer:
     test_design_jobs: GenerationJobApplicationService
     context_packs: ContextPackApplicationService
     image_publications: ImagePublicationApplicationService
+    version_delivery: VersionDeliveryApplicationService
+    requirement_revisions: RequirementRevisionApplicationService
     frozen_indexes: FrozenIndexApplicationService
     context_retrievals: ContextRetrievalApplicationService
     context_retrieval_jobs: ContextRetrievalJobApplicationService
@@ -259,6 +265,7 @@ def _build_application_container() -> ApplicationContainer:
         readiness=readiness,
         agent_workflow_activities=agent_workflow_activities,
         conversation_turns=runtime.conversation_turns,
+        conversation_memory=runtime.conversation_memory,
         evidence=runtime.evidence,
         code_analysis=runtime.code_analysis,
         code_index_lifecycle=runtime.code_index_lifecycle,
@@ -305,6 +312,8 @@ def _build_application_container() -> ApplicationContainer:
         test_design_jobs=runtime.test_design_jobs,
         context_packs=runtime.context_packs,
         image_publications=runtime.image_publications,
+        version_delivery=runtime.version_delivery,
+        requirement_revisions=runtime.requirement_revisions,
         frozen_indexes=runtime.frozen_indexes,
         context_retrievals=runtime.context_retrievals,
         context_retrieval_jobs=runtime.context_retrieval_jobs,

@@ -9,6 +9,8 @@ test('fixed exweb source shows all reviewed annotation routes in the real inspec
   test.skip(!process.env.EXWEB_FIXTURE_ROOT, 'Opt in with an authorized fixed exweb checkout')
   test.setTimeout(120_000)
   const root = resolve(process.env.EXWEB_FIXTURE_ROOT!)
+  const screenshotDir = resolve(process.env.EXWEB_ANALYSIS_SCREENSHOT_DIR ?? 'output/playwright')
+  const screenshot = (name: string) => page.screenshot({ path: resolve(screenshotDir, name) })
   const gold = JSON.parse(readFileSync(resolve('tests/fixtures/system-image/exweb-controller-routes.json'), 'utf8'))
   const git = (...args: string[]) => execFileSync('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', root, ...args], { encoding: 'utf8' }).trim()
   expect(git('rev-parse', 'HEAD')).toBe(gold.revision)
@@ -67,8 +69,8 @@ test('fixed exweb source shows all reviewed annotation routes in the real inspec
   await dialog.getByText('Report provenance', { exact: true }).click()
   await expect(dialog).toContainText('sha256:')
   await dialog.getByRole('combobox', { name: 'Captured code revision', exact: true }).scrollIntoViewIfNeeded()
-  mkdirSync(resolve('output/playwright'), { recursive: true })
-  await page.screenshot({ path: resolve('output/playwright/exweb-analysis.png') })
+  mkdirSync(screenshotDir, { recursive: true })
+  await screenshot('exweb-analysis.png')
   await page.keyboard.press('Escape')
   await page.getByRole('button', { name: 'Image revisions', exact: true }).click()
   const image = await selectImageRevision(page, candidates[0].image_revision_id)
@@ -98,7 +100,7 @@ test('fixed exweb source shows all reviewed annotation routes in the real inspec
       expect(evidence).toMatchObject({ start_line: 20, end_line: 45, integrity: 'verified', evidence: { source_revision_id: revision } })
       expect(evidence.content).toContain('public class ChatController')
       await code.scrollIntoViewIfNeeded()
-      await page.screenshot({ path: resolve('output/playwright/exweb-image-revision-evidence.png') })
+      await screenshot('exweb-image-revision-evidence.png')
       found = true
       break
     }
@@ -120,7 +122,7 @@ test('fixed exweb source shows all reviewed annotation routes in the real inspec
   await draft.getByText('Pinned source revisions', { exact: true }).click()
   await expect(draft).toContainText(revision)
   await draft.getByRole('heading', { name: 'Investigate exweb chat, document upload and tool gateway structure' }).scrollIntoViewIfNeeded()
-  await page.screenshot({ path: resolve('output/playwright/exweb-build-plan.png') })
+  await screenshot('exweb-build-plan.png')
   const targets = plans.getByRole('combobox', { name: 'Candidate target baseline' })
   await expect(targets).toHaveValue(candidates[0].baseline_id)
   await expect(targets).toBeDisabled()
@@ -135,7 +137,7 @@ test('fixed exweb source shows all reviewed annotation routes in the real inspec
   expect(frozen.revision).toMatchObject({ manifest_id: candidates[0].manifest_id, code_member_count: 725, status: 'candidate' })
   expect(frozen.items).toEqual([expect.objectContaining({ source_revision_id: revision })])
   await plans.getByRole('heading', { name: 'Build pinned structure' }).scrollIntoViewIfNeeded()
-  await page.screenshot({ path: resolve('output/playwright/exweb-structure-build.png') })
+  await screenshot('exweb-structure-build.png')
 
   const planId = result.result.object_refs[0].slice('build_plan:'.length)
   const planResponse = await request.get(`${analysisApi}/v1/projects/${projectId}/system-image/build-plans/${planId}`, { headers: owner.headers })
@@ -200,5 +202,5 @@ test('fixed exweb source shows all reviewed annotation routes in the real inspec
   await expect(consent).toContainText('1 tool calls · 0 model calls · 1200 seconds')
   await expect(consent).toContainText('Model egress and publication remain unapproved.')
   await consent.scrollIntoViewIfNeeded()
-  await page.screenshot({ path: resolve('output/playwright/exweb-build-authorization.png') })
+  await screenshot('exweb-build-authorization.png')
 })

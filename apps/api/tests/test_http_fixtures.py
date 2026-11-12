@@ -5,6 +5,7 @@ from threading import Lock
 
 import pytest
 
+from apps.api.app.application.quality_loop.execution_work_guard import ExecutionWorkGuard, work_poll
 from apps.api.app.application.quality_loop.http_fixtures import (
     HttpFixtureDispatchAlreadyClaimed, HttpFixtureLifecycleApplicationService, HttpFixtureOutcomeUnknown,
     HttpFixturePhaseRecord, HttpFixtureScope,
@@ -106,6 +107,40 @@ def test_complete_fixture_preserves_raw_bytes_binds_only_original_resource_and_r
     assert app.cleanup(current, value, require_work=lambda: None) == cleaned and len(runner.commands) == 2
     prepared.receipt["bindings"][0]["value"] = "caller-mutated"
     assert app.prepare(current, value, require_work=lambda: None).receipt["bindings"][0]["value"] == "session_original"
+
+
+@pytest.mark.parametrize("revoke_before_runner", [False, True])
+def test_typed_fixture_poll_leaves_full_verification_at_the_runner_and_never_replays_unknown_effect(monkeypatch, revoke_before_runner):
+    app, runner, journal = service()
+    current = scope()
+    full_checks = []
+
+    def full():
+        full_checks.append("native boundary")
+        if revoke_before_runner:
+            raise PermissionError("original full proof denied before request")
+
+    def guard_only(operation):
+        def call(*args, require_current):
+            # Production journal revalidates its own archives and calls the
+            # supplied live poll inside its write transaction.
+            return operation(*args, require_current=work_poll(require_current))
+        return call
+
+    monkeypatch.setattr(journal, "claim", guard_only(journal.claim))
+    monkeypatch.setattr(journal, "complete", guard_only(journal.complete))
+    guard = ExecutionWorkGuard(full, lambda: None)
+    if revoke_before_runner:
+        with pytest.raises(HttpFixtureOutcomeUnknown):
+            app.prepare(current, manifest(), require_work=guard)
+        with pytest.raises(HttpFixtureOutcomeUnknown):
+            app.prepare(current, manifest(), require_work=guard)
+        assert journal.inspect(current, "setup").execution is None
+        assert not runner.commands and full_checks == ["native boundary"]
+    else:
+        observed = app.prepare(current, manifest(), require_work=guard)
+        assert journal.inspect(current, "setup").execution == observed.execution
+        assert runner.commands == [observed.command] and full_checks == ["native boundary"] * 2
 
 
 def test_failed_setup_oracle_keeps_resource_and_is_cleaned_without_rewriting_the_failure():

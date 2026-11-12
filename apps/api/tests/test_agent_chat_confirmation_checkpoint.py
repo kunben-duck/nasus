@@ -95,6 +95,21 @@ def test_standalone_command_still_uses_canonical_confirmation():
     assert calls == [("confirm", invocation.id)]
 
 
+@pytest.mark.parametrize("content", ["确认按钮的作用是什么", "是否可以继续", "不要确认", "确认接入并构建", "What does confirm mean?", "confirm then publish"])
+def test_build_questions_cannot_accidentally_confirm_pending_work(content):
+    service, goal, _, calls = fixture_runtime()
+    service._runtime.get_conversation(goal.conversation_id).space_type = "build"
+    assert asyncio.run(service.handle_confirmation_message_if_any(goal.conversation_id, content)) is None
+    assert calls == []
+
+
+def test_build_explicit_tool_confirmation_still_pins_its_command():
+    service, goal, invocation, calls = fixture_runtime()
+    service._runtime.get_conversation(goal.conversation_id).space_type = "build"
+    asyncio.run(service.handle_confirmation_message_if_any(goal.conversation_id, f"确认 {invocation.id}"))
+    assert calls[0][:2] == ("resume", goal.id)
+
+
 def test_chat_precondition_is_not_recaptured_after_a_concurrent_budget_change():
     service, goal, invocation, calls = fixture_runtime()
     expected = AgentResumeCheckpoint.capture(goal.model_dump(mode="json"))

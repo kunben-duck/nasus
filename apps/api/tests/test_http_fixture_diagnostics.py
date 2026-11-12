@@ -149,7 +149,7 @@ def test_worker_failure_is_locatable_without_exposing_inputs_or_retrying(
     elif phase == "worker_archive_inputs":
         monkeypatch.setattr(v.jobs.grants, "execution_inputs", fail)
     elif phase == "worker_archive_history":
-        monkeypatch.setattr(v.jobs.execution, "read", fail)
+        monkeypatch.setattr(v.jobs.execution, "read_resolved_history", fail)
     else:
         monkeypatch.setattr(v.jobs.repository, "finish", fail)
     with pytest.raises(ValueError) as raised:

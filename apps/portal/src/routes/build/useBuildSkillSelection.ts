@@ -22,25 +22,21 @@ export function useBuildSkillSelection({
   })), [selectedSkillIds, t])
 
   function toggleBuildSkill(skillId: string) {
-    setSelectedSkillIds((current) => {
-      const next = current.includes(skillId)
-        ? current.filter((item) => item !== skillId)
-        : [...current, skillId]
-      if (prompt.trim()) {
-        setPrompt(composeBuildPrompt(next, locale))
-      }
-      return next
-    })
+    const next = selectedSkillIds.includes(skillId)
+      ? selectedSkillIds.filter((item) => item !== skillId)
+      : [...selectedSkillIds, skillId]
+    if (prompt === composeBuildPrompt(selectedSkillIds, locale)) setPrompt(composeBuildPrompt(next, locale))
+    setSelectedSkillIds(next)
   }
 
   function guessBuildPrompt() {
+    if (prompt.trim()) return
     const recommended = ['git', 'us']
     setSelectedSkillIds(recommended)
     setPrompt(composeBuildPrompt(recommended, locale))
   }
 
   return {
-    selectedSkillIds,
     selectedSkills,
     toggleBuildSkill,
     guessBuildPrompt,

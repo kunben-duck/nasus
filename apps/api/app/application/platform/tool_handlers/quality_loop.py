@@ -39,7 +39,11 @@ class QualityLoopToolHandler:
         await self._complete_quality_step(invocation, step="cases")
 
     async def refresh_asset_pack(self, invocation: ToolInvocation) -> None:
-        result = self.quality_loop_app.refresh_asset_pack(invocation)
+        try:
+            result = self.quality_loop_app.refresh_asset_pack(invocation)
+        except QualityLoopApplicationError as exc:
+            await self._fail_legacy_write(invocation, exc)
+            return
         if result is None:
             await self._fail_missing_us(invocation)
             return
@@ -112,11 +116,20 @@ class QualityLoopToolHandler:
         await self._complete_quality_step(invocation, step="release")
 
     async def get_release_advice(self, invocation: ToolInvocation) -> None:
-        result = self.quality_loop_app.get_release_advice(invocation)
+        try:
+            result = self.quality_loop_app.get_release_advice(invocation)
+        except QualityLoopApplicationError as exc:
+            await self._fail_legacy_write(invocation, exc)
+            return
         if result is None:
             await self._fail_missing_us(invocation)
             return
         await self._complete_result(invocation, result, append_assistant=True)
+
+    async def _fail_legacy_write(self, invocation, exc):
+        await self.tool_invocations.emit_tool_status(invocation.id, "failed", exc.summary, [],
+            ToolResult(invocation_id=invocation.id, status="failed", summary=exc.summary,
+                next_recommended_tools=exc.next_tools))
 
     async def _complete_failure_step(self, invocation: ToolInvocation, *, propose_healing: bool) -> None:
         scope = self.quality_loop_app.resolve_failure_scope(invocation)

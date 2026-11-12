@@ -35,6 +35,7 @@ async function createBrowserSession(page: import('@playwright/test').Page) {
     window.localStorage.setItem('nasus_api_token', token)
     if (!window.localStorage.getItem('nasus.locale')) window.localStorage.setItem('nasus.locale', 'en')
   }, session.access_token)
+  return session
 }
 
 async function createPlatformAdminBrowserSession(page: import('@playwright/test').Page) {
@@ -87,14 +88,17 @@ test('unauthenticated users register with email before entering build', async ({
 
   await page.getByTestId('build-agent-input').fill('帮我创建一个新的质量项目')
   await page.getByTestId('build-agent-submit').click()
-  await expect(page.getByTestId('build-agent-feedback')).toContainText(/请先提供项目名称/, { timeout: 10_000 })
+  await expect(page.getByTestId('build-conversation')).toContainText(/先给项目起个名字/, { timeout: 10_000 })
 })
 
 test('language setting switches immediately and persists after reload', async ({ page, request }) => {
   await createBrowserSession(page)
+  const buildConversation = page.getByTestId('build-conversation')
+  const welcomeTitle = page.getByRole('heading', { name: /Build quality projects with Nasus|用 Nasus 构建质量项目/ })
   await page.goto('/build')
   await expect(page.locator('html')).toHaveAttribute('lang', 'en')
   await expect(page.getByRole('heading', { name: /Build quality projects with Nasus/i })).toBeVisible()
+  await expect(buildConversation).toHaveCount(0)
 
   await page.getByRole('button', { name: /^Settings$/ }).click()
   await page.getByRole('button', { name: /Language.*English/ }).click()
@@ -121,8 +125,15 @@ test('language setting switches immediately and persists after reload', async ({
   await expect(page.getByRole('heading', { name: /用 Nasus 构建质量项目/ })).toBeVisible()
 
   const localizedProjectName = `Localized Runtime Hub ${Date.now()}`
-  await page.getByTestId('build-agent-input').fill(`Help me create a new project called ${localizedProjectName}`)
+  const projectPrompt = `Help me create a new project called ${localizedProjectName}`
+  await page.getByTestId('build-agent-input').fill(projectPrompt)
   await page.getByTestId('build-agent-submit').click()
+  const localizedImageLink = page.getByRole('link', { name: '查看系统画像', exact: true })
+  await expect(localizedImageLink).toBeVisible({ timeout: 15_000 })
+  await expect(page).toHaveURL(/\/build$/)
+  await expect(buildConversation.getByRole('log')).toContainText(projectPrompt)
+  await expect(welcomeTitle).toHaveCount(0)
+  await page.goto((await localizedImageLink.getAttribute('href'))!.replace(/\/knowledge$/, ''))
   await expect(page).toHaveURL(/\/projects\//, { timeout: 15_000 })
   await expect(page.getByRole('heading', { name: /与 Agent 协同构建/ })).toBeVisible()
   await page.getByTestId('agent-card-system-image-builder').click()
@@ -134,6 +145,10 @@ test('language setting switches immediately and persists after reload', async ({
   await expect(page.getByTestId('confirm-agent-goal')).toHaveCount(0)
 
   await page.goto('/build')
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
+  await expect(buildConversation.getByRole('log')).toContainText(projectPrompt)
+  await expect(localizedImageLink).toBeVisible()
+  await expect(welcomeTitle).toHaveCount(0)
 
   await page.getByRole('button', { name: /^设置$/ }).click()
   await page.getByRole('button', { name: /语言.*中文/ }).click()
@@ -143,11 +158,39 @@ test('language setting switches immediately and persists after reload', async ({
   await page.getByRole('button', { name: /^○ English$/ }).click()
   await saveEnglish
   await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  const imageLink = page.getByRole('link', { name: 'View system image', exact: true })
+  await expect(imageLink).toBeVisible()
+  await expect(localizedImageLink).toHaveCount(0)
+  await expect(buildConversation.getByRole('log')).toContainText(projectPrompt)
+  await expect(welcomeTitle).toHaveCount(0)
+
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  await expect(imageLink).toBeVisible()
+  await expect(buildConversation.getByRole('log')).toContainText(projectPrompt)
+  await expect(welcomeTitle).toHaveCount(0)
+  await page.getByRole('button', { name: 'New build conversation', exact: true }).click()
   await expect(page.getByRole('heading', { name: /Build quality projects with Nasus/i })).toBeVisible()
+  await expect(buildConversation).toHaveCount(0)
 })
 
 test('build agent feedback renders controlled markdown', async ({ page }) => {
   await createBrowserSession(page)
+  let completed = false
+  await page.route(/\/v1\/conversations\/[^/?]+$/, async (route) => {
+    const response = await route.fetch()
+    const conversation = await response.json()
+    if (completed) conversation.messages.push({
+      id: 'reply-markdown', role: 'assistant', status: 'completed', content_type: 'markdown',
+      created_at: new Date().toISOString(), metadata: {},
+      blocks: [{ type: 'text', text: 'Create **Payment System** from `main`. <script>unsafe()</script>' }],
+    })
+    if (completed) conversation.agent_goals = [{
+      id: 'legacy-project-setup', conversation_id: conversation.id, goal_template: 'project_setup',
+      title: 'Create project workspace', summary: 'Project creation completed.', status: 'completed', steps: [],
+    }]
+    await route.fulfill({ response, json: conversation })
+  })
   await page.route('**/v1/conversations/*/messages', async (route) => {
     await route.fulfill({
       status: 202,
@@ -162,6 +205,7 @@ test('build agent feedback renders controlled markdown', async ({ page }) => {
     })
   })
   await page.route('**/v1/conversations/*/turns/turn-markdown', async (route) => {
+    completed = true
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -180,22 +224,39 @@ test('build agent feedback renders controlled markdown', async ({ page }) => {
   })
 
   await page.goto('/build')
+  const welcomeTitle = page.getByRole('heading', { name: 'Build quality projects with Nasus', exact: true })
+  await expect(welcomeTitle).toBeVisible()
+  const composer = page.locator('.hero-composer')
+  await expect(composer.getByRole('button', { name: 'Speech to text', exact: true })).toHaveCount(0)
+  await expect(composer.getByRole('button', { name: 'Insert files', exact: true })).toHaveCount(0)
+  await expect(composer.getByTestId('build-agent-guess')).toBeVisible()
+  await expect(composer.locator('.composer-actions')).toHaveCSS('justify-content', 'flex-end')
   await page.getByTestId('build-agent-input').fill('Create a project')
   await page.getByTestId('build-agent-submit').click()
 
-  const feedback = page.getByTestId('build-agent-feedback')
+  const feedback = page.getByTestId('build-conversation')
   await expect(feedback.locator('.markdown-content strong')).toHaveText('Payment System')
   await expect(feedback.locator('.markdown-content code')).toHaveText('main')
   await expect(feedback).not.toContainText('**')
   await expect(feedback.locator('script')).toHaveCount(0)
+  await expect(page.getByTestId('build-progress')).toHaveCount(0)
+  await expect(page.getByTestId('build-image-status')).toContainText('Completed project setup does not mean the system image is built.')
+  await expect(welcomeTitle).toHaveCount(0)
+  await page.reload()
+  await expect(feedback).toBeVisible()
+  await expect(welcomeTitle).toHaveCount(0)
+  completed = false
+  await page.getByRole('button', { name: 'New build conversation', exact: true }).click()
+  await expect(welcomeTitle).toBeVisible()
 })
 
-test('agent-first build to project workspace path works end-to-end', async ({ page }) => {
+test('agent-first build preserves the original goal through structural candidate review', async ({ page, request }) => {
   test.setTimeout(45_000)
   const projectName = `E2E Quality Hub ${Date.now()}`
   const fixtureRoot = path.resolve(process.cwd(), 'tests/fixtures/system-image')
 
-  await createBrowserSession(page)
+  const session = await createBrowserSession(page)
+  const headers = { Authorization: `Bearer ${session.access_token}` }
   await page.goto('/build')
   await expect(page.getByRole('heading', { name: /Build quality projects with Nasus/i })).toBeVisible()
   await expect(page.getByTestId('backend-status-pill')).toContainText(/Live/i)
@@ -203,17 +264,32 @@ test('agent-first build to project workspace path works end-to-end', async ({ pa
   await page.getByTestId('build-agent-input').fill(`Help me create a new project called ${projectName}`)
   await page.getByTestId('build-agent-submit').click()
 
+  const imageLink = page.getByRole('link', { name: 'View system image', exact: true })
+  await expect(imageLink).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByRole('heading', { name: /Build quality projects with Nasus/i })).toHaveCount(0)
+  await expect(page).toHaveURL(/\/build$/)
+  await page.goto((await imageLink.getAttribute('href'))!.replace(/\/knowledge$/, ''))
   await expect(page).toHaveURL(/\/projects\//, { timeout: 15_000 })
   await expect(page.getByRole('heading', { name: /Build with Agents/i })).toBeVisible()
   await expect(page.getByText(projectName).first()).toBeVisible()
 
   await page.getByTestId('agent-card-system-image-builder').click()
-  await expect(page.getByTestId('agent-goal-panel')).toContainText(/Build Official System Image/i, { timeout: 15_000 })
+  await expect(page.getByTestId('agent-goal-panel')).toContainText(/Prepare a source-pinned system image/i, { timeout: 15_000 })
   await expect(page.getByTestId('agent-loop-trace')).toContainText(/Think · Act · Observe · Decide/i, { timeout: 15_000 })
   await expect(page.getByTestId('agent-current-step')).toBeVisible()
   await expect(page.getByTestId('agent-thinking-card')).toBeVisible()
   await expect(page.getByTestId('agent-memory-context-panel')).toBeVisible()
   await expect(page.getByTestId('agent-confirmation-gate')).toContainText(/Source bindings required/i, { timeout: 15_000 })
+  const projectId = new URL(page.url()).pathname.split('/')[2]
+  const get = async (path: string) => {
+    const response = await request.get(`${apiUrl}${path}`, { headers })
+    expect(response.ok()).toBeTruthy()
+    return response.json()
+  }
+  const [conversation] = await get(`/v1/conversations?space_type=project&space_id=${projectId}`)
+  const conversationPath = `/v1/conversations/${conversation.id}`
+  const [originalGoal] = (await get(conversationPath)).agent_goals
+  expect(originalGoal.pause_reason).toBe('missing_captured_code')
 
   await expect(page.getByTestId('source-binding-panel')).toBeVisible()
   await page.getByTestId('source-code-input').fill(path.join(fixtureRoot, 'code'))
@@ -226,35 +302,93 @@ test('agent-first build to project workspace path works end-to-end', async ({ pa
   )
   await expect(page.getByTestId('source-tests-input')).toHaveValue(/^(local-object|s3):\/\//)
   await page.getByTestId('build-system-image-with-sources').click()
-  await expect(page.getByTestId('agent-confirmation-gate')).toContainText(/Confirmation required/i, { timeout: 20_000 })
+  await expect(page.getByTestId('image-build-execution-budget')).toBeVisible({ timeout: 20_000 })
+  const pending = (await get(conversationPath)).agent_goals
+  expect(pending).toHaveLength(1)
+  expect(pending[0].id).toBe(originalGoal.id)
+  const [planRef] = pending[0].target_refs.filter((ref: string) => ref.startsWith('build_plan:'))
+  expect(planRef).toBeDefined()
+  const planPath = `/v1/projects/${projectId}/system-image/build-plans/${planRef.slice('build_plan:'.length)}`
+  const draft = await get(planPath)
+  expect(draft.execution_authorizations).toHaveLength(0)
+  expect(draft.structural_artifacts).toHaveLength(0)
 
   await page.getByTestId('confirm-agent-goal').click()
-  await expect(page.getByTestId('system-image-strip')).toContainText(/ready/i, { timeout: 20_000 })
-  await expect(page.getByTestId('system-image-strip')).toContainText(/Official System Image ready/i)
-  await expect(page.getByTestId('agent-goal-panel')).toContainText(/completed/i)
-  await expect(page.getByText(/Sources indexed/i)).toBeVisible()
-  await expect(page.getByText(/Code analysis/i)).toBeVisible()
+  await expect(page.getByTestId('agent-confirmation-gate')).toContainText('Structural candidate saved', { timeout: 20_000 })
+  await expect(page.getByTestId('system-image-strip')).toContainText(/Sources indexed\s*3\/3/i)
+  const built = await get(planPath)
+  expect(built.proposal).toEqual(draft.proposal)
+  expect(built.structural_artifacts).toHaveLength(1)
+  expect(built.execution_authorizations).toHaveLength(1)
+  expect(built.execution_authorizations[0]).toMatchObject({ goal_id: originalGoal.id, publication_allowed: false })
+  const finished = (await get(conversationPath)).agent_goals
+  expect(finished).toHaveLength(1)
+  expect(finished[0]).toMatchObject({ id: originalGoal.id, status: 'paused', pause_reason: 'structural_candidate_review' })
 
   await page.getByTestId('project-agent-input').fill('Show me the current system image freshness and baseline status')
   await page.getByTestId('project-agent-submit').click()
   await expect(page.getByText(/source groups are indexed|system image is/i).first()).toBeVisible({ timeout: 15_000 })
+})
+
+test('quality agent runs and exposes the release evidence blockers', async ({ page, request }) => {
+  test.setTimeout(60_000)
+  const session = await createBrowserSession(page)
+  const headers = { Authorization: `Bearer ${session.access_token}` }
+  const post = async (path: string, data?: object) => {
+    const response = await request.post(`${apiUrl}${path}`, { headers, data })
+    expect(response.ok(), await response.text()).toBeTruthy()
+    return response.json()
+  }
+  const project = await post('/v1/projects', { name: `E2E Quality Release ${Date.now()}` })
+  const conversation = await post('/v1/conversations', { space_type: 'project', space_id: project.id, title: project.name })
+  const invoke = (tool_id: string, input = {}) => post('/v1/tool-invocations', {
+    conversation_id: conversation.id, tool_id, input: { project_id: project.id, ...input },
+  })
+  const fixtureRoot = path.resolve(process.cwd(), 'tests/fixtures/system-image')
+  const registered = await invoke('system_image.sources.register', { source_specs: [
+    { source_type: 'code', source_uri: path.join(fixtureRoot, 'code') },
+    { source_type: 'us_doc', source_uri: path.join(fixtureRoot, 'us') },
+    { source_type: 'test_asset', source_uri: path.join(fixtureRoot, 'tests') },
+  ] })
+  expect(registered.status).toBe('completed')
+  expect((await invoke('system_image.sources.ingest')).status).toBe('completed')
+  const baseline = await invoke('system_image.baseline.initialize')
+  expect(baseline.status).toBe('waiting_confirmation')
+  expect((await post(`/v1/tool-invocations/${baseline.id}/confirm`)).status).toBe('completed')
+
+  await page.goto(`/projects/${project.id}`)
   await expect(page.getByTestId('agent-card-quality-loop-agent')).toBeEnabled({ timeout: 15_000 })
 
   await page.getByTestId('agent-card-quality-loop-agent').click()
-  await expect(page.getByTestId('agent-goal-panel')).toContainText(/Advance quality loop/i, { timeout: 15_000 })
-  await expect(page.getByTestId('agent-goal-panel')).toContainText(/completed/i, { timeout: 20_000 })
+  const goalPanel = page.getByTestId('agent-goal-panel')
+  const goalStatus = goalPanel.locator('.agent-goal-summary .agent-goal-status')
+  await expect(goalPanel).toContainText(/Advance quality loop/i, { timeout: 15_000 })
+  await expect(goalStatus).toHaveText(/^completed$/i, { timeout: 20_000 })
   await expect(page.getByTestId('quality-asset-panel')).toContainText(/Release Assessment/i, { timeout: 20_000 })
   await expect(page.getByTestId('quality-asset-panel')).toContainText(/ready for review/i)
   await expect(page.getByTestId('quality-loop-state')).toContainText(/in progress/i)
+  const readGoals = async () => {
+    const response = await request.get(`${apiUrl}/v1/conversations/${conversation.id}`, { headers })
+    expect(response.ok()).toBeTruthy()
+    return (await response.json()).agent_goals as { id: string; status: string }[]
+  }
+  const prepared = await readGoals()
+  expect(prepared).toHaveLength(1)
+  expect(prepared[0].status).toBe('completed')
 
   await page.getByTestId('project-agent-input').fill(
     'Continue the quality loop against http://example.test and assess release readiness',
   )
   await page.getByTestId('project-agent-submit').click()
-  await expect(page.getByTestId('agent-goal-panel')).toContainText(/completed/i, { timeout: 20_000 })
+  await expect.poll(async () => (await readGoals()).filter((goal) => goal.id !== prepared[0].id)
+    .map((goal) => goal.status), { timeout: 25_000 }).toEqual(['completed'])
+  await expect(goalStatus).toHaveText(/^completed$/i, { timeout: 20_000 })
+  const loop = page.getByTestId('quality-loop-state')
+  await expect(loop).toContainText(/Quality loop blocked/i, { timeout: 20_000 })
+  await expect(loop).toContainText(/Release score/i)
+  await expect(loop).toContainText('System image quality assessment is unknown')
+  await expect(loop).toContainText('Required quality assets are not approved: case_set, scenario_set')
   await expect(page.getByTestId('quality-asset-panel')).toContainText(/completed/i)
-  await expect(page.getByTestId('quality-loop-state')).toContainText(/ready for release/i, { timeout: 20_000 })
-  await expect(page.getByTestId('quality-loop-state')).toContainText(/Release score/i)
   await expect(page.getByTestId('quality-asset-panel')).toContainText(/Latest run/i)
 
   const releaseAssessRequests: string[] = []
@@ -301,7 +435,7 @@ test('studio routes are deep-linkable', async ({ page }) => {
     {
       path: '/projects/proj_payment/versions/create',
       testId: 'project-version-create-route',
-      heading: /Create Version Branch/i,
+      heading: /^Create delivery iteration$/i,
     },
     {
       path: '/projects/proj_payment/workspaces/us_123',

@@ -2675,7 +2675,13 @@ def test_project_http_commands_use_application_dtos_not_raw_dicts() -> None:
     assert "payload: VersionCreateRequest" in projects_router_source
     assert "project_workspace: ProjectWorkspaceApp" in projects_router_source
     assert "async def create_project(self, payload: ProjectCreateRequest)" in project_workspace_source
-    assert "async def create_version(self, project_id: str, payload: VersionCreateRequest)" in project_workspace_source
+    create_version = next(node for node in ast.walk(ast.parse(project_workspace_source))
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "create_version")
+    assert [argument.arg for argument in create_version.args.args] == ["self", "project_id", "payload"]
+    assert ast.unparse(create_version.args.args[-1].annotation) == "VersionCreateRequest"
+    assert [argument.arg for argument in create_version.args.kwonlyargs] == ["idempotency_key"]
+    assert 'tool_id="version.create"' in ast.get_source_segment(project_workspace_source, create_version)
+    assert "idempotency_key=idempotency_key" in ast.get_source_segment(project_workspace_source, create_version)
     for source in [projects_router_source, project_workspace_source]:
         assert "payload: dict[str, str]" not in source
         assert 'payload.get("name")' not in source
@@ -8721,10 +8727,11 @@ def test_top_level_routes_are_not_backed_by_nasus_studio_singleton() -> None:
     assert "BuildHero" in build_route_source
     assert "useBuildRouteModel" in build_route_source
     assert len(build_route_source.splitlines()) < 60
-    assert len(build_hero_source.splitlines()) < 50
+    assert len(build_hero_source.splitlines()) < 60
     assert len(build_composer_source.splitlines()) < 35
-    assert "BuildGalleryPanel" in build_hero_source
-    assert "BuildSkillStrip" in build_hero_source
+    assert "BuildGalleryPanel" not in build_hero_source
+    assert "BuildConversation" in build_hero_source
+    assert "<BuildShortcuts" not in build_route_source
     assert "BuildSidebarToggle" in build_hero_source
     assert "ProjectGallery" not in build_hero_source
     assert "buildSkillCards.map" not in build_hero_source
@@ -8773,8 +8780,10 @@ def test_top_level_routes_are_not_backed_by_nasus_studio_singleton() -> None:
     assert "Payment System" in platform_starter_content_source
     assert "System Image" in platform_starter_content_source
     assert "buildConversation.sendMessage" in build_prompt_runner_source
-    assert "projectIdFromBuildResponse" in build_prompt_runner_source
-    assert "waitForCreatedProjectFromPrompt" in build_prompt_runner_source
+    assert "projectIdFromBuildResponse" not in build_prompt_runner_source
+    assert "waitForCreatedProjectFromPrompt" not in build_prompt_runner_source
+    assert "buildConversation.waitForTurn" in build_prompt_runner_source
+    assert "buildConversation.refreshConversation" in build_prompt_runner_source
     for fragment in ["platformApi.", "normalizeProjectName", "DashboardData", "setQueryData(['dashboard']"]:
         assert fragment not in build_prompt_runner_source
     assert "normalizeProjectName" in platform_build_resolution_source
@@ -8838,14 +8847,21 @@ def test_top_level_routes_are_not_backed_by_nasus_studio_singleton() -> None:
 
     version_space_source = (portal_root / "routes" / "project" / "sections" / "version" / "VersionSpaceSection.tsx").read_text()
     version_create_source = (portal_root / "routes" / "project" / "sections" / "version" / "VersionCreateSection.tsx").read_text()
-    version_cards_source = (portal_root / "routes" / "project" / "sections" / "version" / "VersionCards.tsx").read_text()
+    iteration_api_source = (portal_root / "domains" / "quality-loop" / "iterationCreationApi.ts").read_text()
+    iteration_hook_source = (portal_root / "domains" / "quality-loop" / "useIterationCreation.ts").read_text()
     assert len(version_space_source.splitlines()) < 70
     assert len(version_create_source.splitlines()) < 70
-    assert "VersionList" in version_space_source
-    assert "USCard" in version_space_source
-    assert "ToolInvocationRuntime" in version_create_source
-    assert "react-router-dom" not in version_space_source
-    assert "react-router-dom" in version_cards_source
+    assert "useDeliveryIterations" in version_space_source
+    assert "DeliveryDetails" in version_space_source
+    assert "useSearchParams" in version_space_source
+    assert "useIterationCreation" in version_create_source
+    assert "iterationCreationApi.execute" in iteration_hook_source
+    assert "platformApi.invokeTool({ tool_id: 'version.create'" in iteration_api_source
+    assert "idempotency_key: attempt.idempotency_key" in iteration_api_source
+    for source in (version_space_source, version_create_source):
+        for forbidden in ("api.", "platformApi.", "useMutation(", "useQuery(", "versions[0]"):
+            assert forbidden not in source
+        assert re.search(r"\bfetch\s*\(", source) is None
 
     assert "studioElement" not in router_source
     assert "NasusStudio" not in router_source

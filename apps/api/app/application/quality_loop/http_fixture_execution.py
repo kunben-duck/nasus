@@ -79,6 +79,7 @@ class HttpFixtureWorkerRuntime:
 class HttpFixtureExecutionRuntimePort(Protocol):
     def create(self, inputs, *, owner_id, require_current, command_authority=None) -> HttpFixtureWorkerRuntime: ...
     def history(self, inputs, *, require_current, original_setup=None, include_cleanup=False): ...
+    def history_with_original_recheck(self, inputs, *, require_current, original_setup, verify_original): ...
 
 
 class HttpFixtureExecutionApplicationService:
@@ -133,6 +134,13 @@ class HttpFixtureExecutionApplicationService:
         selection = HttpFixtureExecutionSelection.model_validate(selection.model_dump(mode="json"))
         require_current()
         inputs = self.grants.execution_inputs(selection, live=False)
+        return self.read_resolved_history(inputs, require_current=require_current)
+
+    def read_resolved_history(self, inputs: HttpFixtureExecutionInputs, *, require_current):
+        """Read journal evidence for inputs resolved by the same application operation."""
+        if not isinstance(inputs, HttpFixtureExecutionInputs):
+            raise HttpFixtureInvalid("fixture history requires exact resolved original inputs")
+        require_current()
         result = self.runtimes.history(inputs, require_current=require_current)
         require_current()
         return result

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
+from ..quality_loop.version_delivery_models import VersionDeliveryReadModel
 
 from ..system_image.evidence_tool_models import EvidenceToolReceipt
 from ..system_image.image_query_models import ImageQueryReceipt
@@ -43,6 +44,8 @@ class ToolResult(BaseModel):
     summary: str
     object_refs: List[str] = Field(default_factory=list)
     evidence_refs: List[str] = Field(default_factory=list)
+    conversation_history: Optional[Dict[str, Any]] = None
+    version_delivery: Optional[VersionDeliveryReadModel] = None
     evidence_query: Optional[EvidenceToolReceipt] = None
     image_query: Optional[ImageQueryReceipt] = None
     build_plan_query: Optional[BuildPlanReadReceipt] = None

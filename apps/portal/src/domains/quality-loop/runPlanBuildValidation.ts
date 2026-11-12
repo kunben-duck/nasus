@@ -1,6 +1,7 @@
 import { canonicalDigest } from '../../shared/utils/canonicalDigest'
 import { generationDigest, generationEqual } from './testDesignGenerationValidation'
 import { scriptId } from './automationScriptValidation'
+import { nativeBuildProfile } from './nativeBuildProfiles'
 import { requireRunPlan, runPlanArtifactSchema } from './runPlanValidation'
 import type { RunPlanArchive } from './types/runPlans'
 import type { NativeBuildView, RunPlanBuildArchive, RunPlanBuildPreview, RunPlanBuildRequest, RunPlanBuildSelection, RunPlanBuildValue } from './types/runPlanBuilds'
@@ -12,10 +13,11 @@ export function bindingSelection(value: RunPlanBuildRequest): RunPlanBuildSelect
 }
 export async function verifyNativeBuild(value: unknown, project: string, invocation: string): Promise<NativeBuildView> {
   const v = value as NativeBuildView, m = v?.metadata, r = v?.receipt
+  const profile = nativeBuildProfile(r?.adapter)
   requireRunPlan(v?.project_id === project && v.invocation_id === invocation && m && r && m.project_id === project
     && m.invocation_id === invocation && scriptId(m.build_id) && generationDigest(m.artifact_hash) && generationDigest(m.receipt_digest)
     && await canonicalDigest(r) === m.receipt_digest && generationDigest(r.request_digest) && m.request_digest === r.request_digest
-    && r.schema === 'nasus.native-build.v1' && r.adapter === 'nasus.offline-java21-maven3911.v1'
+    && r.schema === 'nasus.native-build.v1'
     && r.native_build_verified === true && r.execution_authorized === false && m.execution_authorized === false
     && v.execution_authorized === false && r.executed_on_target_count === 0 && r.passed_count === 0
     && r.reproducible_build_verified === false && r.dependency_supply_chain_verified === false
@@ -24,8 +26,11 @@ export async function verifyNativeBuild(value: unknown, project: string, invocat
     && new Set(r.source.files.map((f) => f.path)).size === r.source.files.length
     && r.source.files.every((f) => typeof f.path === 'string' && generationDigest(f.content_hash) && Number.isSafeInteger(f.byte_count) && f.byte_count >= 0)
     && generationDigest(r.artifact?.content_hash) && Number.isSafeInteger(r.artifact.byte_count) && r.artifact.byte_count > 0
-    && /^target\/(?:[^/]+\/)*[^/]+\.jar$/.test(r.artifact.path) && !r.artifact.path.split('/').some((p) => p === '.' || p === '..')
-    && r.toolchain?.java === '21' && r.toolchain.maven === '3.9.11' && r.toolchain.network === 'none'
+    && /^target\/(?:[^/]+\/)*[^/]+\.(?:jar|pyz)$/.test(r.artifact.path) && r.artifact.path.endsWith(profile.suffix)
+    && !r.artifact.path.split('/').some((p) => ['.', '..', '.git'].includes(p))
+    && (profile.runtime === 'Java' ? r.toolchain?.java === '21' && r.toolchain.maven === '3.9.11'
+      : r.toolchain?.python === '3.12' && r.toolchain.zipapp === '1' && generationDigest(r.toolchain.dependency_lock_hash))
+    && r.toolchain.network === 'none'
     && r.toolchain.dependency_cache === 'operator_read_only')
   return v
 }
@@ -67,15 +72,17 @@ export async function expectedBuildBinding(plan: RunPlanArchive, selection: RunP
     requireRunPlan(ref && ['invocation_id', 'build_id', 'artifact_hash', 'receipt_digest'].every((key) => ref[key as keyof typeof ref] === build.metadata[key])
       && ['project_id', 'image_revision_id', 'image_artifact_hash', 'manifest_id', 'manifest_hash'].every((key) => pin[key] === source[key as keyof typeof source])
       && !observed.has(pin.binding_id) && expected.some((s) => s.binding_id === pin.binding_id && s.source_revision_id === pin.source_revision_id))
-    const definitions = r.source.files.filter((f) => f.path === 'pom.xml')
+    const definitions = r.source.files.filter((f) => f.path === nativeBuildProfile(r.adapter).definition)
     requireRunPlan(definitions.length === 1); observed.add(pin.binding_id)
     members.push({ ...ref, source_pin: pin, request_digest: r.request_digest, source_files_digest: await canonicalDigest(r.source.files),
       build_definition_hash: definitions[0].content_hash, artifact: r.artifact, toolchain: r.toolchain })
   }
   const target = members.find((b) => b.invocation_id === selection.target_build_invocation_id)
+  const targetView = builds.find((b) => b.invocation_id === selection.target_build_invocation_id)
+  const profile = nativeBuildProfile(targetView?.receipt.adapter ?? '')
   requireRunPlan(target && target.artifact.path.split('/').at(-1) === declared.artifact_name && target.artifact.content_hash === declared.artifact_hash
-    && target.build_definition_hash === declared.build_definition_hash && declared.runtime === 'Java' && declared.runtime_version === '21'
-    && declared.build_tool === 'Maven' && declared.build_tool_version === '3.9.11')
+    && target.build_definition_hash === declared.build_definition_hash && declared.runtime === profile.runtime && declared.runtime_version === profile.version
+    && declared.build_tool === profile.tool && declared.build_tool_version === profile.toolVersion)
   const value = { schema: 'nasus.run-plan-build.v1' as const, project_id: selection.project_id, selection,
     run_plan_id: selection.run_plan_id, run_plan_artifact_hash: selection.run_plan_artifact_hash, plan_digest: plan.artifact.plan.plan_digest,
     source_pin: { project_id: source.project_id, image_revision_id: source.image_revision_id, image_artifact_hash: source.image_artifact_hash,

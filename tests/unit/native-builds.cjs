@@ -25,8 +25,10 @@ const plain = (v) => JSON.parse(JSON.stringify(v)), h = 'sha256:' + 'a'.repeat(6
 // Independent production receipt compiler; the tiny JAR is an explicit protocol specimen, not exweb execution.
 const sample = JSON.parse(execFileSync(path.join(repo, '.venv/bin/python'), ['-c',
   'import json; from apps.api.tests.test_run_plan_builds import binding_inputs; v,s,b=binding_inputs(); print(json.dumps(b[0]))'], { cwd: repo, encoding: 'utf8' }))
-async function fixture() {
-  const view = structuredClone(sample), pin = view.receipt.source.pin
+const pythonSample = JSON.parse(execFileSync(path.join(repo, '.venv/bin/python'), ['-c',
+  'import json; from apps.api.tests.test_run_plan_builds import binding_inputs; v,s,b=binding_inputs(python_profile=True); print(json.dumps(b[0]))'], { cwd: repo, encoding: 'utf8' }))
+async function fixture(python = false) {
+  const view = structuredClone(python ? pythonSample : sample), pin = view.receipt.source.pin
   Object.assign(view, { status: 'completed', historical_not_live: true, execution_authorized: false })
   const sources = { project_id: pin.project_id, image_revision_id: pin.image_revision_id, image_artifact_hash: pin.image_artifact_hash,
     manifest_id: pin.manifest_id, manifest_hash: pin.manifest_hash,
@@ -35,6 +37,7 @@ async function fixture() {
     binding_id: pin.binding_id, source_revision_id: pin.source_revision_id, artifact_path: view.receipt.artifact.path, expected_artifact_hash: null }
   const policy = { adapter: view.receipt.adapter, image_id: view.receipt.toolchain.image_id, cache_identity_hash: h,
     timeout_seconds: 180, network: 'none', cache_access: 'read_only', cache_contents_attested: false }
+  if (python) { delete policy.cache_identity_hash; policy.dependency_lock_hash = view.receipt.toolchain.dependency_lock_hash; policy.cache_contents_attested = true }
   const input = { ...selection, request_digest: view.receipt.request_digest, operator_policy_digest: await digest(policy), source_scope_digest: h }
   const attempt = { projectId: pin.project_id, imageId: pin.image_revision_id, imageHash: pin.image_artifact_hash, requestKey: 'original-key', requestHash: await digest(input) }
   const command = { id: view.invocation_id, tool_id: 'quality.native_build.prepare', status: 'completed', input_payload: { ...input, idempotency_key: attempt.requestKey, confirmed_by_user: true },
@@ -49,6 +52,15 @@ test('native preview and original receipt preserve the exact production Python s
   assert.equal(await validation.verifyNativePreview(v.preview, v.selection, v.sources), v.preview)
   assert.equal(await validation.verifyNativeJob(v.view, v.input, v.view.invocation_id, 'completed', v.sources), v.view)
   assert.deepEqual(v, before)
+})
+test('Python 3.12 preview and archived zipapp retain the pinned lock and source without target authority', async () => {
+  const v = await fixture(true)
+  assert.equal(await validation.verifyNativePreview(v.preview, v.selection, v.sources), v.preview)
+  assert.equal(await validation.verifyNativeJob(v.view, v.input, v.view.invocation_id, 'completed', v.sources), v.view)
+  assert.equal(v.view.receipt.execution_authorized, false)
+  delete v.preview.operator_policy.dependency_lock_hash
+  v.preview.request.operator_policy_digest = await digest(v.preview.operator_policy)
+  await assert.rejects(validation.verifyNativePreview(v.preview, v.selection, v.sources))
 })
 for (const [fault, change] of Object.entries({
   project: (v) => v.preview.request.project_id = 'foreign', revision: (v) => v.preview.source.pin.source_revision_id = 'foreign',
@@ -84,7 +96,7 @@ test('reserved unknown output is not promoted to success or inferred cleanup', a
   }
 })
 test('build paths reject traversal, aliases, controls, git internals and oversize UTF-8', () => {
-  for (const value of ['target/app.jar', 'target/nested/app.jar']) assert.equal(validation.nativeArtifactPath(value), true)
+  for (const value of ['target/app.jar', 'target/nested/app.jar', 'target/app.pyz']) assert.equal(validation.nativeArtifactPath(value), true)
   for (const value of ['target/../app.jar', 'target/./app.jar', 'target/.git/app.jar', 'target//app.jar', '/target/app.jar', 'target/a\\b.jar',
     'target/a\n.jar', 'target/' + '界'.repeat(400) + '.jar', 'target/app.zip']) assert.equal(validation.nativeArtifactPath(value), false)
 })

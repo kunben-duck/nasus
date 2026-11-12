@@ -46,7 +46,7 @@ def original_pg_command(v, *, age=0):
 def test_original_pg_command_is_rechecked_after_complete_input_verification(request, monkeypatch, fixture, fault):
     v = request.getfixturevalue(fixture)
     ident = original_pg_command(v, age=895 if fault == "expired" else 0)
-    original_health = v.service.health.inspect
+    original_health = v.service.health.probe_pinned_inventory
 
     def health(*args, **kwargs):
         value = original_health(*args, **kwargs)
@@ -60,7 +60,7 @@ def test_original_pg_command_is_rechecked_after_complete_input_verification(requ
                 session.get(UserIdentityRecord, "admin").status = "disabled"
         return value
 
-    monkeypatch.setattr(v.service.health, "inspect", health)
+    monkeypatch.setattr(v.service.health, "probe_pinned_inventory", health)
     try:
         if fault == "unchanged":
             prepared = v.service.prepare(v.selection, invocation_id=ident)

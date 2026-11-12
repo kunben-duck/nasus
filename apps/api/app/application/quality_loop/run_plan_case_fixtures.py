@@ -3,8 +3,8 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 
 from .http_fixture_commands import HttpFixtureCommandAuthority
-from .http_fixture_execution import HttpFixtureExecutionSelection
-from .http_fixture_history import HttpFixtureHistoryTarget
+from .http_fixture_execution import HttpFixtureExecutionInputs, HttpFixtureExecutionSelection
+from .http_fixture_history import HttpFixtureHistoryItem, HttpFixtureHistoryTarget
 from .http_fixtures import HttpFixtureLifecycleApplicationService, HttpFixturePhaseRecord
 from ...domain.quality_loop.acceptance_specification import acceptance_digest
 from ...domain.quality_loop.http_fixtures import fixture_bindings
@@ -44,18 +44,38 @@ class RunPlanCaseFixtureApplicationService:
             raise RunPlanCaseExecutionInvalid("fixture history mode must be an exact boolean")
         require_current()
         target = HttpFixtureHistoryTarget(project_id=project_id, invocation_id=invocation_id)
-        selected = self.jobs.history.read(target)
-        if selected.stage != "execute" or selected.operation != "setup" or selected.status != "completed":
+        combined = getattr(self.jobs.history, "read_execution_with_inputs", None)
+        if callable(combined):
+            selected, inputs = combined(target)
+            if not isinstance(inputs, HttpFixtureExecutionInputs):
+                raise RunPlanCaseExecutionInvalid("setup handoff needs the original typed execution inputs")
+        else:
+            selected, inputs = self.jobs.history.read(target), None
+        if (not isinstance(selected, HttpFixtureHistoryItem) or selected.project_id != project_id
+                or selected.invocation_id != invocation_id or selected.stage != "execute"
+                or selected.operation != "setup" or selected.status != "completed"):
             raise RunPlanCaseExecutionInvalid("business case prerequisites require an original completed setup command")
-        inputs = self.jobs.grants.execution_inputs(HttpFixtureExecutionSelection(project_id=project_id,
-            grant_id=selected.grant_id, grant_digest=selected.grant_digest, operation="setup"), live=False)
-        if (inputs.scope.case_id != selected.case_id or inputs.scope.attempt_id != selected.attempt_id
+        selection = HttpFixtureExecutionSelection(project_id=project_id, grant_id=selected.grant_id,
+            grant_digest=selected.grant_digest, operation="setup")
+        if inputs is None:
+            inputs = self.jobs.grants.execution_inputs(selection, live=False)
+        if (inputs.selection != selection or inputs.scope.case_id != selected.case_id or inputs.scope.attempt_id != selected.attempt_id
                 or inputs.parent.run_plan_id != selected.run_plan_id
                 or inputs.parent.run_plan_artifact_hash != selected.run_plan_artifact_hash):
             raise RunPlanCaseExecutionInvalid("business case setup lost its original history ancestry")
         authority = HttpFixtureCommandAuthority(invocation_id=invocation_id, request_digest=selected.request_digest)
-        phases = self.jobs.execution.runtimes.history(inputs, require_current=require_current,
-            original_setup=authority, include_cleanup=True)
+
+        def verify_original():
+            if self.jobs.history.read(target) != selected:
+                raise RunPlanCaseExecutionInvalid("original setup changed while reading; inspect the same operation again")
+
+        runtimes = self.jobs.execution.runtimes
+        stable_history = getattr(runtimes, "history_with_original_recheck", None)
+        if callable(stable_history):
+            phases = stable_history(inputs, require_current=require_current, original_setup=authority,
+                verify_original=verify_original)
+        else:
+            phases = runtimes.history(inputs, require_current=require_current, original_setup=authority, include_cleanup=True)
         expected = ("setup", *("cleanup:" + binding for binding in fixture_bindings(inputs.manifest)))
         if (type(phases) is not tuple or len(phases) != len(expected)
                 or tuple(item[0] for item in phases if type(item) is tuple and len(item) == 2) != expected
@@ -73,11 +93,11 @@ class RunPlanCaseFixtureApplicationService:
                 or tuple(item["binding_id"] for item in receipt["bindings"]) != fixture_bindings(inputs.manifest)):
             raise RunPlanCaseExecutionInvalid("business case setup must preserve all successfully observed original captures")
         require_current()
-        # A changed command/journal during the read is not a stable prerequisite.
-        if (self.jobs.history.read(target) != selected
-                or self.jobs.execution.runtimes.history(inputs, require_current=require_current,
-                    original_setup=authority, include_cleanup=True) != phases):
-            raise RunPlanCaseExecutionInvalid("original setup changed while reading; inspect the same operation again")
+        if not callable(stable_history):
+            verify_original()
+            if runtimes.history(inputs, require_current=require_current,
+                    original_setup=authority, include_cleanup=True) != phases:
+                raise RunPlanCaseExecutionInvalid("original setup changed while reading; inspect the same operation again")
         require_current()
         proof = {"invocation_id": invocation_id, "history_digest": acceptance_digest(selected.model_dump(mode="json")),
             "scope": asdict(inputs.scope), "parent": inputs.parent.model_dump(mode="json"),

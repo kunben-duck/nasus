@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from apps.api.app.application.quality_loop.execution_work_guard import ExecutionWorkGuard
 from apps.api.app.domain.quality_loop.native_environment import NativeEnvironmentInvalid
 from apps.api.app.infrastructure.runner.configured_target_environments import ConfiguredOwnedTargetEnvironments
 from apps.api.app.infrastructure.runner.native_maven_build import bounded_command
@@ -132,6 +133,193 @@ def test_authorization_revocation_is_not_hidden_by_result_validation(execution, 
     adapter.command = child
     with pytest.raises(PermissionError, match="revoked"): execute(execution, spec, require_work=current)
     assert not dispatched
+
+
+@pytest.mark.parametrize("revoke_on", [None, 1, 2], ids=["success", "before-spawn", "verified-target-result"])
+def test_owned_transport_checks_full_proof_only_at_its_effect_boundaries(execution, spec, monkeypatch, revoke_on):
+    job, _, adapter, _, _ = execution
+    adapter.command = bounded_command
+    phases, children = [], []
+    original_spawn = subprocess.Popen
+    original_inspect = adapter.environments.inspect
+    wire = json.dumps(payload(job), ensure_ascii=False).encode()
+
+    def inspect(*args, **kwargs):
+        phases.append("target-read")
+        return original_inspect(*args, **kwargs)
+
+    def spawn(args, **options):
+        assert args == [adapter.node, str(CLI), "--execute-owned-target-http"]
+        phases.append("spawn")
+        child = original_spawn([sys.executable, "-c", f"import sys;sys.stdout.buffer.write({wire!r})"], **options)
+        children.append(child)
+        return child
+
+    def verify():
+        phases.append("verify")
+        if phases.count("verify") == revoke_on:
+            raise PermissionError("original full proof revoked")
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(adapter.environments, "inspect", inspect)
+    guard = ExecutionWorkGuard(verify, lambda: phases.append("poll"))
+    if revoke_on is None:
+        assert execute(execution, spec, require_work=guard).result_body == wire
+    else:
+        with pytest.raises(PermissionError, match="original full proof revoked"):
+            execute(execution, spec, require_work=guard)
+    assert phases[0] == "poll" and phases.count("poll") > 1
+    fences = [phase for phase in phases if phase != "poll"]
+    assert fences == (["target-read", "verify"] if revoke_on == 1
+        else ["target-read", "verify", "spawn", "target-read", "verify"])
+    assert len(children) == (0 if revoke_on == 1 else 1)
+    assert all(child.poll() is not None and child.stdout.closed for child in children)
+    if revoke_on is None:
+        phases.clear()
+        adapter.command = lambda *args, **kwargs: bounded_command(*args, **kwargs)
+        assert execute(execution, spec, require_work=guard).result_body == wire
+        assert [phase for phase in phases if phase != "poll"] == [
+            "verify", "target-read", "verify", "spawn", "verify", "verify", "target-read", "verify"]
+        assert len(children) == 2 and children[-1].poll() is not None and children[-1].stdout.closed
+
+
+def test_custom_transport_retains_the_full_initial_guard(execution, spec):
+    _, _, _, dispatched, _ = execution
+
+    def denied():
+        raise PermissionError("original full proof revoked")
+
+    with pytest.raises(PermissionError, match="original full proof revoked"):
+        execute(execution, spec, require_work=ExecutionWorkGuard(denied, lambda: None))
+    assert not dispatched
+
+
+@pytest.mark.parametrize("revoked_after_result", [False, True])
+def test_private_case_staging_keeps_physical_full_dispatch_and_live_result_fence(
+        execution, spec, monkeypatch, revoked_after_result):
+    job, inventory, adapter, _, _ = execution
+    adapter.command = bounded_command
+    full, children, after = [], [], False
+    original_spawn, original_inspect = subprocess.Popen, adapter.environments.inspect
+    wire = json.dumps(payload(job)).encode()
+
+    def spawn(args, **options):
+        assert args == [adapter.node, str(CLI), "--execute-owned-target-http"] and len(full) == 1
+        child = original_spawn([sys.executable, "-c", f"import sys;sys.stdout.buffer.write({wire!r})"], **options)
+        children.append(child)
+        return child
+
+    def inspect(*args, **kwargs):
+        nonlocal after
+        value = original_inspect(*args, **kwargs)
+        if children:
+            after = True
+        return value
+
+    def poll():
+        if after and revoked_after_result:
+            raise PermissionError("authority revoked after target reinspection")
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(adapter.environments, "inspect", inspect)
+    def stage():
+        return adapter.stage_owned_case_http(job, environment_id=spec.environment_id, artifact_hash=ARTIFACT,
+            inventory_hash=inventory.inventory_hash, require_work=ExecutionWorkGuard(lambda: full.append(True), poll))
+
+    if revoked_after_result:
+        with pytest.raises(PermissionError, match="authority revoked after target reinspection"):
+            stage()
+    else:
+        assert stage().result_body == wire
+    assert after and full == [True] and len(children) == 1 and children[0].stdout.closed
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+def test_default_registry_brackets_every_typed_subprocess_poll(execution, spec, monkeypatch, revoked):
+    from apps.api.app.infrastructure.runner import configured_target_environments as configured
+
+    _, _, adapter, dispatched, _ = execution
+    original_read, original_child = configured.read_registry, adapter.command
+    calls = []
+    active, deny = False, False
+
+    def poll():
+        calls.append("poll")
+        if deny:
+            raise PermissionError("authority revoked during registry read")
+
+    def registry(path):
+        nonlocal deny
+        calls.append("registry")
+        value = original_read(path)
+        if active and revoked:
+            deny = True
+        return value
+
+    def child(*args, **options):
+        nonlocal active
+        active = True
+        calls.clear()
+        options["require_work"].poll()
+        assert calls == ["poll", "registry", "poll"]
+        active = False
+        return original_child(*args, **options)
+
+    monkeypatch.setattr(configured, "read_registry", registry)
+    adapter.command = child
+    guard = ExecutionWorkGuard(lambda: None, poll)
+    if revoked:
+        with pytest.raises(PermissionError, match="revoked during registry read"):
+            execute(execution, spec, require_work=guard)
+        assert calls == ["poll", "registry", "poll"] and not dispatched
+    else:
+        assert execute(execution, spec, require_work=guard).result.status == "passed"
+        assert len(dispatched) == 1
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_post_dispatch_docker_reads_use_one_pinned_registry_pair(execution, spec, monkeypatch, changed):
+    from apps.api.app.infrastructure.runner import configured_target_environments as configured
+
+    _, _, adapter, dispatched, docker = execution
+    original_read, original_child = configured.read_registry, adapter.command
+    post_registry, post_start = [], []
+
+    def registry(path):
+        value = original_read(path)
+        if post_start:
+            post_registry.append(len(docker.calls))
+            if changed and len(post_registry) == 2:
+                return (replace(spec, image_id="sha256:" + "9" * 64),)
+        return value
+
+    def child(*args, **options):
+        response = original_child(*args, **options)
+        post_start.append(len(docker.calls))
+        return response
+
+    monkeypatch.setattr(configured, "read_registry", registry)
+    adapter.command = child
+    guard = ExecutionWorkGuard(lambda: None, lambda: None)
+    if changed:
+        with pytest.raises(NativeEnvironmentInvalid):
+            execute(execution, spec, require_work=guard)
+        assert post_registry == post_start * 2 and len(docker.calls) == post_start[0]
+    else:
+        outcome = execute(execution, spec, require_work=guard)
+        assert outcome.result.status == "passed"
+        # Transport return, pinned before/after Docker snapshot, final return.
+        assert post_registry == post_start * 2 + [len(docker.calls)] * 2
+        assert post_start[0] < len(docker.calls)
+    assert len(dispatched) == 1
+    if not changed:
+        registry_reads, docker_reads = len(post_registry), len(docker.calls) - post_start[0]
+        post_registry.clear()
+        post_start.clear()
+        original_inspect = adapter.environments.inspect
+        monkeypatch.setattr(adapter.environments, "inspect", lambda *args, **options: original_inspect(*args, **options))
+        assert execute(execution, spec, require_work=guard) == outcome
+        assert len(post_registry) > registry_reads and len(docker.calls) - post_start[0] == docker_reads
 
 
 def test_failed_original_oracle_stays_failed_in_the_owned_port(execution, spec):

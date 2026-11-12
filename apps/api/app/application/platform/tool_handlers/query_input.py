@@ -12,5 +12,5 @@ CONTEXT_KEYS = frozenset({
 })
 
 
-def query_payload(payload: dict) -> dict:
-    return {key: value for key, value in payload.items() if key not in CONTEXT_KEYS}
+def query_payload(payload: dict, *, preserve: frozenset[str] = frozenset()) -> dict:
+    return {key: value for key, value in payload.items() if key not in CONTEXT_KEYS or key in preserve}

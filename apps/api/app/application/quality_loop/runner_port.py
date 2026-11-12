@@ -75,7 +75,7 @@ class OwnedTargetHttpRunnerPort(Protocol):
         self, command: AutomationRunnerCommand, *, environment_id: str, artifact_hash: str,
         inventory_hash: str, require_work: Callable[[], None],
     ) -> OwnedTargetHttpExecution:
-        """The application supplies independent authority and a live ownership fence."""
+        """Require full work immediately before native dispatch and before returning its evidence."""
         ...
 
 

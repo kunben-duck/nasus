@@ -18,7 +18,16 @@ def test_explicit_refs_agree_with_native_git_ref_format(ref):
     assert SourceSpec("code", "https://example.com/repo.git", tracked_ref=ref).tracked_ref == ref
 
 
-@pytest.mark.parametrize("ref", ["", "main", "HEAD", "a" * 40, "--upload-pack=evil", "refs/heads/",
+def test_full_commit_is_a_code_selector_not_a_symbolic_ref():
+    ref = "a" * 40
+    assert require_tracked_ref("code", ref) == ref
+    assert SourceSpec("code", "https://example.com/repo.git", tracked_ref=ref).tracked_ref == ref
+    with pytest.raises(ValueError, match="tracked_ref"):
+        require_tracked_ref("us_doc", ref)
+
+
+@pytest.mark.parametrize("ref", ["", "main", "HEAD", "a" * 39, "A" * 40, "a" * 64, "a" * 40 + "^{}",
+    "--upload-pack=evil", "refs/heads/",
     "refs/tags/", "refs/heads/a..b", "refs/heads/a//b", "refs/heads/.private", "refs/heads/a.lock",
     "refs/heads/a.lock/b", "refs/heads/a.", "refs/heads/a/", "refs/heads/a:b", "refs/heads/a b",
     "refs/heads/a\n", "refs/heads/a\x7f", "refs/heads/a^{}", "refs/heads/a~1", "refs/heads/a?",

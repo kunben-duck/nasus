@@ -6,11 +6,29 @@ import { verifyFixtureHistoryItem } from './httpFixtureHistoryValidation'
 import { locatorRecordApi } from './runPlanLocatorRecordApi'
 import { generationEqual } from './testDesignGenerationValidation'
 import { requireRunPlan } from './runPlanValidation'
-import { caseTools, caseId, requireCaseCommand, requireCaseFields, requireCaseParent, requireCaseInput } from './runPlanCaseValidation'
+import { caseTools, caseId, readCaseCommandSelection, requireCaseCommand, requireCaseFields, requireCaseParent, requireCaseInput,
+  matchesCaseSetupReference, verifyHistoricalCasePlan } from './runPlanCaseValidation'
 import { verifyCaseHistory } from './runPlanCaseHistoryValidation'
 import type { ToolInvocation } from '../platform/types'
 import type { RunPlanArchive } from './types/runPlans'
 import type { CaseCommandAttempt, CaseCommandStage, CaseExecutionFields, CaseExecutionSelection } from './types/runPlanCaseJobs'
+
+async function readOriginal(signal: AbortSignal,
+  load: () => Promise<{ command: ToolInvocation; input: CaseExecutionSelection; plan: RunPlanArchive }>) {
+  for (let count = 0; count < 3; count++) {
+    signal.throwIfAborted()
+    const { command, input, plan } = await load()
+    if (['pending', 'waiting_confirmation'].includes(command.status)) return { command, history: undefined, plan }
+    signal.throwIfAborted()
+    const value = await request<unknown>(`/v1/projects/${encodeURIComponent(input.project_id)}/quality/run-plan-case-executions/${encodeURIComponent(command.id)}`,
+      { signal, cache: 'no-store' })
+    signal.throwIfAborted()
+    if (!generationEqual((value as { status?: unknown })?.status, command.status) && count < 2) continue
+    const history = await verifyCaseHistory(value, command, input, plan)
+    signal.throwIfAborted(); return { command, history, plan }
+  }
+  throw new Error('Original case execution status could not be verified')
+}
 
 export const caseExecutionApi = {
   async prepare(plan: RunPlanArchive, fields: CaseExecutionFields, signal: AbortSignal): Promise<CaseExecutionSelection> {
@@ -23,8 +41,7 @@ export const caseExecutionApi = {
       signal.throwIfAborted()
       const item = verifyFixtureHistoryItem(await request<unknown>(`/v1/projects/${encodeURIComponent(p.project_id)}/quality/http-fixture-operations/${encodeURIComponent(selected.commandId)}`,
         { signal, cache: 'no-store' }), p.project_id)
-      requireRunPlan(item.invocation_id === selected.commandId && item.stage === 'execute' && item.operation === 'setup' && item.status === 'completed'
-        && item.case_id === selected.caseId && item.run_plan_id === p.run_plan_id && item.run_plan_artifact_hash === p.artifact_hash)
+      requireRunPlan(item.invocation_id === selected.commandId && matchesCaseSetupReference(item, p, selected.caseId))
     }
     signal.throwIfAborted()
     const e = environment.metadata, l = locators.metadata
@@ -67,16 +84,22 @@ export const caseExecutionApi = {
   },
   async read(attempt: CaseCommandAttempt, input: CaseExecutionSelection, plan: RunPlanArchive, actorId: string, signal: AbortSignal) {
     requireCaseParent(input, plan)
-    for (let count = 0; count < 3; count++) {
-      const command = await this.recover('execute', attempt, { ...input }, actorId, signal)
-      if (['pending', 'waiting_confirmation'].includes(command.status)) return { command, history: undefined }
-      const value = await request<unknown>(`/v1/projects/${encodeURIComponent(input.project_id)}/quality/run-plan-case-executions/${encodeURIComponent(command.id)}`,
-        { signal, cache: 'no-store' })
+    const { command, history } = await readOriginal(signal,
+      async () => ({ command: await this.recover('execute', attempt, { ...input }, actorId, signal), input, plan }))
+    return { command, history }
+  },
+  async readHistoryByCommand(scope: RunPlanArchive | string, commandId: string, signal: AbortSignal) {
+    const projectId = typeof scope === 'string' ? scope : scope.metadata.project_id
+    requireRunPlan(caseId(commandId) && caseId(projectId))
+    return readOriginal(signal, async () => {
+      const command = await platformApi.getToolInvocation(commandId, { signal })
+      const input = await readCaseCommandSelection(command, commandId, projectId)
       signal.throwIfAborted()
-      if (!generationEqual((value as { status?: unknown })?.status, command.status) && count < 2) continue
-      const history = await verifyCaseHistory(value, command, input, plan)
-      signal.throwIfAborted(); return { command, history }
-    }
-    throw new Error('Original case execution status could not be verified')
+      const plan = typeof scope !== 'string' ? scope : await verifyHistoricalCasePlan(await request<unknown>(
+        `/v1/projects/${encodeURIComponent(projectId)}/quality/run-plans/${encodeURIComponent(input.run_plan_id)}`,
+        { signal, cache: 'no-store' }), input)
+      requireCaseParent(input, plan)
+      return { command, input, plan }
+    })
   },
 }

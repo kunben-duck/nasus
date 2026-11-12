@@ -90,6 +90,20 @@ def _service(snapshot: ProjectWorkspaceSnapshot):
     return service, read_model, authorization, tools, conversations
 
 
+def test_project_identity_read_is_authorized_and_does_not_load_the_full_workspace():
+    snapshot = ProjectWorkspaceSnapshot(project=_project())
+    service, read_model, authorization, _tools, _conversations = _service(snapshot)
+    assert service.get_project(snapshot.project.id) == snapshot.project
+    authorization.require_project_access.assert_called_once_with(snapshot.project.id)
+    assert read_model.workspace_reads == []
+    authorization.require_project_access.side_effect = PermissionError("denied")
+    with pytest.raises(PermissionError):
+        service.get_project(snapshot.project.id)
+    authorization.require_project_access.side_effect = None
+    with pytest.raises(KeyError):
+        service.get_project("missing")
+
+
 def test_workspace_query_reads_one_durable_snapshot_without_compatibility_refresh() -> None:
     us = USItem(
         id="us_checkout",

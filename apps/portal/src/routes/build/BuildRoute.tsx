@@ -9,15 +9,15 @@ export function BuildRoute() {
     <TopLevelStudioShell active="build" statusDependencies={model.statusDependencies}>
       {({ sidebarCollapsed, toggleSidebar }) => (
         <BuildHero
-          projects={model.projects}
-          openProject={model.openProject}
+          conversation={model.conversation}
+          sendPrompt={model.sendPrompt}
+          newBuild={model.newBuild}
           prompt={model.prompt}
           setPrompt={model.setPrompt}
           runPrompt={model.runPrompt}
           stopPrompt={model.stopPrompt}
           loading={model.loading}
           streaming={model.streaming}
-          selectedSkillIds={model.selectedSkillIds}
           selectedSkills={model.selectedSkills}
           onToggleSkill={model.toggleBuildSkill}
           onGuessYou={model.guessBuildPrompt}

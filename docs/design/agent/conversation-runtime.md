@@ -198,7 +198,7 @@ Orchestrator 必须返回 `ClarificationRequest`。高风险工具允许进入�
 
 说明：
 
-- `ConversationSummaryCheckpoint` 是会话记忆的主要事实源。
+- `ConversationSummaryCheckpoint` 是可重建的压缩视图，不是任务状态或授权的事实源。
 - Agent Service 组装上下文窗口时，必须优先通过 `Agent Memory Manager` 读取 checkpoint 和最近消息。
 - checkpoint 只代表会话级记忆，不自动晋级为项目长期记忆。
 
@@ -306,20 +306,82 @@ Orchestrator 必须返回 `ClarificationRequest`。高风险工具允许进入�
 
 ### 10.1 输入打包原则
 
-默认不把完整会话历史直接发给模型，优先组装：
+`NASUS_CONVERSATION_MEMORY_V2=true` 时，按 token 预算组装系统规则、当前输入、
+实时任务事实、结构化任务笔记、累计摘要、未覆盖原文与相关证据。当前输入只发送一次，
+近期消息保留 user/assistant 原生角色。默认输入上限 16384，70% 持久化整理任务，
+90% 在模型发送前检查并等待必要压缩。未知 tokenizer 使用明确标记的 UTF-8 字节保守估算，
+不是字符数除以 4；已识别的 OpenAI 模型使用 tiktoken。
 
-- 最新 N 条消息
-- 最近一个或多个 `ConversationSummaryCheckpoint`
-- 当前空间的 `visible_context_refs`
-- 当前未完成工具、待处理审批和 blocker 摘要
+后台压缩保留最近 4 个完整轮次和当前未完成轮次。摘要不能覆盖或删除原文；失败后保留
+上一份有效摘要及全部未覆盖消息，关键内容仍超限时显式失败，不静默丢掉用户约束。
+`NASUS_MEMORY_MODEL_BUDGETS` 可按模型设置 input_limit、context_window、output_reserve、
+safety_reserve；配置窗口时须给模型输出和协议开销留足空间。
 
 ### 10.2 Checkpoint 策略
 
-- 每累计一定消息数或 token 数，自动生成 checkpoint
-- 用户显式要求“总结当前进展”时，也生成 checkpoint
-- 只总结已完成消息区间，不覆盖活跃流式消息
+- 模型输入为上一份有效摘要、未覆盖消息和有引用的工具观察，输出目标、约束、决策、问题、下一步、证据与不确定项。
+- 每项记录来源引用、user_statement / assistant_inference / tool_observation 与 active / superseded / uncertain 状态。
+- 旧约束必须原样保留，可标记 superseded；新更正另附来源。确定性检查结构、引用、来源类别和约束遗漏。
+- 摘要固定入队时的 chat 配置；切换模型或权限范围后旧任务不能提交。fallback/mock 不能冒充成功的语义摘要。
+- `memory_payload` 保存格式版本 2、父摘要、覆盖范围、来源、模型绑定、用途、提示词版本、用量及耗时，兼容原 summary_text。
+- 旧格式首次按需从原文分批重建，不将旧截断文本升级为可信语义记忆。
 
-### 10.3 Pinned Context
+### 10.3 后台整理与权限
+
+`conversation_memory_jobs` 是持久化投递意图。消息写入仅登记任务，不等待模型或 Temporal。
+现有 Worker 每 3 秒调度至 `{NASUS_TEMPORAL_TASK_QUEUE}-conversation-memory` 队列，最多两个并发。
+模型调用超时 60 秒，数据库 lease 90 秒，最多两次尝试；attempt fencing 与父摘要 CAS
+阻止旧 Worker 覆盖新结果。重启后继续扫描未完成任务，已完成任务重复执行不再次调用模型。
+摘要、会话指针和 `conversation.summary.updated` Outbox 事件在同一事务提交。
+执行前及模型返回后重新读取账号状态、角色和会话权限，账号撤销后的结果不得提交。
+后台任务要求真实的有效账号；无身份的内部调用或未持久化的开发模拟身份不能生成有效摘要。
+
+任务笔记从有效摘要与现有 Build intake / AgentGoal 记录组装，不新增业务状态机。
+项目、数据源、候选、发布、审批和执行状态仍以当前授权范围内的业务记录为准，
+不增加劫持普通问题的全局路由。原文、摘要和回查结果每次使用重新检查访问权限；
+缺少完整 source-local provenance 的受限历史整体隐藏，不用旧摘要绕过撤权。
+
+`query.conversation.history.search` 和 `query.conversation.history.read` 通过 ToolInvocation 执行，
+限定当前会话。首版为确定性关键词匹配与按消息 ID 分页回读，不声称已实现语义向量搜索。
+工具输出保存引用并按权限回读，广播只携带引用，不广播历史正文。
+`GET /v1/agent-memory/context` 增加覆盖范围、整理状态、预算及降级原因，检查本身不触发摘要；
+手动 checkpoint 接口返回真实生成结果，模型失败则返回错误。
+
+### 10.4 灰度与验收
+
+新功能默认关闭；API 与 Worker 同时开启 `NASUS_CONVERSATION_MEMORY_V2`，并运行迁移
+`0124_conversation_memory`。需要 Temporal Worker 才有后台整理；本地运行时只支持发送前
+必要整理或手动 checkpoint，不承诺后台进度。关闭开关可回到旧上下文策略，原始消息不变。
+本轮不新增跨会话自动记忆，也不引入新的 Agent 框架。
+
+验收必须区分确定性 fixture 与真实模型：30 轮中文、跨 3 次压缩的 fixture 只证明链路及约束校验，
+不能证明模型总结质量。真实模型回放与基线比较、首 token 延迟和成本测量通过前不得默认开启。
+摘要用量通过 `agent.conversation_summary` 审计关联；未配置单价时成本未知，不记为零费用。
+
+回归入口：`test_semantic_conversation_memory.py`、`test_conversation_summary_model.py`、
+`test_conversation_memory_postgres.py`、`test_conversation_memory_api.py`，数据库测试使用
+`scripts/test-api-postgres.py` 的一次性 PostgreSQL，禁止使用开发数据跑测试。
+
+模型预算通过 `NASUS_MEMORY_MODEL_BUDGETS` 的模型名称键覆盖。每项支持 `input_limit`、
+`context_window`、`output_reserve`、`safety_reserve` 和 `summary_output_tokens`（默认 4096）。
+未知模型使用明确标注的 UTF-8 字节保守估算；配置窗口时，输入上限同时扣除输出预留与安全余量。
+推理模型可能将输出额度用于思考，需针对实际模型调整摘要输出预算，不放宽 JSON 或来源校验。
+可选 `input_usd_per_million` / `output_usd_per_million` 是运维提供的价格，绝不猜测实时模型价格。
+
+显式运行真实模型回放：设置 `NASUS_MEMORY_LIVE_EVAL=true` 后运行
+`test_conversation_memory_live.py`。它只使用虚构任务输入，但会调用当前 chat 模型并产生正常调用审计与费用。
+本次 `deepseek-v4-flash` 在 `summary_output_tokens=8192`、`output_reserve=8192` 的单次回放中，
+完成 30 轮 / 3 次压缩，关键检索锚点 4/4，旧摘要基线 0/4；三次耗时约 8.9 / 17.5 / 27.0 秒。
+默认 4096 额度曾出现空结果或不完整 JSON，均被拒绝，原文未丢失。因此单次通过不等于所有模型已验收。
+
+`test_conversation_memory_temporal.py` 使用显式 `TEST_TEMPORAL_ADDRESS` 与一次性 PostgreSQL，
+验证提交后丢失确认、新 Worker 接力和工作流历史重放；模型采用确定性 fixture，不冒充真实模型评测。
+浏览器诊断展示由 `tests/e2e/conversation-memory.spec.ts` 验证，接口响应为 UI 契约样本。
+既有完整门禁仍有 Build intake 相关 API 断言、BuildComposer 行数阈值、旧语言切换标题断言及
+smoke 的立即项目跳转预期未通过；未因本轮改造放宽这些测试。默认启用前还需解决这些回归差异，
+补充多次真实续接稳定性和首 token 延迟对比。当前只记录延迟指标，不宣称已证明端到端延迟改善。
+
+### 10.5 Pinned Context
 
 会话允许 pin：
 

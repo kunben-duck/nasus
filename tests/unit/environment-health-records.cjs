@@ -68,6 +68,27 @@ test('real DOWN bytes are displayed as unhealthy, never a failed archive or exec
   assert.equal(v.view.metadata.target_health_verified, false); assert.equal(v.view.metadata.dependency_health_verified, true)
   assert.equal(v.view.metadata.execution_authorized, false); assert.equal(v.view.metadata.passed_count, 0)
 })
+test('Python PG-only health preserves the closed v2 profile and verifies the actual tags body', async () => {
+  const v = fixture(), o = v.view.archive.observation
+  o.inventory.schema = 'nasus.owned-target-environment.v2'
+  o.inventory.profile = 'nasus.python312-django-pg.v1'
+  o.inventory.dependency_instances = o.inventory.dependency_instances.filter((entry) => entry.role === 'pg')
+  o.checks = o.checks.filter((check) => check.role !== 'redis')
+  const target = o.checks.at(-1)
+  target.probe = 'target_realworld_tags'
+  await response(target, '{"tags":[]}\n200')
+  o.inventory_hash = await digest(o.inventory)
+  v.view.metadata = plain(await validation.expectedHealthMetadata(v.view.archive))
+  assert.equal(await validation.verifyHealthRecord(v.view, v.plan, v.binding, v.command.id, v.view.metadata.record_id), v.view)
+  await response(target, '{"tags":[1]}\n200')
+  v.view.metadata = plain(await validation.expectedHealthMetadata(v.view.archive))
+  assert.equal(v.view.metadata.target_health_verified, false)
+  await validation.verifyHealthRecord(v.view, v.plan, v.binding, v.command.id, v.view.metadata.record_id)
+  delete o.inventory.profile
+  o.inventory_hash = await digest(o.inventory)
+  v.view.metadata = plain(await validation.expectedHealthMetadata(v.view.archive))
+  await assert.rejects(validation.verifyHealthRecord(v.view, v.plan, v.binding, v.command.id, v.view.metadata.record_id))
+})
 for (const fault of ['request', 'command', 'record', 'actor', 'time', 'image', 'jar', 'policy', 'inventory-project', 'inventory-extra', 'network',
   'extra', 'schema', 'probe-schema', 'order', 'missing', 'check-extra', 'role', 'probe', 'container', 'epoch', 'probe-image', 'body', 'base64', 'byte-count',
   'too-large', 'target-json', 'duplicate-key', 'unicode-duplicate', 'invalid-utf8', 'target-status', 'summary', 'health-hash', 'authority', 'zero-bool', 'live']) {

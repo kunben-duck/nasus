@@ -67,7 +67,7 @@ export function knowledgeSectionModel(context: ProjectRouteContext, objectId?: s
   }
 }
 
-export function runsSectionModel(context: ProjectRouteContext, runId?: string) {
+export function runsSectionModel(context: Pick<ProjectRouteContext, 'workspace'>, runId?: string) {
   const runs: RunCardView[] = (context.workspace?.runs ?? []).map((run) => ({
     id: run.id,
     title: run.title,

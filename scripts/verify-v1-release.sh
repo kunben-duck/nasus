@@ -34,11 +34,19 @@ run_step() {
 
 run_backend_gate() (
   source "$ROOT_DIR/scripts/dev-runtime-env.sh"
+  # Release coverage must not inherit a developer's pytest selector or native target opt-in.
+  unset PYTEST_ADDOPTS PYTEST_PLUGINS EXWEB_EXECUTE_REVIEWED_NATIVE_BUILD EXWEB_CANONICAL_HANDOFF_REPORT
   export NASUS_TEST_DATABASE_URL="${NASUS_RELEASE_TEST_DATABASE_URL:-${NASUS_TEST_DATABASE_URL:-$NASUS_DATABASE_URL}}"
   export NASUS_TEST_S3_ENDPOINT="${NASUS_TEST_S3_ENDPOINT:-$NASUS_S3_ENDPOINT}"
   export NASUS_TEST_S3_ACCESS_KEY="${NASUS_TEST_S3_ACCESS_KEY:-$NASUS_S3_ACCESS_KEY}"
   export NASUS_TEST_S3_SECRET_KEY="${NASUS_TEST_S3_SECRET_KEY:-$NASUS_S3_SECRET_KEY}"
-  "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/test-api-postgres.py" --minio apps/api/tests tests/test_docker_stack_contract.py tests/test_ddd_boundaries.py tests/test_isolated_test_storage.py tests/test_release_gate_environment.py -q
+  local -a suites=(apps/api/tests tests/test_docker_stack_contract.py tests/test_ddd_boundaries.py tests/test_isolated_test_storage.py tests/test_release_gate_environment.py)
+  local workers="${NASUS_RELEASE_BACKEND_WORKERS:-1}"
+  case "$workers" in
+    1) "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/test-api-postgres.py" --minio "${suites[@]}" -q ;;
+    2|3|4) "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/test-api-postgres-shards.py" --workers "$workers" "${suites[@]}" ;;
+    *) printf 'NASUS_RELEASE_BACKEND_WORKERS must be 1, 2, 3, or 4.\n' >&2; return 2 ;;
+  esac
 )
 
 trap cleanup EXIT

@@ -25,6 +25,7 @@ from ...application.platform.model_settings import (
 )
 from ...application.platform.llm_calls import LLMCallAuditPort
 from ...domain.platform.llm_call import LLMCall, LLMCallContext
+from ...domain.agent.conversation_memory import ConversationHistory, ContextBudgetExceeded
 
 
 ProviderName = Literal["mock", "openai", "gemini", "anthropic", "openai_compatible"]
@@ -164,11 +165,15 @@ class LLMGateway:
         fallback_text: str,
         custom_api_key: str | None = None,
         call_context: LLMCallContext | None = None,
+        max_output_tokens: int | None = None,
     ) -> LLMReply:
         started = time.perf_counter()
         provider = settings.model_provider
         language_instruction = self._language_instruction(settings.language)
         localized_system_prompt = f"{system_prompt}\n\n{language_instruction}"
+        if isinstance(history_snapshot, ConversationHistory) and hasattr(history_snapshot, "refresh"):
+            history_snapshot = await history_snapshot.refresh(localized_system_prompt, user_message, context_snapshot)
+        self._check_history_budget(localized_system_prompt, user_message, context_snapshot, history_snapshot)
         request_text = "\n".join(
             (localized_system_prompt, user_message, context_snapshot, history_snapshot)
         )
@@ -198,6 +203,7 @@ class LLMGateway:
                 user_message=user_message,
                 context_snapshot=context_snapshot,
                 history_snapshot=history_snapshot,
+                **({"max_output_tokens": max_output_tokens} if max_output_tokens is not None else {}),
             )
         except Exception:
             return self._audit_reply(
@@ -253,6 +259,9 @@ class LLMGateway:
         provider = settings.model_provider
         language_instruction = self._language_instruction(settings.language)
         localized_system_prompt = f"{system_prompt}\n\n{language_instruction}"
+        if isinstance(history_snapshot, ConversationHistory) and hasattr(history_snapshot, "refresh"):
+            history_snapshot = await history_snapshot.refresh(localized_system_prompt, user_message, context_snapshot)
+        self._check_history_budget(localized_system_prompt, user_message, context_snapshot, history_snapshot)
         request_text = "\n".join(
             (localized_system_prompt, user_message, context_snapshot, history_snapshot)
         )
@@ -1293,7 +1302,9 @@ class LLMGateway:
         user_message: str,
         context_snapshot: str,
         history_snapshot: str,
+        max_output_tokens: int | None = None,
     ) -> str | ProviderGeneration:
+        output_options = {"max_output_tokens": max_output_tokens} if max_output_tokens is not None else {}
         if provider == "openai":
             return await self._call_openai(
                 model_name,
@@ -1302,6 +1313,7 @@ class LLMGateway:
                 user_message,
                 context_snapshot,
                 history_snapshot,
+                **output_options,
             )
         if provider == "gemini":
             return await self._call_gemini(
@@ -1311,6 +1323,7 @@ class LLMGateway:
                 user_message,
                 context_snapshot,
                 history_snapshot,
+                **output_options,
             )
         if provider == "anthropic":
             return await self._call_anthropic(
@@ -1320,6 +1333,7 @@ class LLMGateway:
                 user_message,
                 context_snapshot,
                 history_snapshot,
+                **output_options,
             )
         if provider == "openai_compatible" and model_preset != "custom":
             return await self._call_openai_compatible(
@@ -1330,6 +1344,7 @@ class LLMGateway:
                 user_message=user_message,
                 context_snapshot=context_snapshot,
                 history_snapshot=history_snapshot,
+                **output_options,
             )
         return await self._call_custom(
             custom_model=custom_model,
@@ -1338,6 +1353,7 @@ class LLMGateway:
             user_message=user_message,
             context_snapshot=context_snapshot,
             history_snapshot=history_snapshot,
+            **output_options,
         )
 
     async def _stream_provider(
@@ -1504,7 +1520,7 @@ class LLMGateway:
     ) -> AsyncIterator[AgentReplyGenerationEvent]:
         payload = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
-            "contents": [{"role": "user", "parts": [{"text": self._user_context_message(user_message, context_snapshot, history_snapshot)}]}],
+            "contents": self._gemini_messages(user_message, context_snapshot, history_snapshot),
             "generationConfig": {"temperature": 0.2},
         }
         common = {
@@ -1553,7 +1569,7 @@ class LLMGateway:
             "model": model_name,
             "max_tokens": 1200,
             "system": system_prompt,
-            "messages": [{"role": "user", "content": self._user_context_message(user_message, context_snapshot, history_snapshot)}],
+            "messages": self._dialogue_messages(user_message, context_snapshot, history_snapshot),
             "stream": True,
         }
         common = {
@@ -1604,10 +1620,29 @@ class LLMGateway:
         context_snapshot: str,
         history_snapshot: str,
     ) -> list[dict[str, str]]:
+        if isinstance(history_snapshot, ConversationHistory):
+            return [{"role": "system", "content": system_prompt},
+                    *history_snapshot.provider_messages(user_message, context_snapshot)]
         return [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": cls._user_context_message(user_message, context_snapshot, history_snapshot)},
         ]
+
+    @classmethod
+    def _dialogue_messages(cls, user_message, context_snapshot, history_snapshot):
+        return cls._chat_messages("", user_message, context_snapshot, history_snapshot)[1:]
+
+    @classmethod
+    def _gemini_messages(cls, user_message, context_snapshot, history_snapshot):
+        return [{"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]}
+                for m in cls._dialogue_messages(user_message, context_snapshot, history_snapshot)]
+
+    @classmethod
+    def _check_history_budget(cls, system, user_message, context, history):
+        if isinstance(history, ConversationHistory) and history.budget is not None:
+            payload = json.dumps(cls._chat_messages(system, user_message, context, history), ensure_ascii=False)
+            if history.count(payload) + 128 > history.budget.input_limit:
+                raise ContextBudgetExceeded("Conversation context exceeds the configured input budget; history was retained.")
 
     @staticmethod
     def _user_context_message(
@@ -1661,22 +1696,15 @@ class LLMGateway:
         user_message: str,
         context_snapshot: str,
         history_snapshot: str,
+        max_output_tokens: int | None = None,
     ) -> ProviderGeneration:
         payload = {
             "model": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Conversation memory:\n{history_snapshot}\n\n"
-                        f"Conversation input:\n{user_message}\n\n"
-                        f"Workspace context:\n{context_snapshot}"
-                    ),
-                },
-            ],
+            "messages": self._chat_messages(system_prompt, user_message, context_snapshot, history_snapshot),
             "temperature": 0.2,
         }
+        if max_output_tokens is not None:
+            payload["max_completion_tokens"] = max_output_tokens
         async with httpx.AsyncClient(timeout=45.0) as client:
             response = await client.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -1704,23 +1732,15 @@ class LLMGateway:
         user_message: str,
         context_snapshot: str,
         history_snapshot: str,
+        max_output_tokens: int | None = None,
     ) -> ProviderGeneration:
         payload = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{
-                        "text": (
-                            f"Conversation memory:\n{history_snapshot}\n\n"
-                            f"Conversation input:\n{user_message}\n\n"
-                            f"Workspace context:\n{context_snapshot}"
-                        )
-                    }],
-                }
-            ],
+            "contents": self._gemini_messages(user_message, context_snapshot, history_snapshot),
             "generationConfig": {"temperature": 0.2},
         }
+        if max_output_tokens is not None:
+            payload["generationConfig"]["maxOutputTokens"] = max_output_tokens
         async with httpx.AsyncClient(timeout=45.0) as client:
             response = await client.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}",
@@ -1747,21 +1767,13 @@ class LLMGateway:
         user_message: str,
         context_snapshot: str,
         history_snapshot: str,
+        max_output_tokens: int | None = None,
     ) -> ProviderGeneration:
         payload = {
             "model": model_name,
-            "max_tokens": 1200,
+            "max_tokens": max_output_tokens or 1200,
             "system": system_prompt,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": (
-                        f"Conversation memory:\n{history_snapshot}\n\n"
-                        f"Conversation input:\n{user_message}\n\n"
-                        f"Workspace context:\n{context_snapshot}"
-                    ),
-                }
-            ],
+            "messages": self._dialogue_messages(user_message, context_snapshot, history_snapshot),
         }
         async with httpx.AsyncClient(timeout=45.0) as client:
             response = await client.post(
@@ -1797,7 +1809,9 @@ class LLMGateway:
         user_message: str,
         context_snapshot: str,
         history_snapshot: str,
+        max_output_tokens: int | None = None,
     ) -> str | ProviderGeneration:
+        output_options = {"max_output_tokens": max_output_tokens} if max_output_tokens is not None else {}
         if not custom_api_key:
             raise RuntimeError("missing custom api key")
 
@@ -1813,6 +1827,7 @@ class LLMGateway:
                 user_message=user_message,
                 context_snapshot=context_snapshot,
                 history_snapshot=history_snapshot,
+                **output_options,
             )
 
         if custom_model.provider_kind == "openai":
@@ -1823,6 +1838,7 @@ class LLMGateway:
                 user_message,
                 context_snapshot,
                 history_snapshot,
+                **output_options,
             )
         if custom_model.provider_kind == "gemini":
             return await self._call_gemini(
@@ -1832,6 +1848,7 @@ class LLMGateway:
                 user_message,
                 context_snapshot,
                 history_snapshot,
+                **output_options,
             )
         return await self._call_anthropic(
             custom_model.model_name,
@@ -1840,6 +1857,7 @@ class LLMGateway:
             user_message,
             context_snapshot,
             history_snapshot,
+            **output_options,
         )
 
     async def _call_openai_compatible(
@@ -1852,6 +1870,7 @@ class LLMGateway:
         user_message: str,
         context_snapshot: str,
         history_snapshot: str,
+        max_output_tokens: int | None = None,
     ) -> ProviderGeneration:
         if not base_url:
             raise RuntimeError("missing OpenAI-compatible base url")
@@ -1859,19 +1878,11 @@ class LLMGateway:
             raise RuntimeError("missing OpenAI-compatible api key")
         payload = {
             "model": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Conversation memory:\n{history_snapshot}\n\n"
-                        f"Conversation input:\n{user_message}\n\n"
-                        f"Workspace context:\n{context_snapshot}"
-                    ),
-                },
-            ],
+            "messages": self._chat_messages(system_prompt, user_message, context_snapshot, history_snapshot),
             "temperature": 0.2,
         }
+        if max_output_tokens is not None:
+            payload["max_tokens"] = max_output_tokens
         async with httpx.AsyncClient(timeout=45.0) as client:
             response = await client.post(
                 f"{base_url.rstrip('/')}/chat/completions",

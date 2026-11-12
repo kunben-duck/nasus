@@ -5,6 +5,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ...domain.shared.native_build_source import build_path
+from ...domain.quality_loop.build_profiles import artifact_profile
 
 NATIVE_BUILD_TOOL = "quality.native_build.prepare"
 NATIVE_BUILD_PREVIEW_TOOL = "query.quality.native_build_preview"
@@ -28,8 +29,7 @@ class NativeBuildSelection(BaseModel):
     @classmethod
     def safe_artifact(cls, value):
         build_path(value)
-        if not value.startswith("target/") or not value.endswith(".jar"):
-            raise ValueError("native artifact must be a target JAR")
+        artifact_profile(value)
         return value
 
 

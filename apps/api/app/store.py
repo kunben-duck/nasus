@@ -18,6 +18,9 @@ from .application.agent.goal_projection import AgentGoalProjectionApplicationSer
 from .application.agent.messages import ConversationMessageApplicationService
 from .application.agent.message_writer import ConversationMessageWriterApplicationService
 from .application.agent.planner import DeterministicAgentPlanner, LLMStructuredAgentPlanner
+from .infrastructure.agent.conversation_memory_assembly import build_conversation_memory
+from .application.platform.tool_handlers.conversation_history import ConversationHistoryToolHandler
+from .application.platform.conversation_history_access import ConversationHistoryReceiptAccess
 from .application.agent.planner_context import AgentPlannerContextApplicationService
 from .application.agent.replies import AgentReplyApplicationService
 from .application.agent.lifecycle import AgentService
@@ -1005,6 +1008,12 @@ class RuntimeAssembly:
             published=self.published_images,
             frozen_indexes=self.frozen_indexes,
         )
+        from .application.agent.delivery_read_access import DeliveryConversationReadAccess
+        self.delivery_conversation_read_access = DeliveryConversationReadAccess(self.source_access)
+        def require_delivery_memory_access(conversation):
+            if any(self.delivery_conversation_read_access.applies(message.metadata) for message in conversation.messages):
+                self.project_access.require_conversation_access(conversation)
+                self.delivery_conversation_read_access.require_access(conversation)
         self.agent_memory = AgentMemoryManager(
             self.agent_application_ports.memory_state,
             self.system_image_memory_retriever,
@@ -1015,12 +1024,19 @@ class RuntimeAssembly:
             )),
             self.conversation_summaries,
             self.prompt_registry,
+            read_guard=require_delivery_memory_access,
         )
         self.conversation_management = ConversationManagementApplicationService(
-            self.agent_application_ports.conversation_management
+            self.agent_application_ports.conversation_management,
+            creation_guard=SQLAlchemyProjectMutationLock("conversation-create").acquire,
+            read_guard=self.delivery_conversation_read_access.require_access,
         )
+        self.conversation_memory = build_conversation_memory(
+            memory=self.agent_memory, summaries=self.conversation_summary_checkpoints_app,
+            conversations=self.conversation_management, repository=self.conversation_repository,
+            llm=self.llm, settings=self.get_settings, secret=self.model_configuration.get_custom_model_api_key)
         self.conversation_messages = ConversationMessageApplicationService(
-            self.agent_application_ports.conversation_runtime
+            self.agent_application_ports.conversation_runtime, tools=self.tools,
         )
         self.agent_goal_projection = AgentGoalProjectionApplicationService(
             self.agent_application_ports.goal_projection
@@ -1064,10 +1080,19 @@ class RuntimeAssembly:
             self.project_access.grant_creator,
             self.get_or_create_conversation,
         )
+        from .application.quality_loop.version_delivery import VersionDeliveryApplicationService
+        from .infrastructure.persistence.version_delivery_repository import VersionDeliveryRepository
+        self.version_delivery = VersionDeliveryApplicationService(VersionDeliveryRepository(),
+            self.image_publications, self.image_revisions, self.source_access)
+        from .application.quality_loop.requirement_revisions import RequirementRevisionApplicationService
+        from .infrastructure.persistence.requirement_revision_repository import RequirementRevisionRepository
+        self.requirement_revisions = RequirementRevisionApplicationService(RequirementRevisionRepository(),
+            self.version_delivery, self.source_access)
         self.project_versions = ProjectVersionApplicationService(
             self.project_version_workspace,
             self.system_image_app,
             self.quality_loop_context_queries,
+            version_delivery=self.version_delivery,
         )
         self.quality_loop_version_context = (
             QualityLoopVersionContextApplicationService(
@@ -1126,6 +1151,7 @@ class RuntimeAssembly:
             quality_generator=self.quality_generation,
         )
         self.quality_loop = QualityLoopApplicationService(
+            legacy_write_guard=self.version_delivery.require_legacy_us_write,
             read_model_refresh=self.project_read_model_refresh,
             context_queries=self.quality_loop_context_queries,
             scope_queries=self.quality_loop_scope_queries,
@@ -1178,12 +1204,17 @@ class RuntimeAssembly:
         event_stream_settings = event_stream_runtime_settings_from_env()
         from .application.platform.case_approval_event_access import CaseApprovalEventAccess
         self.case_approval_event_access = CaseApprovalEventAccess(self.case_approvals, self.tool_application_state)
+        from .application.platform.delivery_event_access import DeliveryConversationEventAccess
+        self.delivery_conversation_event_access = DeliveryConversationEventAccess(self.delivery_conversation_read_access,
+            conversation_scope=self.project_access_read_model.conversation_scope,
+            require_conversation_access=self.project_access.require_conversation_access)
         self.event_streams = PlatformEventStreamApplicationService(
             self.event_outbox_repository,
             self.event_stream_buffer,
             poll_seconds=event_stream_settings.poll_seconds,
             heartbeat_seconds=event_stream_settings.heartbeat_seconds,
-            authorize_event=self.case_approval_event_access.can_access,
+            authorize_event=lambda event: (self.case_approval_event_access.can_access(event)
+                and self.delivery_conversation_event_access.can_access(event)),
         )
         self.platform_event_entities = CallablePlatformEventEntityReader(
             PlatformEventEntityAdapters(
@@ -1211,8 +1242,13 @@ class RuntimeAssembly:
         from .application.platform.http_fixture_job_receipts import HttpFixtureJobReceiptAccess
         from .application.platform.run_plan_case_receipts import RunPlanCaseReceiptAccess
         from .application.platform.tool_receipt_access import ToolReceiptAccess
+        from .application.platform.version_delivery_receipts import VersionDeliveryReceiptAccess
+        from .application.platform.requirement_revision_receipts import RequirementRevisionReceiptAccess
         self.source_refresh_receipt_access = SourceRefreshReceiptAccess(self.source_access)
-        self.tool_receipt_access = ToolReceiptAccess(self.source_refresh_receipt_access, RunPlanReceiptAccess(self.run_plans),
+        self.tool_receipt_access = ToolReceiptAccess(ConversationHistoryReceiptAccess(self.conversation_memory),
+            VersionDeliveryReceiptAccess(self.version_delivery),
+            RequirementRevisionReceiptAccess(self.version_delivery),
+            self.source_refresh_receipt_access, RunPlanReceiptAccess(self.run_plans),
             RunPlanBuildReceiptAccess(self.run_plan_builds), RunPlanObservationReceiptAccess(self.run_plan_observation_records),
             RunPlanEnvironmentReceiptAccess(self.run_plan_environments),
             RunPlanLocatorReceiptAccess(self.run_plan_locators),
@@ -1322,6 +1358,13 @@ class RuntimeAssembly:
                 build_authorizations=self.build_authorizations,
             )
         )
+        for history_tool in ("query.conversation.history.search", "query.conversation.history.read"):
+            self.tool_handler_registry.register(history_tool, ConversationHistoryToolHandler(
+                self.conversation_memory, self.platform_events, self.agent_replies))
+        from .application.platform.tool_handlers.requirement_revisions import RequirementRevisionToolHandler
+        for requirement_tool in ("quality.requirement.revise", "query.quality.requirements"):
+            self.tool_handler_registry.register(requirement_tool, RequirementRevisionToolHandler(
+                self.requirement_revisions, self.platform_events, self.project_access))
         self.tool_runtime_state = SQLAlchemyToolInvocationRuntimeState(
             repository=self.conversation_repository,
         )
@@ -1360,6 +1403,19 @@ class RuntimeAssembly:
         self.saved_build_intents.preparations = AgentNaturalBuildEntryApplicationService(
             BuildPreparationApplicationService(self.build_plans, self.system_image_app.snapshots),
             self.build_plans, self.tool_invocations_app, self.saved_build_intents)
+        from .application.agent.build_dialogue import GuidedBuildConversation
+        from .application.agent.build_dialogue_inputs import BuildIntakeExtractor
+        self.conversation_messages.guided_build = GuidedBuildConversation(
+            runtime=self.agent_application_ports.conversation_runtime,
+            conversations=self.conversation_management,
+            build_entries=self.saved_build_intents,
+            snapshots=self.system_image_app.snapshots,
+            revisions=self.image_revisions,
+            project_reader=lambda project_id: self.project_workspace.get_project(project_id),
+            extractor=BuildIntakeExtractor(llm=self.llm, settings=self.get_settings,
+                secret=self.model_configuration.get_custom_model_api_key,
+                memory=self.planner_context.memory_context),
+        )
         self.conversation_turn_graph = LangGraphConversationTurnGateway(
             self.conversation_messages,
         )
@@ -1433,6 +1489,13 @@ class RuntimeAssembly:
             authorization=self.project_access,
             tool_invocations=self.tool_invocations_app,
             conversations=self.conversation_management,
+        )
+        from .application.agent.delivery_dialogue import GuidedDeliveryConversation
+        self.conversation_messages.guided_delivery = GuidedDeliveryConversation(
+            runtime=self.agent_application_ports.conversation_runtime,
+            projects=self.project_workspace, snapshots=self.system_image_app.snapshots,
+            publications=self.image_publications,
+            delivery_read=lambda project_id, version_id: self.version_delivery.read(project_id, version_id),
         )
         self.distributed_state_sync = DistributedStateSynchronizationApplicationService(
             DistributedStateSynchronizationDependencies(

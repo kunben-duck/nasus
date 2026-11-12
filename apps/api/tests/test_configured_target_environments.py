@@ -32,6 +32,18 @@ def test_only_exact_operator_project_and_environment_can_select_owned_resources(
         assert len(commands.calls) == before
 
 
+def test_inspection_rejects_a_replaced_policy_before_reading_any_docker_resource(registry, spec):
+    commands = Commands(spec)
+    adapter = ConfiguredOwnedTargetEnvironments(command=commands)
+    with pytest.raises(NativeEnvironmentInvalid):
+        adapter.inspect(spec.project_id, spec.environment_id, ARTIFACT, require_work=lambda: None,
+            expected_policy_digest="sha256:" + "0" * 64)
+    assert not commands.calls
+    result = adapter.inspect(spec.project_id, spec.environment_id, ARTIFACT, require_work=lambda: None,
+        expected_policy_digest=spec.digest)
+    assert result.inventory["operator_policy_digest"] == spec.digest
+
+
 @pytest.mark.parametrize("fault", ["mode", "symlink", "empty", "oversize", "duplicate-key", "nonfinite", "extra-field",
     "credentials", "same-cohort", "mutable-image", "root", "duplicate-role", "invalid-container-type"])
 def test_registry_fails_closed_before_any_docker_operation(registry, spec, fault):

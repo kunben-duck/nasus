@@ -1,0 +1,192 @@
+import { expect, test, type APIRequestContext } from '@playwright/test'
+import { mkdirSync, rmSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { analysisApi, analysisSource, captureAnalysis } from './source-analysis-fixtures'
+import { frozenRevisions } from './image-revision-fixtures'
+
+async function publishedFixture(request: APIRequestContext, source: string) {
+  const fixture = await captureAnalysis(request, source)
+  const older = await fixture.invoke('version.create', { name: 'Older unbound version' })
+  const oldId = older.result.object_refs.find((ref: string) => ref.startsWith('version:')).slice(8)
+  const image = (await frozenRevisions(request, fixture.projectId, fixture.owner.headers))[0]
+  const root = `${analysisApi}/v1/projects/${fixture.projectId}/system-image/publications`
+  const params = { image_revision_id: image.image_revision_id, image_artifact_hash: image.artifact_hash, target_baseline_id: image.baseline_id }
+  const response = await request.get(`${root}/preview`, { headers: fixture.owner.headers, params })
+  expect(response.ok()).toBeTruthy()
+  const preview = await response.json()
+  const review = await fixture.invoke('system_image.revisions.review_publication', {
+    ...preview.target, expected_preview_digest: preview.preview_digest, expected_review_id: null,
+    decision: 'approve', reason: 'Independent fixture knowledge review, not business or release approval',
+  }, 'waiting_confirmation')
+  const confirmed = await request.post(`${analysisApi}/v1/tool-invocations/${review.id}/confirm`, { headers: fixture.owner.headers })
+  expect((await confirmed.json()).status).toBe('completed')
+  const reviewed = await request.get(`${root}/preview`, { headers: fixture.owner.headers, params })
+  const approved = await reviewed.json()
+  await fixture.invoke('baseline.promote', { ...approved.target, expected_preview_digest: approved.preview_digest, approval_id: approved.review.review_id })
+  const history = await request.get(root, { headers: fixture.owner.headers, params: { baseline_id: image.baseline_id } })
+  expect(history.ok()).toBeTruthy()
+  return { ...fixture, image, head: (await history.json()).head, oldId }
+}
+
+for (const theme of ['light', 'dark']) test(`explicit delivery creation, lost-response recovery and isolated image deep link (${theme})`, async ({ page, request }) => {
+  test.setTimeout(240_000)
+  const source = analysisSource(), errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  try {
+    const v = await publishedFixture(request, source)
+    expect((await request.patch(`${analysisApi}/v1/settings`, { headers: v.owner.headers, data: { theme } })).ok()).toBeTruthy()
+    await page.addInitScript((token) => { localStorage.setItem('nasus_api_token', token); localStorage.setItem('nasus.locale', 'en') }, v.owner.token)
+    const root = `/projects/${v.projectId}`
+    let deliveryReads = 0
+    page.on('request', (r) => { if (r.method() === 'GET' && r.url().endsWith('/delivery')) deliveryReads++ })
+    await page.goto(`${root}/versions`)
+    await expect(page.getByRole('combobox', { name: 'Selected delivery iteration' })).toHaveValue('')
+    await expect(page.getByTestId('iteration-delivery')).toHaveCount(0)
+    expect(deliveryReads).toBe(0)
+    await page.getByRole('link', { name: 'Create delivery iteration', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Create delivery iteration', exact: true })).toBeVisible()
+    const form = page.getByTestId('iteration-create')
+    await form.getByRole('textbox', { name: 'Iteration name', exact: true }).fill('Pinned sprint')
+    const create = form.getByRole('button', { name: 'Create delivery iteration', exact: true })
+    await expect(create).toBeDisabled()
+    await form.getByRole('combobox', { name: 'Starting publication baseline' }).selectOption(v.image.baseline_id)
+    const publication = form.getByRole('combobox', { name: 'Explicit published image' })
+    await expect(publication).toHaveValue('')
+    await expect(create).toBeDisabled()
+    await publication.selectOption(v.head.publication_id)
+    await form.getByRole('checkbox', { name: 'I confirm this iteration name and exact published image pin.' }).check()
+    await form.getByRole('textbox', { name: 'Iteration name', exact: true }).fill('Pinned sprint verified')
+    await expect(create).toBeDisabled()
+    await form.getByRole('checkbox', { name: 'I confirm this iteration name and exact published image pin.' }).check()
+    const writes: { idempotency_key: string; input: Record<string, unknown> }[] = []
+    let createdVersion = ''
+    await page.route('**/v1/tool-invocations', async (route) => {
+      const payload = route.request().postDataJSON()
+      if (payload?.tool_id !== 'version.create') return route.continue()
+      writes.push(payload)
+      if (writes.length !== 1) return route.continue()
+      const response = await route.fetch(), receipt = await response.json()
+      expect(receipt.status).toBe('completed')
+      createdVersion = receipt.result.object_refs.find((ref: string) => ref.startsWith('version:')).slice(8)
+      await route.abort('failed')
+    })
+    await create.click()
+    await expect(form).toContainText('Iteration creation is unverified.')
+    expect(writes).toHaveLength(1)
+    expect(writes[0].input).toEqual({ project_id: v.projectId, name: 'Pinned sprint verified', image_binding: {
+      publication_id: v.head.publication_id, image_revision_id: v.image.image_revision_id,
+      image_artifact_hash: v.image.artifact_hash, expected_head_id: v.head.publication_id,
+    } })
+    await page.reload()
+    await expect(form).toContainText('Original iteration request')
+    await expect(form).toContainText(v.head.publication_id)
+    expect(writes).toHaveLength(1)
+    await form.getByRole('button', { name: 'Verify original iteration request', exact: true }).click()
+    await expect(form.getByRole('link', { name: /Open verified iteration/ })).toBeVisible()
+    expect(writes).toHaveLength(2)
+    expect(writes[1]).toEqual(writes[0])
+    expect(createdVersion).not.toBe(v.oldId)
+    await form.getByRole('link', { name: /Open verified iteration/ }).click()
+    await expect(page).toHaveURL(new RegExp(`version_id=${createdVersion}$`))
+    const delivery = page.getByTestId('iteration-delivery')
+    await expect(delivery).toContainText('Starting image pinned')
+    await expect(delivery).toContainText('Later delivery stages are not implemented yet.')
+    await expect(delivery.getByRole('region', { name: 'Immutable starting baseline' })).toContainText(v.image.artifact_hash)
+    await expect(delivery.getByRole('region', { name: 'Current iteration image' })).toContainText(v.image.image_revision_id)
+    const actual = await request.get(`${analysisApi}/v1/projects/${v.projectId}/versions/${createdVersion}/delivery`, { headers: v.owner.headers })
+    const record = await actual.json()
+    expect(record.baseline.publication_id).toBe(v.head.publication_id)
+    expect(record.iteration_image).toEqual(record.baseline)
+    await expect(delivery).toContainText(record.code_revisions[0].commit_sha ?? record.code_revisions[0].external_revision)
+    await page.reload()
+    await expect(page.getByRole('combobox', { name: 'Selected delivery iteration' })).toHaveValue(createdVersion)
+    await expect(delivery).toContainText(v.image.artifact_hash)
+    await delivery.getByRole('region', { name: 'Immutable starting baseline' }).getByRole('link', { name: 'View the pinned image' }).click()
+    await expect(page).toHaveURL(new RegExp(`publication_id=${v.head.publication_id}`))
+    const dialog = page.getByRole('dialog', { name: 'Image revisions', exact: true })
+    await expect(dialog).toContainText(v.image.image_revision_id)
+    await page.reload()
+    await expect(dialog).toContainText(v.image.artifact_hash)
+    await expect(dialog.getByRole('combobox', { name: 'Frozen candidate revision' })).toHaveCount(0)
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+    mkdirSync(resolve('output/playwright'), { recursive: true })
+    await page.screenshot({ path: resolve(`output/playwright/delivery-${theme}-desktop.png`), fullPage: true })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expect(delivery).toContainText(v.head.publication_id)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+    await page.screenshot({ path: resolve(`output/playwright/delivery-${theme}-mobile.png`), fullPage: true })
+    await delivery.getByRole('heading', { name: 'Pinned source commits', exact: true }).scrollIntoViewIfNeeded()
+    await expect(delivery.getByRole('heading', { name: 'Pinned source commits', exact: true })).toBeInViewport()
+    await page.screenshot({ path: resolve(`output/playwright/delivery-${theme}-mobile-details.png`) })
+    await page.getByRole('combobox', { name: 'Selected delivery iteration' }).selectOption(v.oldId)
+    await expect(delivery).toContainText('Legacy version without a delivery pin')
+    await expect(delivery).not.toContainText(v.head.publication_id)
+    await page.getByRole('combobox', { name: 'Selected delivery iteration' }).selectOption(createdVersion)
+    await expect(delivery).toContainText(v.head.publication_id)
+    await page.route(`**/versions/${createdVersion}/delivery`, (route) => route.fulfill({ status: 403,
+      contentType: 'application/json', body: JSON.stringify({ error: { message: 'Access revoked' } }) }))
+    await delivery.getByRole('button', { name: 'Reload iteration', exact: true }).click()
+    await expect(delivery).toContainText('Previous content is hidden')
+    await expect(delivery).not.toContainText(v.head.publication_id)
+    await page.goto(`${root}/versions?version_id=another-project-version`)
+    await expect(page.getByText('The selected iteration is not available in this project.', { exact: true })).toBeVisible()
+    await expect(page.getByTestId('iteration-delivery')).toHaveCount(0)
+    expect(errors).toEqual([])
+  } finally { rmSync(source, { recursive: true, force: true }) }
+})
+
+test('Build restores the saved delivery proposal across status questions and refresh without implicit creation', async ({ page, request }) => {
+  test.setTimeout(180_000)
+  const source = analysisSource()
+  try {
+    const v = await publishedFixture(request, source), session = randomUUID()
+    const response = await request.post(`${analysisApi}/v1/conversations`, { headers: v.owner.headers,
+      data: { space_type: 'build', space_id: `build-${session}`, project_id: v.projectId, title: 'Delivery proposal browser' } })
+    expect(response.ok()).toBeTruthy()
+    const conversation = await response.json()
+    await page.addInitScript((token) => { localStorage.setItem('nasus_api_token', token); localStorage.setItem('nasus.locale', 'en') }, v.owner.token)
+    await page.goto(`/build?session=${session}`)
+    const input = page.getByTestId('build-agent-input')
+    const send = async (content: string) => {
+      await expect(input).toBeEnabled()
+      await input.fill(content)
+      await page.getByTestId('build-agent-submit').click()
+      await expect(page.locator('.build-message.user').getByText(content, { exact: true }).last()).toBeVisible()
+      await expect(page.getByTestId('build-agent-stop')).toHaveCount(0, { timeout: 30_000 })
+    }
+    await send(`创建迭代 Guided sprint，使用画像发布 ${v.head.publication_id}`)
+    const card = page.getByTestId('build-delivery-card'), proposal = page.getByTestId('build-delivery-proposal')
+    await expect(proposal).toContainText(v.head.publication_id)
+    await expect(proposal).toContainText(v.image.artifact_hash)
+    const confirm = proposal.getByRole('button', { name: 'Confirm original iteration creation', exact: true })
+    await expect(confirm).toBeEnabled()
+    await send(`查看迭代 ${v.oldId}`)
+    await expect(proposal).toContainText('Guided sprint')
+    await expect(confirm).toBeEnabled()
+    await page.reload()
+    await expect(proposal).toContainText(v.image.artifact_hash)
+    const snapshot = async () => (await request.get(`${analysisApi}/v1/conversations/${conversation.id}`, { headers: v.owner.headers })).json()
+    expect((await snapshot()).tool_invocations.filter((item: { tool_id: string }) => item.tool_id === 'version.create')).toHaveLength(0)
+    await confirm.click()
+    const progress = page.getByTestId('build-iteration-progress')
+    await expect(progress).toContainText('Starting image pinned', { timeout: 30_000 })
+    const saved = await snapshot(), created = saved.tool_invocations.filter((item: { tool_id: string }) => item.tool_id === 'version.create')
+    expect(created).toHaveLength(1)
+    const versionId = created[0].result.object_refs.find((ref: string) => ref.startsWith('version:')).slice(8)
+    expect(versionId).not.toBe(v.oldId)
+    await page.reload()
+    await expect(progress).toContainText('Starting image pinned')
+    await expect(proposal.getByRole('button', { name: 'Confirm original iteration creation' })).toHaveCount(0)
+    await expect(card).toContainText('Project setup, source capture, candidate analysis, image publication and delivery iterations are separate stages.')
+    await page.setViewportSize({ width: 390, height: 844 })
+    await card.scrollIntoViewIfNeeded()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+    mkdirSync(resolve('output/playwright'), { recursive: true })
+    await card.screenshot({ path: resolve('output/playwright/build-delivery-mobile.png') })
+    await progress.getByRole('link', { name: 'Open verified iteration', exact: true }).click()
+    await expect(page).toHaveURL(new RegExp(`version_id=${versionId}$`))
+    await expect(page.getByTestId('iteration-delivery')).toContainText(v.image.artifact_hash)
+    expect((await snapshot()).tool_invocations.filter((item: { tool_id: string }) => item.tool_id === 'version.create')).toHaveLength(1)
+  } finally { rmSync(source, { recursive: true, force: true }) }
+})

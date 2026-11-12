@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from uuid import uuid4
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete
+import pytest
+from sqlalchemy import delete, func, select
 
 from apps.api.app.application.platform.tool_models import ToolInvocation, ToolResult
 from apps.api.app.infrastructure.persistence.conversation_repository import (
@@ -77,6 +79,8 @@ def test_sql_runtime_state_is_durable_idempotent_and_claims_once() -> None:
         assert claimed.status == "running"
         assert claimed.revision == 1
         assert duplicate_claim is None
+        assert "confirmed_at" not in claimed.input_payload
+        assert "confirmed_by_user" not in claimed.input_payload
 
         claimed.status = "completed"
         claimed.summary = "Completed"
@@ -93,3 +97,33 @@ def test_sql_runtime_state_is_durable_idempotent_and_claims_once() -> None:
         assert mirrored[-1].status == "completed"
     finally:
         _cleanup(first_id, duplicate_id)
+
+
+@pytest.mark.parametrize("host_offset", [-3600, 3600])
+def test_confirmation_claim_uses_pg_clock_before_preparation_journal(host_offset):
+    repository = ConversationRepository()
+    invocation = ToolInvocation(id="clock_" + uuid4().hex, tool_id="run.progress.get",
+        status="waiting_confirmation", summary="Awaiting explicit confirmation")
+    repository.create_tool_invocation(invocation)
+    observed = []
+
+    class Journal:
+        def record(self, session, row):
+            now = session.scalar(select(func.clock_timestamp()))
+            confirmed = datetime.fromisoformat(row.input_payload["confirmed_at"].replace("Z", "+00:00"))
+            assert 0 <= (now - confirmed).total_seconds() < 5
+            observed.append(row.input_payload.copy())
+
+    repository.tool_claim_journal = Journal()
+    try:
+        claimed = repository.claim_tool_invocation_for_execution(invocation.id,
+            expected_statuses=("waiting_confirmation",), input_updates={
+                "confirmed_by_user": True, "confirmed_actor_id": "explicit-confirmer",
+                "confirmed_at": (datetime.now(timezone.utc) + timedelta(seconds=host_offset)).isoformat()})
+        assert claimed.input_payload == observed[0]
+        assert claimed.input_payload["confirmed_actor_id"] == "explicit-confirmer"
+        assert repository.claim_tool_invocation_for_execution(invocation.id,
+            expected_statuses=("waiting_confirmation",)) is None
+        assert len(observed) == 1
+    finally:
+        _cleanup(invocation.id)

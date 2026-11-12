@@ -22,6 +22,8 @@ from .nasus_agent_goal_workflow import (
     RESUME_GOAL_SIGNAL,
 )
 from .nasus_conversation_turn_workflow import NasusConversationTurnWorkflow
+from .nasus_memory_workflow import NasusConversationMemoryWorkflow
+from .conversation_memory_runtime import TemporalConversationMemoryRuntime, build_memory_activities, reconcile_memory_jobs
 from .nasus_context_retrieval_workflow import NasusContextRetrievalWorkflow
 from .context_retrieval_runtime import TemporalContextRetrievalRuntime, build_context_retrieval_activities, reconcile_context_retrievals
 from .nasus_generation_workflow import NasusTestDesignGenerationWorkflow
@@ -260,7 +262,11 @@ async def run_temporal_agent_goal_worker(config: TemporalGatewayConfig | None = 
     case_runtime = TemporalRunPlanCaseRuntime(resolved_config, client)
     case_worker = Worker(client, task_queue=case_runtime.task_queue, workflows=[NasusRunPlanCaseWorkflow],
         activities=build_run_plan_case_activities(), max_concurrent_activities=1)
+    memory_runtime = TemporalConversationMemoryRuntime(resolved_config, client)
+    memory_worker = Worker(client, task_queue=memory_runtime.task_queue,
+        workflows=[NasusConversationMemoryWorkflow], activities=build_memory_activities(), max_concurrent_activities=2)
     await asyncio.gather(goal_worker.run(), conversation_turn_worker.run(), context_worker.run(), generation_worker.run(), structure_worker.run(), native_worker.run(), fixture_worker.run(), case_worker.run(),
+        memory_worker.run(), reconcile_memory_jobs(memory_runtime),
         reconcile_context_retrievals(context_runtime), reconcile_generation_jobs(generation_runtime), reconcile_structure_jobs(structure_runtime),
         reconcile_native_builds(native_runtime), reconcile_http_fixtures(fixture_runtime), reconcile_run_plan_cases(case_runtime))
 

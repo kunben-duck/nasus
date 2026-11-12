@@ -680,7 +680,10 @@ def s3_key(storage_ref: str) -> str:
     return storage_ref[len(prefix):]
 
 
-def invoke(conversation_id: str, tool_id: str, input_payload: dict[str, Any]) -> Any:
+def invoke(
+    conversation_id: str, tool_id: str, input_payload: dict[str, Any], *, requires_confirmation: bool = False,
+    expected_status: str = "completed",
+) -> Any:
     invocation = request(
         "POST",
         "/v1/tool-invocations",
@@ -693,9 +696,11 @@ def invoke(conversation_id: str, tool_id: str, input_payload: dict[str, Any]) ->
             "target_scope": "central",
         },
     )
+    if requires_confirmation:
+        assert_true(invocation["status"] == "waiting_confirmation", f"{tool_id} did not stop for confirmation: {invocation}")
     if invocation["status"] == "waiting_confirmation":
         invocation = request("POST", f"/v1/tool-invocations/{invocation['id']}/confirm")
-    assert_true(invocation["status"] == "completed", f"{tool_id} did not complete: {invocation}")
+    assert_true(invocation["status"] == expected_status, f"{tool_id} did not reach {expected_status}: {invocation}")
     return invocation
 
 
@@ -777,7 +782,9 @@ conversation = request(
 conversation_id = conversation["id"]
 
 fixture = ROOT / "tests" / "fixtures" / "system-image"
-accepted_turn = request(
+image_path = f"/v1/projects/{project_id}/system-image"
+source_state = request("GET", image_path)
+rejected_turn = request(
     "POST",
     f"/v1/conversations/{conversation_id}/messages",
     {
@@ -789,6 +796,25 @@ accepted_turn = request(
         )
     },
 )
+rejected = wait_for_turn(conversation_id, rejected_turn)
+clarification = (rejected.get("result") or {}).get("clarification") or {}
+assert_true(rejected["status"] == "completed" and clarification.get("missing_context") == ["build_request"],
+    "chat paths must request explicit source selection rather than executing a build")
+assert_true(not request("GET", f"/v1/conversations/{conversation_id}")["agent_goals"],
+    "untrusted chat paths started a goal")
+after_rejection = request("GET", image_path)
+assert_true(all(source_state.get(key) == after_rejection.get(key) for key in ("sources", "source_manifest")),
+    "untrusted chat paths changed the existing source bindings or captured manifest")
+
+invoke(conversation_id, "system_image.sources.register", {
+    "project_id": project_id,
+    "source_specs": [{"source_type": kind, "source_uri": str(fixture / directory)}
+        for kind, directory in (("code", "code"), ("us_doc", "us"), ("test_asset", "tests"))],
+})
+invoke(conversation_id, "system_image.sources.ingest", {"project_id": project_id})
+manifest_id = request("GET", image_path)["source_manifest"]["manifest_id"]
+accepted_turn = request("POST", f"/v1/conversations/{conversation_id}/messages",
+    {"content": "Build the official system image from code, US docs, and tests"})
 assert_true(accepted_turn.get("status") == "accepted", f"conversation turn was not accepted: {accepted_turn}")
 completed_turn = wait_for_turn(conversation_id, accepted_turn)
 assert_true(completed_turn.get("status") == "completed", f"conversation turn did not complete: {completed_turn}")
@@ -803,26 +829,43 @@ assert_true(goal.get("workflow_id", "").startswith("nasus-agent-goal-"), "Tempor
 trace = request("GET", f"/v1/tool-invocations?agent_goal_id={goal_id}")
 trace_by_tool = {item["tool_id"]: item for item in trace}
 expected_agent_tools = {
-    "system_image.sources.register",
-    "system_image.sources.ingest",
-    "system_image.context.materialize",
-    "system_image.baseline.initialize",
+    "system_image.build.plan": "completed",
+    "query.system_image.build_plans.read": "completed",
+    "system_image.build.authorize": "waiting_confirmation",
 }
-assert_true(
-    expected_agent_tools.issubset(trace_by_tool),
-    f"AgentGoal did not execute the complete system image plan: {trace_by_tool}",
-)
-baseline_invocation = trace_by_tool["system_image.baseline.initialize"]
-assert_true(
-    baseline_invocation["status"] == "waiting_confirmation",
-    f"baseline initialization did not stop at confirmation: {baseline_invocation}",
-)
+assert_true(len(trace) == len(expected_agent_tools)
+    and {name: item["status"] for name, item in trace_by_tool.items()} == expected_agent_tools,
+    f"AgentGoal did not stop at independent structural consent: {trace_by_tool}")
+assert_true(trace_by_tool["system_image.build.plan"]["input_payload"]["source_manifest_id"] == manifest_id,
+    "AgentGoal did not pin the captured source manifest")
+plan_refs = [ref for ref in goal["target_refs"] if ref.startswith("build_plan:")]
+assert_true(len(plan_refs) == 1, "AgentGoal did not bind one original build plan")
+plan_id = plan_refs[0].split(":", 1)[1]
+plan_path = f"/v1/projects/{project_id}/system-image/build-plans/{plan_id}"
+draft = request("GET", plan_path)
+assert_true(not draft["execution_authorizations"] and not draft["structural_artifacts"],
+    "draft plan must not grant execution")
 
-resumed_goal = request("POST", f"/v1/agent-goals/{goal_id}/resume")
-assert_true(resumed_goal["status"] == "completed", f"Temporal AgentGoal did not complete after resume: {resumed_goal}")
-assert_true(resumed_goal["workflow_id"] == goal["workflow_id"], "AgentGoal lost its Temporal workflow identity")
+resumed_goal = request("POST", f"/v1/agent-goals/{goal_id}/resume", {"expected_goal": goal})
+assert_true(resumed_goal["status"] == "paused" and resumed_goal["pause_reason"] == "structural_candidate_review",
+    f"Temporal AgentGoal did not stop at structural candidate review: {resumed_goal}")
+assert_true(resumed_goal["id"] == goal_id and resumed_goal["workflow_id"] == goal["workflow_id"],
+    "AgentGoal lost its Temporal workflow identity")
+built = request("GET", plan_path)
+assert_true(built["proposal"] == draft["proposal"] and len(built["structural_artifacts"]) == 1
+    and len(built["execution_authorizations"]) == 1
+    and built["execution_authorizations"][0]["goal_id"] == goal_id
+    and built["execution_authorizations"][0]["publication_allowed"] is False,
+    "original goal must produce one candidate without publication authority")
+revision_id = built["structural_artifacts"][0]["image_revision_id"]
+print("Source-pinned structural candidate verified without publication authority", flush=True)
 
-image = request("GET", f"/v1/projects/{project_id}/system-image")
+# The legacy V1 quality loop consumes its own explicitly initialized baseline.
+invoke(conversation_id, "system_image.context.materialize", {"project_id": project_id})
+baseline_invocation = invoke(conversation_id, "system_image.baseline.initialize",
+    {"project_id": project_id}, requires_confirmation=True)
+
+image = request("GET", image_path)
 assert_true(image["project"]["system_image_status"] == "ready", "official system image was not marked ready")
 assert_true(image["build_state"]["status"] == "ready", "system image build state was not ready")
 sources = {source["source_type"]: source for source in image["sources"]}
@@ -844,7 +887,12 @@ assert_true(
     {"CodeClass", "CodeMethod", "USWorkItem", "TestCase"}.issubset(object_types),
     f"materialized object types are incomplete: {sorted(object_types)}",
 )
-assert_true({"implements", "impacts", "covers"}.issubset(relationship_types), "materialized relationships are incomplete")
+object_ids = {item["id"] for item in image["objects"]}
+assert_true("belongs_to" in relationship_types and all(
+    edge["from_object_id"] in object_ids and edge["to_object_id"] in object_ids for edge in image["relationships"]
+), "materialized structure lost its anchored containment edges")
+assert_true(not {"implements", "impacts", "covers", "validates"}.intersection(relationship_types),
+    "materialization invented unreviewed cross-source relationships")
 assert_true({"code_quality", "us_completion_quality", "test_quality"}.issubset(metric_groups), "metric snapshots are incomplete")
 assert_true(image["embedding_records"], "embedding records were not created")
 assert_true(image["retrieval_runs"], "retrieval runs were not created")
@@ -933,6 +981,17 @@ assert_true(
 assert_true(workspace["us_items"][0]["owner"] == "Release QA", "version participant assignment was not retained")
 assert_true(workspace["us_items"][0]["status"] == "analysis", "US quality task was not started")
 
+# Importing a new version's US does not materialize its quality context. The
+# legacy baseline command explicitly rebuilds that context from the captured sources.
+invoke(conversation_id, "system_image.baseline.initialize", {"project_id": project_id}, requires_confirmation=True)
+version_image = request("GET", image_path)
+task_contexts = [context for context in version_image["task_contexts"]
+    if (context["version_id"], context["us_id"], context["readiness"]) == (version_id, us_id, "ready")]
+assert_true(len(task_contexts) == 1 and any(
+    (profile["version_id"], profile["us_id"], profile["task_context_id"]) == (version_id, us_id, task_contexts[0]["id"])
+    for profile in version_image["quality_profiles"]
+), "the active version's US must have its own ready context and matching quality profile")
+
 for tool_id, tool_input in [
     ("quality.scope.generate", {}),
     ("quality.scenario.generate", {}),
@@ -956,15 +1015,17 @@ for tool_id, tool_input in [
 
 workspace = request("GET", f"/v1/projects/{project_id}")
 assert_true(
-    workspace["quality_loop_state"]["status"] == "ready_for_release",
+    workspace["quality_loop_state"]["status"] == "blocked",
     (
-        "quality loop did not reach ready_for_release: "
+        "unreviewed execution evidence must not make the quality loop ready for release: "
         f"state={workspace['quality_loop_state']}, "
         f"runs={workspace.get('runs', [])[:1]}, "
         f"failures={workspace.get('failure_reports', [])[:1]}"
     ),
 )
-assert_true(workspace["quality_asset_pack"]["status"] == "completed", "quality asset pack was not completed")
+parts = {part["part_type"]: part["status"] for part in workspace["quality_asset_pack"]["parts"]}
+assert_true(parts.get("scenario_set") == parts.get("case_set") == "ready_for_review",
+    "generated scenarios and cases must remain drafts until independent review")
 assert_true(workspace["release_decision"] is None, "release.assess must not create a formal ReleaseDecision")
 assert_true(workspace["execution_evidence"], "execution evidence was not produced")
 assert_true(
@@ -973,8 +1034,15 @@ assert_true(
 )
 
 release = request("GET", f"/v1/projects/{project_id}/release-readiness")
-assert_true(release["status"] == "Ready for release review", "release readiness was not ready for review")
-assert_true(release["score"] >= 80, "release score is below ready threshold")
+assert_true(release["status"] == "Needs additional release evidence" and release["score"] <= 59
+    and release["evidence_summary"]["quality_assessment_unknown"] == 1
+    and release["evidence_summary"]["passed_runs"] >= 1
+    and release["score_breakdown"]["execution"] > 0
+    and release["score_breakdown"]["system_context"] == 0,
+    "a passing real Runner observation must remain evidence, not an inferred system image assessment")
+assert_true(any("quality assessment is unknown" in blocker for blocker in release["blocker_items"])
+    and any("case_set, scenario_set" in blocker for blocker in release["blocker_items"]),
+    "release readiness did not explain the two independent evidence gaps")
 approval_request = invoke(
     conversation_id,
     "approval.request",
@@ -984,6 +1052,7 @@ approval_request = invoke(
         "target_ref": f"release_readiness:{release['version_id']}",
         "evidence_refs": [f"release_readiness:{release['version_id']}"],
     },
+    requires_confirmation=True,
 )
 approval_refs = [
     ref
@@ -999,8 +1068,9 @@ invoke(
         "project_id": project_id,
         "approval_id": approval_id,
         "decision": "approved",
-        "rationale": "Docker stack smoke approved release decision submission.",
+        "rationale": "Approve decision submission, not the missing release evidence.",
     },
+    requires_confirmation=True,
 )
 release_submit = invoke(
     conversation_id,
@@ -1013,12 +1083,14 @@ release_submit = invoke(
     },
 )
 workspace = request("GET", f"/v1/projects/{project_id}")
-assert_true(workspace["release_decision"]["status"] == "ready", "release decision was not ready after submission")
+assert_true(workspace["release_decision"]["status"] == "blocked"
+    and workspace["release_decision"]["score"] == release["score"], "approval must not override the evidence blockers")
 assert_true(workspace["release_decision"]["approval_ref"] == f"approval:{approval_id}", "release decision approval ref was not attached")
 assert_true(
     any(ref.startswith("execution_evidence:") for ref in workspace["release_decision"]["evidence_refs"]),
     "release decision did not retain execution evidence refs",
 )
+original_baselines = request("GET", image_path)["baselines"]
 baseline_promotion = invoke(
     conversation_id,
     "baseline.promote",
@@ -1028,7 +1100,11 @@ baseline_promotion = invoke(
         "us_id": us_id,
         "approval_id": approval_id,
     },
+    expected_status="failed",
 )
+assert_true("current status is blocked" in baseline_promotion["summary"]
+    and request("GET", image_path)["baselines"] == original_baselines,
+    "the approved but blocked decision must not promote or change a baseline")
 
 baseline_audit = request("GET", f"/v1/audit-events?tool_invocation_id={baseline_invocation['id']}")
 actions = {event["action"] for event in baseline_audit}
@@ -1043,11 +1119,14 @@ assert_true("tool.invocation.completed" in release_submit_actions, "release deci
 promotion_audit = request("GET", f"/v1/audit-events?tool_invocation_id={baseline_promotion['id']}")
 promotion_actions = {event["action"] for event in promotion_audit}
 assert_true("tool.invocation.executing" in promotion_actions, "baseline promotion execution was not audited")
-assert_true("tool.invocation.completed" in promotion_actions, "baseline promotion was not audited")
+assert_true("tool.invocation.failed" in promotion_actions, "blocked baseline promotion was not audited")
 
 OUT.mkdir(parents=True, exist_ok=True)
 (OUT / "project_id").write_text(project_id, encoding="utf-8")
 (OUT / "goal_id").write_text(goal_id, encoding="utf-8")
+(OUT / "structure_candidate.json").write_text(json.dumps({
+    "plan_id": plan_id, "image_revision_id": revision_id, "workflow_id": resumed_goal["workflow_id"],
+}), encoding="utf-8")
 (OUT / "chunk_key").write_text(s3_key(chunks[0]["content_ref"]), encoding="utf-8")
 report_evidence = next(
     (
@@ -1099,7 +1178,7 @@ evidence_count="$(compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRE
 [[ "$evidence_count" -ge 1 ]]
 
 goal_count="$(compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -v ON_ERROR_STOP=1 \
-  -c "SELECT count(*) FROM agent_goals WHERE id = '${goal_id}' AND status = 'completed' AND workflow_id LIKE 'nasus-agent-goal-%';")"
+  -c "SELECT count(*) FROM agent_goals WHERE id = '${goal_id}' AND status = 'paused' AND workflow_id LIKE 'nasus-agent-goal-%';")"
 [[ "$goal_count" == "1" ]]
 
 checkpoint_thread_id="nasus-agent-loop:${goal_id}"
@@ -1113,6 +1192,7 @@ start_api
 NASUS_VERIFY_API_BASE="http://127.0.0.1:${NASUS_API_PORT}" \
 NASUS_VERIFY_PROJECT_ID="$project_id" \
 NASUS_VERIFY_GOAL_ID="$goal_id" \
+NASUS_VERIFY_OUTPUT_DIR="$VERIFY_OUTPUT_DIR" \
 NASUS_VERIFY_S3_BUCKET="$NASUS_S3_BUCKET" \
 NASUS_VERIFY_AUTH_TOKEN="$NASUS_AUTH_BEARER_TOKEN" \
 "$ROOT_DIR/.venv/bin/python" - <<'PY'
@@ -1121,6 +1201,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.request
+from pathlib import Path
 
 
 BASE = os.environ["NASUS_VERIFY_API_BASE"].rstrip("/")
@@ -1128,6 +1209,7 @@ PROJECT_ID = os.environ["NASUS_VERIFY_PROJECT_ID"]
 GOAL_ID = os.environ["NASUS_VERIFY_GOAL_ID"]
 BUCKET = os.environ["NASUS_VERIFY_S3_BUCKET"]
 AUTH_TOKEN = os.environ["NASUS_VERIFY_AUTH_TOKEN"]
+OUT = Path(os.environ["NASUS_VERIFY_OUTPUT_DIR"])
 
 
 def get(path: str):
@@ -1142,13 +1224,23 @@ def get(path: str):
 workspace = get(f"/v1/projects/{PROJECT_ID}")
 image = get(f"/v1/projects/{PROJECT_ID}/system-image")
 goal = get(f"/v1/agent-goals/{GOAL_ID}")
+candidate = json.loads((OUT / "structure_candidate.json").read_text(encoding="utf-8"))
+recovery = json.loads((OUT / "workflow_recovery.json").read_text(encoding="utf-8"))
+completed_goal = get(f"/v1/agent-goals/{recovery['goal_id']}")
+plan = get(f"/v1/projects/{PROJECT_ID}/system-image/build-plans/{candidate['plan_id']}")
 assert workspace["project"]["system_image_status"] == "ready"
-assert workspace["quality_loop_state"]["status"] == "ready_for_release"
-assert workspace["release_decision"]["status"] == "ready"
+assert workspace["quality_loop_state"]["status"] == "blocked"
+assert workspace["release_decision"]["status"] == "blocked"
+assert any(ref.startswith("execution_evidence:") for ref in workspace["release_decision"]["evidence_refs"])
 assert image["build_state"]["status"] == "ready"
 assert image["chunks"]
-assert goal["status"] == "completed"
-assert goal["workflow_id"].startswith("nasus-agent-goal-")
+assert goal["status"] == "paused" and goal["pause_reason"] == "structural_candidate_review"
+assert goal["workflow_id"] == candidate["workflow_id"]
+assert len(plan["structural_artifacts"]) == 1
+assert plan["structural_artifacts"][0]["image_revision_id"] == candidate["image_revision_id"]
+assert len(plan["execution_authorizations"]) == 1
+assert plan["execution_authorizations"][0]["publication_allowed"] is False
+assert completed_goal["status"] == "completed" and completed_goal["workflow_id"] == recovery["workflow_id"]
 assert workspace["execution_evidence"]
 assert all(item["content_ref"].startswith(f"s3://{BUCKET}/") for item in image["chunks"])
 assert all(item["storage_ref"].startswith(f"s3://{BUCKET}/") for item in workspace["execution_evidence"])

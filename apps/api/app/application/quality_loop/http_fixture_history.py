@@ -4,7 +4,7 @@ from typing import Literal, Optional, Protocol, Tuple
 from pydantic import Field, StrictInt, model_serializer, model_validator
 
 from ..platform.tool_handlers.query_input import query_payload
-from .http_fixture_execution import HttpFixtureExecutionSelection
+from .http_fixture_execution import HttpFixtureExecutionInputs, HttpFixtureExecutionSelection
 from .http_fixture_grants import HttpFixtureGrantRequest
 from .test_design_output import Digest, GenerationValue, Id
 from ...domain.quality_loop.acceptance_specification import acceptance_digest
@@ -126,6 +126,9 @@ class HttpFixtureHistoryApplicationService:
         return {key: value for key, value in payload.items() if key not in {"confirmed_by_user", "confirmed_at"}}
 
     def _item(self, project_id, row):
+        return self._item_with_inputs(project_id, row)[0]
+
+    def _item_with_inputs(self, project_id, row):
         from .http_fixture_jobs import HttpFixtureJobTarget
 
         if type(row) is not dict or set(row) != {"command", "execution", "recipe_id", "recipe_artifact_hash"}:
@@ -137,6 +140,7 @@ class HttpFixtureHistoryApplicationService:
             raise HttpFixtureInvalid("fixture history cannot adopt another tool")
         value = self._selection(command)
         grant_id = grant_digest = original_id = None
+        recipe = inputs = None
         if stage == "grant":
             request = HttpFixtureGrantRequest.model_validate(value)
             if row["execution"] is not None:
@@ -156,24 +160,36 @@ class HttpFixtureHistoryApplicationService:
             selected = HttpFixtureExecutionSelection.model_validate(self._selection(execution))
             if selected.project_id != project_id:
                 raise HttpFixtureInvalid("fixture history cannot read another project's original selection")
-            inputs = self.grants.execution_inputs(selected, live=False)
             grant_id, grant_digest, original_id = selected.grant_id, selected.grant_digest, execution["id"]
-            request = self.grants.history_request(project_id, grant_id)
+            combined = getattr(self.grants, "history_execution_inputs", None)
+            if callable(combined):
+                inputs, request, recipe = combined(selected)
+                if (not isinstance(inputs, HttpFixtureExecutionInputs) or not isinstance(request, HttpFixtureGrantRequest)
+                        or type(recipe) is not dict or inputs.scope.case_id != recipe.get("case_id")
+                        or inputs.scope.attempt_id != request.attempt_id or request.operation != selected.operation
+                        or inputs.parent.run_plan_id != recipe.get("run_plan_id")
+                        or inputs.parent.run_plan_artifact_hash != recipe.get("run_plan_artifact_hash")):
+                    raise HttpFixtureInvalid("fixture history combined inputs lost their original ancestry")
+            else:
+                inputs = self.grants.execution_inputs(selected, live=False)
+                request = self.grants.history_request(project_id, grant_id)
             if inputs.selection != selected:
                 raise HttpFixtureInvalid("fixture history changed its original selection")
         if (request.project_id != project_id or request.recipe_id != row["recipe_id"]
                 or request.recipe_artifact_hash != row["recipe_artifact_hash"]):
             raise HttpFixtureInvalid("fixture history scope or original recipe differs")
-        recipe = self.grants.recipes.read(project_id, request.recipe_id)["metadata"]
+        if recipe is None:
+            recipe = self.grants.recipes.read(project_id, request.recipe_id)["metadata"]
         if (recipe["project_id"] != project_id or recipe["record_id"] != request.recipe_id
                 or recipe["artifact_hash"] != request.recipe_artifact_hash):
             raise HttpFixtureInvalid("fixture history needs its complete original recipe archive")
-        return HttpFixtureHistoryItem(project_id=project_id, invocation_id=command["id"], tool_id=command["tool_id"], stage=stage,
+        item = HttpFixtureHistoryItem(project_id=project_id, invocation_id=command["id"], tool_id=command["tool_id"], stage=stage,
             status=command["status"], request_digest=acceptance_digest({"tool_id": command["tool_id"], "input_payload": command["input_payload"]}),
             recipe_id=request.recipe_id, recipe_artifact_hash=request.recipe_artifact_hash,
             run_plan_id=recipe["run_plan_id"], run_plan_artifact_hash=recipe["run_plan_artifact_hash"], case_id=recipe["case_id"],
             attempt_id=request.attempt_id, operation=request.operation, original_execution_id=original_id,
             grant_id=grant_id, grant_digest=grant_digest)
+        return item, inputs
 
     def list(self, request: HttpFixtureHistoryQuery):
         request = HttpFixtureHistoryQuery.model_validate(request.model_dump(mode="json"))
@@ -199,15 +215,25 @@ class HttpFixtureHistoryApplicationService:
             return page
 
     def read(self, target: HttpFixtureHistoryTarget):
+        return self.read_with_verified_inputs(target)[0]
+
+    def read_execution_with_inputs(self, target: HttpFixtureHistoryTarget):
+        item, inputs = self.read_with_verified_inputs(target)
+        if item.stage != "execute" or not isinstance(inputs, HttpFixtureExecutionInputs):
+            raise HttpFixtureInvalid("fixture input handoff requires its original execution command")
+        return item, inputs
+
+    def read_with_verified_inputs(self, target: HttpFixtureHistoryTarget):
+        """Return the exact historical inputs from this read, without granting execution."""
         target = HttpFixtureHistoryTarget.model_validate(target.model_dump(mode="json"))
         with self.grants.recipes.verified_read_session():
             access = self.jobs._access(target.project_id)
             row = self.repository.read_history(target.project_id, target.invocation_id, binding_ids=tuple(sorted(access.binding_ids)))
-            item = self._item(target.project_id, row)
+            item, inputs = self._item_with_inputs(target.project_id, row)
             if item.invocation_id != target.invocation_id:
                 raise HttpFixtureInvalid("fixture history cannot replace the requested original command")
             self.grants.authorization.require_current(access)
-            return item
+            return item, inputs
 
     def verify_receipt(self, request, receipt):
         expected = HttpFixtureHistoryPage if isinstance(request, HttpFixtureHistoryQuery) else HttpFixtureHistoryItem

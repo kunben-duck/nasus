@@ -27,10 +27,7 @@ export function buildSettingsMenuItems(
   if (hasProject) items.push({ id: 'members', icon: '♙', label: t('Project members') })
   items.push(
     { id: 'status', icon: '≋', label: t('View status') },
-    { icon: '□', label: t('Terms of service') },
-    { icon: '▱', label: t('Privacy policy') },
     { icon: '↗', label: t('Send feedback') },
-    { icon: '◉', label: t('Billing Support') },
   )
   return items
 }

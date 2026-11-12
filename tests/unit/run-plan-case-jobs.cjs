@@ -19,6 +19,7 @@ const plain = (v) => JSON.parse(JSON.stringify(v))
 const { canonicalDigest: digest } = load('shared/utils/canonicalDigest.ts')
 const validation = load('domains/quality-loop/runPlanCaseValidation.ts')
 const historyValidation = load('domains/quality-loop/runPlanCaseHistoryValidation.ts')
+const { summarizeCaseObservations } = load('domains/quality-loop/runPlanCaseObservationSummary.ts')
 const { createCaseRecovery, verifyCaseAttempt } = load('domains/quality-loop/runPlanCaseRecovery.ts')
 // Full original Python compilation and physical verifier with explicit memory/native
 // protocol doubles. Not a PG, target deployment, exweb gold or execution claim.
@@ -50,6 +51,37 @@ test('v3 original setup pins and complete Node observations match Python without
   assert.deepEqual(v, before)
   assert.equal(v.view.history.state.passed_count, 0)
   assert.ok(v.view.history.observations.every((o) => o.status === 'failed'))
+})
+test('execution summary shows each original expected result and associated HTTP status, not formal coverage', async () => {
+  const v = structuredClone(fixtureSpecimen), before = structuredClone(v)
+  const { history } = await historyValidation.verifyCaseHistory(v.view, v.command, v.input, v.plan)
+  const summary = summarizeCaseObservations(v.plan.artifact.plan, history)
+  assert.equal(summary.counts.failed, history.state.case_count)
+  assert.equal(summary.counts.passed, 0)
+  assert.deepEqual(plain(summary.cases.map((item) => item.id)), history.state.cases.map((row) => row.case_id))
+  const result = history.observations[0], script = v.plan.artifact.plan.proposal.scripts.find((item) => item.case_id === result.case_id)
+  const failed = summary.cases[0].oracles.find((item) => item.status === 'failed')
+  const assertion = script.assertions.find((item) => item.row_id === failed.id)
+  assert.equal(failed.expected, assertion.oracle.expected_result)
+  assert.equal(failed.responseStatus, result.runner_receipt.requests.find((item) =>
+    item.request_id === script.actions[assertion.action_index].request_id).response_status)
+  assert.deepEqual(v, before)
+})
+test('execution summary retains unknown and unsent cases without inventing assertion results', async () => {
+  const v = structuredClone(specimen), { history } = v.view, { state } = history
+  v.view.status = v.command.status = 'running'
+  state.state = 'outcome_unknown'
+  state.observed_case_count -= 2
+  state.outcome_unknown_case_count = state.not_dispatched_case_count = 1
+  state.cases[5].status = 'outcome_unknown'
+  state.cases[6].status = 'not_dispatched'
+  state.cases[5].observation_digest = state.cases[6].observation_digest = null
+  history.observations.splice(5)
+  await historyValidation.verifyCaseHistory(v.view, v.command, v.input, v.plan)
+  const summary = summarizeCaseObservations(v.plan.artifact.plan, history)
+  assert.equal(summary.counts.outcome_unknown, 1)
+  assert.equal(summary.counts.not_dispatched, 1)
+  assert.deepEqual(plain(summary.cases.slice(5).map((item) => item.oracles)), [[], []])
 })
 for (const fault of ['state_schema', 'omitted_pin', 'reorder_pin', 'extra_pin', 'wrong_scope', 'input_digest', 'capture_digest',
   'command_digest', 'observation_schema', 'observation_input', 'observation_capture', 'receipt_schema', 'receipt_input', 'receipt_capture', 'oracle']) {
@@ -174,6 +206,80 @@ function transport(v, fault) {
   }).caseExecutionApi
   return { api, writes, confirms, reads, a }
 }
+test('history lookup verifies the original plan and reads it without browser recovery or writes', async () => {
+  const v = structuredClone(fixtureSpecimen), reads = [], signal = new AbortController().signal
+  Object.assign(v.command.input_payload, { idempotency_key: 'original-v3-case-key', case_claim_protocol: 'nasus.run-plan-case-preparation.v1' })
+  const api = load('domains/quality-loop/runPlanCaseApi.ts', {
+    '../platform/api': { platformApi: {
+      getToolInvocation: async (id, options) => { assert.equal(options.signal, signal); reads.push(id); return v.command },
+      invokeTool: () => assert.fail('history lookup must not invoke'),
+      confirmToolInvocation: () => assert.fail('history lookup must not confirm'),
+    } },
+    '../../shared/api/client': { request: async (url, options) => {
+      assert.equal(options.signal, signal); assert.equal(options.method, undefined); assert.equal(options.cache, 'no-store')
+      reads.push(url); return v.view
+    } },
+  }).caseExecutionApi
+  const result = await api.readHistoryByCommand(v.plan, v.command.id, signal)
+  assert.equal(result.history, v.view)
+  assert.deepEqual(reads, [v.command.id, `/v1/projects/${v.input.project_id}/quality/run-plan-case-executions/${v.command.id}`])
+})
+
+for (const fault of ['none', 'altered-plan', 'rebound-hash', 'foreign-project']) {
+  test('project Runs can open an independently saved plan and rejects ' + fault, async () => {
+    const v = fixture(), plan = v.plan.artifact.plan, reads = []
+    const request = { ...plan.selection, plan_digest: plan.plan_digest, source_scope_digest: await digest('source-scope') }
+    const artifact = { schema: plan.schema.replace('run-plan.', 'run-plan-artifact.'), project_id: v.input.project_id, run_plan_id: v.input.run_plan_id,
+      invocation_id: 'original-plan-command', actor_id: 'original-reviewer', recorded_at: '2026-10-12T09:00:00Z', request, plan }
+    const archive = { artifact, metadata: { ...v.plan.metadata, status: 'prepared', execution_authorized: false,
+      invocation_id: artifact.invocation_id, actor_id: artifact.actor_id, recorded_at: artifact.recorded_at,
+      request_hash: await digest(request), artifact_hash: await digest(artifact) }, historical_not_live: true,
+    current_use: { inputs_current: false, target_verified: false, execution_authorized: false } }
+    v.command.input_payload.run_plan_artifact_hash = archive.metadata.artifact_hash
+    if (fault === 'altered-plan') artifact.plan.proposal.scripts[0].actions[0].action = 'invented'
+    if (fault === 'rebound-hash') archive.metadata.artifact_hash = await digest('replacement')
+    const api = load('domains/quality-loop/runPlanCaseApi.ts', {
+      '../platform/api': { platformApi: {
+        getToolInvocation: async (id) => { reads.push(['command', id]); return v.command },
+        confirmToolInvocation: () => assert.fail('history lookup must not confirm'),
+      } },
+      '../../shared/api/client': { request: async (url, options) => {
+        assert.equal(options.method, undefined); assert.equal(options.cache, 'no-store'); reads.push(['get', url])
+        return url.endsWith('/run-plans/' + v.input.run_plan_id) ? archive : v.view
+      } },
+    }).caseExecutionApi
+    const lookup = () => api.readHistoryByCommand(fault === 'foreign-project' ? 'other-project' : v.input.project_id,
+      v.command.id, new AbortController().signal)
+    if (fault === 'none') {
+      const original = await lookup()
+      assert.equal(original.plan, archive); assert.equal(original.history, v.view)
+      assert.equal(reads.length, 3)
+    } else {
+      await assert.rejects(lookup)
+      assert.equal(reads.length, fault === 'foreign-project' ? 1 : 2)
+    }
+  })
+}
+
+for (const fault of ['denied', 'different-id', 'different-plan', 'pending', 'wrong-tool', 'roster', 'aborted']) {
+  test('history lookup refuses ' + fault + ' before requesting protected observations', async () => {
+    const v = fixture(), id = v.command.id, controller = new AbortController()
+    if (fault === 'different-id') v.command.id = 'other-command'
+    if (fault === 'different-plan') v.command.input_payload.run_plan_id = 'other-plan'
+    if (fault === 'pending') v.command.status = 'waiting_confirmation'
+    if (fault === 'wrong-tool') v.command.tool_id = 'quality.run_plan.cancel_http'
+    if (fault === 'roster') v.command.input_payload.fixture_setups.pop()
+    const api = load('domains/quality-loop/runPlanCaseApi.ts', {
+      '../platform/api': { platformApi: { getToolInvocation: async () => {
+        if (fault === 'denied') throw new Error('403')
+        if (fault === 'aborted') controller.abort()
+        return v.command
+      } } },
+      '../../shared/api/client': { request: () => assert.fail('no history read allowed') },
+    }).caseExecutionApi
+    await assert.rejects(() => api.readHistoryByCommand(v.plan, id, controller.signal), (error) => error.name !== 'AssertionError')
+  })
+}
 test('submit verifies the create acknowledgement before confirming the same original ID', async () => {
   const v = fixture(); v.attempt.execute.requestHash = await digest(v.input); delete v.attempt.execute.commandId
   const t = transport(v), ack = []
@@ -232,6 +338,17 @@ test('preparation reads every original setup in order and derives pins from veri
   assert.deepEqual(t.reads, [['environment', v.fields.environmentCommandId], ['locator', v.fields.locatorCommandId],
     ...v.fields.setups.map((row) => ['setup', row.commandId])])
   assert.deepEqual(v, before)
+})
+
+test('setup picker only proposes completed setup command references for the same exact plan and case', () => {
+  const v = fixture(), p = v.plan.metadata, setup = v.fields.setups[0]
+  const row = { project_id: p.project_id, run_plan_id: p.run_plan_id, run_plan_artifact_hash: p.artifact_hash,
+    case_id: setup.caseId, invocation_id: setup.commandId, stage: 'execute', status: 'completed', operation: 'setup' }
+  assert.equal(validation.matchesCaseSetupReference(row, p, setup.caseId), true)
+  for (const [key, value] of Object.entries({ project_id: 'other-project', run_plan_id: 'other-plan', run_plan_artifact_hash: 'other-hash',
+    case_id: 'other-case', stage: 'grant', status: 'running', operation: 'cleanup' })) {
+    assert.equal(validation.matchesCaseSetupReference({ ...row, [key]: value }, p, setup.caseId), false, key)
+  }
 })
 for (const fault of ['project', 'id', 'case', 'plan', 'hash', 'operation', 'stage', 'status', 'authority', 'locator', 'missing', 'order', 'aborted']) {
   test('preparation rejects ' + fault + ' rather than skipping unverified original cases', async () => {
@@ -304,7 +421,8 @@ test('the route uses the domain hook, full roster, independent consent and no re
   const hook = fs.readFileSync(path.join(root, 'domains/quality-loop/useRunPlanCaseJob.ts'), 'utf8')
   const route = fs.readFileSync(path.join(root, 'routes/project/sections/knowledge/scope/RunPlanPanel.tsx'), 'utf8')
   assert.match(route, /RunPlanCaseExecutionPanel/); assert.match(panel, /s\.fields\.setups\.map/)
-  assert.match(panel, /state\.cases\.map/); assert.match(panel, /s\.mayWrite\(stage\)/)
+  assert.match(panel, /<RunPlanCaseObservationDetails plan=\{plan\.artifact\.plan\} history=\{history\.history\}/)
+  assert.match(panel, /s\.mayWrite\(stage\)/)
   assert.match(hook, /submitted\.current = true/); assert.match(hook, /storage\.save/)
   assert.match(hook, /retry: false/); assert.match(hook, /gcTime: 0/)
   assert.doesNotMatch(panel + hook, /dangerouslySetInnerHTML|storage\.clear|slice\(0,|api\.submit\([^)]*reload/)
@@ -315,6 +433,23 @@ test('case states use shared localization without translating IDs or presenting 
   assert.equal(zhCN['not dispatched'], '尚未派发')
   assert.equal(zhCN.observed, '已记录执行观察')
   const panel = fs.readFileSync(path.join(root, 'routes/project/sections/knowledge/scope/RunPlanCaseExecutionPanel.tsx'), 'utf8')
-  assert.match(panel, /tx\(row\.status\)/); assert.match(panel, /tx\(state\.state\)/)
-  assert.match(panel, /<code>\{row\.case_id\}<\/code>/)
+  assert.match(panel, /tx\(state\.state\)/)
+  const file = path.join(root, 'routes/project/sections/execution/RunPlanCaseObservationDetails.tsx')
+  const jsx = require('../../apps/portal/node_modules/react/jsx-runtime'), translations = (key, params = {}) =>
+    (zhCN[key] ?? key).replace(/\{(\w+)\}/g, (_, id) => String(params[id] ?? ''))
+  const context = { exports: {}, require: (name) => {
+    if (name === 'react/jsx-runtime') return jsx
+    if (name.endsWith('I18nProvider')) return { useI18n: () => ({ t: translations, tx: translations }) }
+    if (name.endsWith('runPlanCaseObservationSummary')) return { summarizeCaseObservations }
+    throw new Error(`Unexpected import ${name}`)
+  } }
+  vm.runInNewContext(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
+  }).outputText, context)
+  const { renderToStaticMarkup } = require('../../apps/portal/node_modules/react-dom/server')
+  const v = structuredClone(fixtureSpecimen)
+  const html = renderToStaticMarkup(jsx.jsx(context.exports.RunPlanCaseObservationDetails,
+    { plan: v.plan.artifact.plan, history: v.view.history }))
+  assert.match(html, /失败：\d+/); assert.match(html, /实际 HTTP 状态码：\d{3}/)
+  assert.match(html, /<details>/); assert.ok(v.view.history.state.cases.every((row) => html.includes(row.case_id)))
 })

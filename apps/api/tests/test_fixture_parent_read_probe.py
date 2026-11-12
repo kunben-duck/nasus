@@ -25,7 +25,8 @@ def test_opt_in_pair_restores_real_method_and_rejects_weaker_verification(monkey
     path = tmp_path / "diagnostic.json"
     monkeypatch.setenv("FIXTURE_PARENT_READ_REPORT", str(path))
     original = lambda: None
-    recipes = SimpleNamespace(read_with_plan=original)
+    separate = lambda: None
+    recipes = SimpleNamespace(read_with_native_environment=original, read_with_plan=separate)
     monkeypatch.setattr(probe, "_grant_service", lambda: SimpleNamespace(recipes=recipes))
     before, after = samples()
     if failure == "objects": after["distinct_read_inventory_hash"] = "missing-body"
@@ -33,17 +34,20 @@ def test_opt_in_pair_restores_real_method_and_rejects_weaker_verification(monkey
     elif failure == "connection": after["connections"]["live"]["commit"] = 1
     calls = []
     def observed(*args):
-        calls.append(recipes.read_with_plan)
+        calls.append(recipes.read_with_native_environment)
+        assert recipes.read_with_plan is separate
         if len(calls) == 1:
-            assert recipes.read_with_plan is None
+            assert recipes.read_with_native_environment is None
             if failure == "control": raise RuntimeError("explicit control read failure")
             return before
-        assert recipes.read_with_plan is original
+        assert recipes.read_with_native_environment is original
         return after
     monkeypatch.setattr(probe, "measure_context_http_read", observed)
     if failure is None:
         probe.measure_fixture_parent_reuse({}, "private", {}, monkeypatch)
         report = json.loads(path.read_text())
+        assert report["schema"] == "nasus.fixture-parent-read-reuse.v2"
+        assert report["comparison"] == "separate_vs_paired_verified_recipe_environment_parent"
         assert report["control"] == before and report["production"] == after
         assert report["sample_order"] == "control_then_production_one_pair"
         assert report["capacity_or_p95_acceptance"] is report["business_gold"] is False
@@ -51,4 +55,5 @@ def test_opt_in_pair_restores_real_method_and_rejects_weaker_verification(monkey
         with pytest.raises(RuntimeError if failure == "control" else AssertionError):
             probe.measure_fixture_parent_reuse({}, "private", {}, monkeypatch)
         assert not path.exists()
-    assert recipes.read_with_plan is original
+    assert recipes.read_with_native_environment is original
+    assert recipes.read_with_plan is separate

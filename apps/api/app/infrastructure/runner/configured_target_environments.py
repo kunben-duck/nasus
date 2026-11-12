@@ -39,7 +39,8 @@ def read_registry(path):
             and type(raw["environments"]) is list and 1 <= len(raw["environments"]) <= 32)
         specs, identities, resources = [], set(), set()
         for entry in raw["environments"]:
-            _require(type(entry) is dict and set(entry) == {item.name for item in fields(OwnedEnvironment)}
+            allowed = {item.name for item in fields(OwnedEnvironment)}
+            _require(type(entry) is dict and set(entry) in (allowed, allowed - {"profile"})
                 and type(entry["dependencies"]) is list)
             dependencies = []
             for item in entry["dependencies"]:
@@ -73,8 +74,10 @@ class ConfiguredOwnedTargetEnvironments:
     def policy_digest(self, project_id, environment_id, *, require_work):
         return self._spec(project_id, environment_id, require_work).digest
 
-    def inspect(self, project_id, environment_id, artifact_hash, *, require_work):
+    def inspect(self, project_id, environment_id, artifact_hash, *, require_work, expected_policy_digest=None):
         spec = self._spec(project_id, environment_id, require_work)
+        if expected_policy_digest is not None:
+            _require(spec.digest == expected_policy_digest)
         result = OwnedTargetEnvironmentInspector(spec, command=self.command).inspect(artifact_hash, require_work=require_work)
         _require(self._spec(project_id, environment_id, require_work).digest == spec.digest)
         require_work()

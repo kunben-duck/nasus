@@ -1,0 +1,17 @@
+# Initial resolution input from the pinned upstream pyproject.toml.
+# Acceptance runs use requirements.lock and the resulting immutable image ID.
+annotated-types==0.6.0
+asgiref==3.8.1
+coreapi==2.3.3
+django==5.2.1
+django-cors-headers==4.3.1
+django-extensions==3.2.3
+django-ninja==1.4.1
+jwtninja
+email-validator==2.1.1
+markdown==3.4.3
+parameterized==0.9.0
+psycopg2==2.9.6
+pydantic>=2.9.2
+sqlparse==0.4.4
+typing-extensions>=4.12.2

@@ -122,12 +122,13 @@ def test_reviewed_exweb_commit_tracked_branches_capture_and_historical_replay(ev
     git_bytes(origin, "checkout", "main")
     v = evidence_api
     install_connector(monkeypatch, tmp_path)
-    register_refs(v, origin, ("refs/heads/main", "refs/heads/release"))
+    register_refs(v, origin, ("refs/heads/main", "refs/heads/release", AFTER))
     v["invoke"]("system_image.sources.ingest")
     before = read(v)
     selected = next(item for item in before["sources"] if item["tracked_ref"] == "refs/heads/main")
     released = next(item for item in before["sources"] if item["tracked_ref"] == "refs/heads/release")
-    assert selected["file_count"] == released["file_count"] == 126
+    fixed = next(item for item in before["sources"] if item["tracked_ref"] == AFTER)
+    assert selected["file_count"] == released["file_count"] == fixed["file_count"] == 126
     repo = SourceSnapshotRepository()
     historical = repo.get_manifest(v["project_id"], before["source_manifest"]["manifest_id"])
     assert revision_for(v["project_id"], selected["id"], historical) == AFTER
@@ -142,12 +143,15 @@ def test_reviewed_exweb_commit_tracked_branches_capture_and_historical_replay(ev
     current = repo.get_manifest(v["project_id"], after["source_manifest"]["manifest_id"])
     assert revision_for(v["project_id"], selected["id"], current) == fixture_commit
     assert revision_for(v["project_id"], released["id"], current) == AFTER
+    assert revision_for(v["project_id"], fixed["id"], current) == AFTER
     assert next(item for item in after["sources"] if item["id"] == released["id"]) == released
     assert after["objects"] == before["objects"] and after["candidate_revision"] == before["candidate_revision"]
     old = next(item for item in repo.materialization_sources(historical) if item.id == selected["id"])
     replayed = {item.relative_path: item.text for item in SourceIngestionService().extract_text_units(old)}
     expected_original = {path: body.decode("utf-8") for path, body in files}
     assert replayed == expected_original
+    fixed_source = next(item for item in repo.materialization_sources(current) if item.id == fixed["id"])
+    assert {item.relative_path: item.text for item in SourceIngestionService().extract_text_units(fixed_source)} == expected_original
     latest = next(item for item in repo.materialization_sources(current) if item.id == selected["id"])
     captured_after = {item.relative_path: item.text for item in SourceIngestionService().extract_text_units(latest)}
     expected_after = {**expected_original, "README.md": expected_original["README.md"]
@@ -163,6 +167,7 @@ def test_reviewed_exweb_commit_tracked_branches_capture_and_historical_replay(ev
                 "before_manifest": before["source_manifest"], "after_manifest": after["source_manifest"],
                 "git_connector_actual": True, "private_file_origin": True, "postgresql": True, "minio": True,
                 "unchanged_release_commit": AFTER, "historical_code_replayed": True,
+                "unchanged_fixed_commit": AFTER, "fixed_file_count_replayed": len(expected_original),
                 "historical_file_count_replayed": len(replayed), "historical_git_tree_match": True,
                 "controlled_modified_file_count": 1, "controlled_unchanged_file_count": 125,
                 "controlled_change_not_upstream_commit": True, "upstream_remote_reacquired": False,

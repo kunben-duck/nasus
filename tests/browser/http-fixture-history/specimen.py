@@ -9,6 +9,7 @@ from apps.api.tests.test_http_fixture_history import history_specimen
 from apps.api.tests.test_http_fixture_native_grants import native_grant
 from apps.api.tests.test_http_fixture_observations import observation_specimen, observed_phase
 from apps.api.tests.test_owned_target_environment import spec
+from apps.api.tests.test_run_plan_fixture_handoff import portal_specimen
 
 
 def produce(cancelled=False):
@@ -29,4 +30,5 @@ def produce(cancelled=False):
 
 
 if __name__ == "__main__":
-    print(json.dumps({"running": produce(), "cancelled": produce(True)}))
+    print(json.dumps({"running": produce(), "cancelled": produce(True),
+        "case_execution": portal_specimen(public_archive=True)}))

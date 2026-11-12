@@ -7,6 +7,7 @@ export type BuildComposerSkill = {
 
 export interface BuildComposerProps {
   prompt: string
+  promptHistory?: readonly string[]
   setPrompt: (value: string) => void
   runPrompt: () => void
   stopPrompt: () => void

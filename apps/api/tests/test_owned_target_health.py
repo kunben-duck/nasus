@@ -51,7 +51,7 @@ def test_three_exact_read_only_probes_keep_original_inventory_authority_false(sp
     assert value.dependency_health_verified and value.target_health_verified
     assert value.inventory["dependency_health_verified"] is False
     assert value.inventory["execution_authorized"] is value.inventory["business_coverage_verified"] is False
-    assert commands.health_calls == ["pg", "redis", "target"] and len(commands.calls) == 21
+    assert commands.health_calls == ["pg", "redis", "target"] and len(commands.calls) == 13
     actual = [args for args, _ in commands.calls if args[1:3] == ["exec", "--user"]]
     assert actual[0][-3:] == ["sh", "-c", POSTGRES_SELECT_ONE]
     assert actual[1][5:] == ["redis-cli", "--raw", "-h", "127.0.0.1", "-p", "6379", "PING"]

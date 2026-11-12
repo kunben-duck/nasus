@@ -66,10 +66,15 @@ class QualityLoopScopeQueryApplicationService:
         if run is None:
             return None
 
+        evidence_us = self._workspace.us_id_for_run_evidence(project_id, run.id)
+        if run.us_id and evidence_us and run.us_id != evidence_us:
+            return None
+        original_us = run.us_id or evidence_us
+        if us_id and original_us and us_id != original_us:
+            return None
         if not us_id:
             us_id = (
-                run.us_id
-                or self._workspace.us_id_for_run_evidence(project_id, run.id)
+                original_us
                 or self._workspace.first_us_id(project_id)
                 or ""
             )

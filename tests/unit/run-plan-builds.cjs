@@ -27,8 +27,10 @@ const native = JSON.parse(execFileSync(path.join(repo, '.venv/bin/python'), ['-c
   'import json; from apps.api.tests.test_run_plan_builds import binding_inputs; from apps.api.app.domain.quality_loop.run_plan_build import compile_run_plan_build; v,s,b=binding_inputs(multiple=True); print(json.dumps(dict(plan=v,selection=s.model_dump(mode="json"),builds=b,binding=compile_run_plan_build(v,s.model_dump(mode="json"),b)),ensure_ascii=False))'], { cwd: repo, encoding: 'utf8' }))
 const nativeFixtures = JSON.parse(execFileSync(path.join(repo, '.venv/bin/python'), ['-c',
   'import json; from apps.api.tests.test_http_fixture_binding_scripts import fixture_build_inputs; from apps.api.app.domain.quality_loop.run_plan_build import compile_run_plan_build; v,s,b=fixture_build_inputs(); print(json.dumps(dict(plan=v,selection=s.model_dump(mode="json"),builds=b,binding=compile_run_plan_build(v,s.model_dump(mode="json"),b)),ensure_ascii=False))'], { cwd: repo, encoding: 'utf8' }))
+const nativePython = JSON.parse(execFileSync(path.join(repo, '.venv/bin/python'), ['-c',
+  'import json; from apps.api.tests.test_run_plan_builds import binding_inputs; from apps.api.app.domain.quality_loop.run_plan_build import compile_run_plan_build; v,s,b=binding_inputs(python_profile=True); print(json.dumps(dict(plan=v,selection=s.model_dump(mode="json"),builds=b,binding=compile_run_plan_build(v,s.model_dump(mode="json"),b))))'], { cwd: repo, encoding: 'utf8' }))
 function fixture(protocol = 'v1') {
-  const v = structuredClone(protocol === 'v3' ? nativeFixtures : native)
+  const v = structuredClone(protocol === 'python' ? nativePython : protocol === 'v3' ? nativeFixtures : native)
   Object.assign(v.plan.metadata, { project_id: 'p', run_plan_id: 'plan' })
   for (const build of v.builds) Object.assign(build, { execution_authorized: false, historical_not_live: true, status: 'completed' })
   v.request = { ...v.selection, binding_digest: v.binding.binding_digest, source_scope_digest: hash }
@@ -42,6 +44,15 @@ test('frontend complete multi-source binding matches independent Python bytes an
   assert.deepEqual(plain(await validation.expectedBuildBinding(v.plan, v.selection, v.builds)), v.binding)
   assert.equal(await validation.verifyBuildPreview(v.preview, v.plan, v.selection, v.builds), v.preview)
   assert.deepEqual(v, original)
+})
+test('Python target binding matches server output and rejects a missing dependency lock', async () => {
+  const v = fixture('python')
+  assert.deepEqual(plain(await validation.expectedBuildBinding(v.plan, v.selection, v.builds)), v.binding)
+  const b = v.builds[0]
+  delete b.receipt.toolchain.dependency_lock_hash
+  b.metadata.receipt_digest = await digest(b.receipt)
+  v.selection.native_builds[0].receipt_digest = b.metadata.receipt_digest
+  await assert.rejects(validation.expectedBuildBinding(v.plan, v.selection, v.builds))
 })
 test('v3 build binding matches the independent Python compiler without losing its fixture-import plan pins', async () => {
   const v = fixture('v3'), original = structuredClone(v)

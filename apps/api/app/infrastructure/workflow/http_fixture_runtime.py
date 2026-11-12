@@ -62,7 +62,8 @@ def build_http_fixture_activities():
         task = asyncio.create_task(heartbeat())
         try:
             try:
-                return await get_application_container().http_fixture_jobs.run(invocation_id)
+                options = {"recover_archived": True} if activity.in_activity() and activity.info().attempt > 1 else {}
+                return await get_application_container().http_fixture_jobs.run(invocation_id, **options)
             except Exception as error:
                 raise execution_activity_error(error, prefix="HttpFixture") from None
         finally:

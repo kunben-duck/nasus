@@ -2,6 +2,7 @@ import { canonicalDigest } from '../../shared/utils/canonicalDigest'
 import { generationDigest, generationEqual } from './testDesignGenerationValidation'
 import { scriptId } from './automationScriptValidation'
 import { verifyNativeBuild } from './runPlanBuildValidation'
+import { nativeBuildProfile } from './nativeBuildProfiles'
 import type { FrozenImageSources } from '../system-image/frozenImageSources'
 import type { NativeBuildCommand, NativeBuildJobView, NativeBuildPreview, NativeBuildSelection } from './types/nativeBuilds'
 
@@ -9,7 +10,7 @@ export const nativeSelectionKeys = ['project_id', 'image_revision_id', 'image_ar
 export const nativeCommandKeys = [...nativeSelectionKeys, 'request_digest', 'operator_policy_digest', 'source_scope_digest'] as const
 export function requireNativeBuild(condition: unknown): asserts condition { if (!condition) throw new Error('Original native build could not be verified') }
 export function nativeArtifactPath(value: unknown): value is string {
-  return typeof value === 'string' && new TextEncoder().encode(value).length <= 1024 && /^target\/(?:[^/]+\/)*[^/]+\.jar$/.test(value)
+  return typeof value === 'string' && new TextEncoder().encode(value).length <= 1024 && /^target\/(?:[^/]+\/)*[^/]+\.(?:jar|pyz)$/.test(value)
     && !value.includes('\\') && [...value].every((char) => char.charCodeAt(0) >= 32)
     && !value.split('/').some((part) => ['.', '..', '.git'].includes(part))
 }
@@ -31,14 +32,17 @@ function requireSourcePin(pin: NativeBuildPreview['source']['pin'], input: Nativ
 }
 export async function verifyNativePreview(value: unknown, selection: NativeBuildSelection, sources: FrozenImageSources): Promise<NativeBuildPreview> {
   const v = value as NativeBuildPreview, p = v?.operator_policy
+  const profile = nativeBuildProfile(p?.adapter)
   requireNativeCommand(v?.request, sources)
   requireNativeBuild(nativeSelectionKeys.every((key) => generationEqual(v.request[key], selection[key]))
     && Object.keys(v.request).length === nativeCommandKeys.length && v.status === 'preview' && v.source_execution_started === false && v.execution_authorized === false
     && Number.isSafeInteger(v.source?.file_count) && v.source.file_count > 0 && v.source.file_count <= 1000
     && Number.isSafeInteger(v.source.byte_count) && v.source.byte_count >= 0 && v.source.byte_count <= 32 * 1024 * 1024
-    && p?.adapter === 'nasus.offline-java21-maven3911.v1' && generationDigest(p.image_id) && generationDigest(p.cache_identity_hash)
+    && selection.artifact_path.endsWith(profile.suffix) && generationDigest(p.image_id)
+    && (profile.runtime === 'Java' ? generationDigest(p.cache_identity_hash) && p.cache_contents_attested === false
+      : generationDigest(p.dependency_lock_hash) && p.cache_contents_attested === true)
     && Number.isSafeInteger(p.timeout_seconds) && p.timeout_seconds > 0 && p.timeout_seconds <= 300 && p.network === 'none'
-    && p.cache_access === 'read_only' && p.cache_contents_attested === false && await canonicalDigest(p) === v.request.operator_policy_digest
+    && p.cache_access === 'read_only' && await canonicalDigest(p) === v.request.operator_policy_digest
     && generationEqual(v.remaining_gates, ['independent_build_confirmation', 'native_target_execution']))
   requireSourcePin(v.source.pin, selection, sources)
   return v
@@ -59,7 +63,7 @@ export async function verifyNativeJob(value: unknown, input: NativeBuildCommand,
     && (input.expected_artifact_hash === null || r.artifact.content_hash === input.expected_artifact_hash)
     && await canonicalDigest({ source: r.source, artifact_path: input.artifact_path, expected_artifact_hash: input.expected_artifact_hash, adapter: r.adapter }) === input.request_digest
     && generationDigest(r.toolchain.image_id) && generationDigest(r.toolchain.version_output_hash)
-    && r.source.files.some((f) => f.path === 'pom.xml') && r.artifact.byte_count <= 128 * 1024 * 1024
+    && r.source.files.some((f) => f.path === nativeBuildProfile(r.adapter).definition) && r.artifact.byte_count <= 128 * 1024 * 1024
     && !r.source.files.some((f) => f.path === input.artifact_path))
   return complete
 }

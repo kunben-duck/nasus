@@ -7,6 +7,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from apps.api.app.application.platform.errors import PlatformApplicationError
+from apps.api.app.domain.quality_loop.run_plan_case_execution import RunPlanCaseConsentExpired
 from apps.api.app.domain.system_image.source_access import SourceAccessDenied, StaleSourceAccessScope
 from apps.api.app.infrastructure.workflow.http_fixture_runtime import build_http_fixture_activities
 from apps.api.app.infrastructure.workflow.run_plan_case_runtime import build_run_plan_case_activities
@@ -22,6 +23,7 @@ ACTIVITIES = (
 @pytest.mark.parametrize("failure", (
     PermissionError("private expired grant"), SourceAccessDenied("private revoked source"),
     StaleSourceAccessScope("private changed authority"),
+    RunPlanCaseConsentExpired("private expired original case command"),
     PlatformApplicationError("source_access_denied", "private forbidden source", 403),
 ))
 def test_authority_denial_is_non_retryable_redacted_and_stops_heartbeat(monkeypatch, factory, service, prefix, failure):

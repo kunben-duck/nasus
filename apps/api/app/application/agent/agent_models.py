@@ -234,6 +234,7 @@ class ConversationSummaryCheckpoint(BaseModel):
     summary_token_count: int = 0
     created_by: Literal["system", "user"] = "system"
     created_at: str
+    memory_payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ConversationLink(BaseModel):
