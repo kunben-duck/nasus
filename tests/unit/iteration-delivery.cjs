@@ -25,7 +25,7 @@ const attempt = { actor_id: 'actor-1', idempotency_key: 'original-key', input: {
 const view = { project_id: 'project-1', version_id: 'version-1', name: 'Sprint 1', enabled: true, stage: 'image_pinned', baseline: pin, iteration_image: pin,
   code_revisions: [{ binding_id: 'binding-1', source_id: 'source-1', source_revision_id: 'source-rev-1', repository: 'fixture', tracked_ref: 'main',
     external_revision: 'a'.repeat(40), commit_sha: 'a'.repeat(40), content_hash: hash, manifest_hash: hash }],
-  blockers: ['delivery_m2_not_implemented'], pending_confirmations: [], available_actions: ['view_pinned_image'] }
+  blockers: ['requirement_input_required'], pending_confirmations: [], available_actions: ['view_pinned_image'] }
 const receipt = { id: 'command-1', tool_id: 'version.create', input_payload: attempt.input, status: 'completed',
   result: { invocation_id: 'command-1', status: 'completed', requires_followup: false, object_refs: ['version:version-1'] } }
 const clone = (value) => JSON.parse(JSON.stringify(value))

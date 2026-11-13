@@ -166,7 +166,13 @@ class LLMGateway:
         custom_api_key: str | None = None,
         call_context: LLMCallContext | None = None,
         max_output_tokens: int | None = None,
+        request_timeout_seconds: float | None = None,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
     ) -> LLMReply:
+        if request_timeout_seconds is not None and not 0 < request_timeout_seconds <= 120:
+            raise ValueError("Generation timeout must be between 0 and 120 seconds")
+        if thinking_mode is not None and (thinking_mode not in {"enabled", "disabled"} or settings.model_provider != "openai_compatible"):
+            raise ValueError("Thinking mode requires a supported OpenAI-compatible adapter")
         started = time.perf_counter()
         provider = settings.model_provider
         language_instruction = self._language_instruction(settings.language)
@@ -204,6 +210,8 @@ class LLMGateway:
                 context_snapshot=context_snapshot,
                 history_snapshot=history_snapshot,
                 **({"max_output_tokens": max_output_tokens} if max_output_tokens is not None else {}),
+                **({"request_timeout_seconds": request_timeout_seconds} if request_timeout_seconds is not None else {}),
+                **({"thinking_mode": thinking_mode} if thinking_mode is not None else {}),
             )
         except Exception:
             return self._audit_reply(
@@ -1303,8 +1311,12 @@ class LLMGateway:
         context_snapshot: str,
         history_snapshot: str,
         max_output_tokens: int | None = None,
+        request_timeout_seconds: float | None = None,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
     ) -> str | ProviderGeneration:
         output_options = {"max_output_tokens": max_output_tokens} if max_output_tokens is not None else {}
+        if request_timeout_seconds is not None:
+            output_options["request_timeout_seconds"] = request_timeout_seconds
         if provider == "openai":
             return await self._call_openai(
                 model_name,
@@ -1345,6 +1357,7 @@ class LLMGateway:
                 context_snapshot=context_snapshot,
                 history_snapshot=history_snapshot,
                 **output_options,
+                **({"thinking_mode": thinking_mode} if thinking_mode is not None else {}),
             )
         return await self._call_custom(
             custom_model=custom_model,
@@ -1354,6 +1367,7 @@ class LLMGateway:
             context_snapshot=context_snapshot,
             history_snapshot=history_snapshot,
             **output_options,
+            **({"thinking_mode": thinking_mode} if thinking_mode is not None else {}),
         )
 
     async def _stream_provider(
@@ -1697,6 +1711,7 @@ class LLMGateway:
         context_snapshot: str,
         history_snapshot: str,
         max_output_tokens: int | None = None,
+        request_timeout_seconds: float = 45.0,
     ) -> ProviderGeneration:
         payload = {
             "model": model_name,
@@ -1705,7 +1720,7 @@ class LLMGateway:
         }
         if max_output_tokens is not None:
             payload["max_completion_tokens"] = max_output_tokens
-        async with httpx.AsyncClient(timeout=45.0) as client:
+        async with httpx.AsyncClient(timeout=request_timeout_seconds) as client:
             response = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
@@ -1733,6 +1748,7 @@ class LLMGateway:
         context_snapshot: str,
         history_snapshot: str,
         max_output_tokens: int | None = None,
+        request_timeout_seconds: float = 45.0,
     ) -> ProviderGeneration:
         payload = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
@@ -1741,7 +1757,7 @@ class LLMGateway:
         }
         if max_output_tokens is not None:
             payload["generationConfig"]["maxOutputTokens"] = max_output_tokens
-        async with httpx.AsyncClient(timeout=45.0) as client:
+        async with httpx.AsyncClient(timeout=request_timeout_seconds) as client:
             response = await client.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}",
                 json=payload,
@@ -1768,6 +1784,7 @@ class LLMGateway:
         context_snapshot: str,
         history_snapshot: str,
         max_output_tokens: int | None = None,
+        request_timeout_seconds: float = 45.0,
     ) -> ProviderGeneration:
         payload = {
             "model": model_name,
@@ -1775,7 +1792,7 @@ class LLMGateway:
             "system": system_prompt,
             "messages": self._dialogue_messages(user_message, context_snapshot, history_snapshot),
         }
-        async with httpx.AsyncClient(timeout=45.0) as client:
+        async with httpx.AsyncClient(timeout=request_timeout_seconds) as client:
             response = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
@@ -1810,8 +1827,12 @@ class LLMGateway:
         context_snapshot: str,
         history_snapshot: str,
         max_output_tokens: int | None = None,
+        request_timeout_seconds: float | None = None,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
     ) -> str | ProviderGeneration:
         output_options = {"max_output_tokens": max_output_tokens} if max_output_tokens is not None else {}
+        if request_timeout_seconds is not None:
+            output_options["request_timeout_seconds"] = request_timeout_seconds
         if not custom_api_key:
             raise RuntimeError("missing custom api key")
 
@@ -1828,6 +1849,7 @@ class LLMGateway:
                 context_snapshot=context_snapshot,
                 history_snapshot=history_snapshot,
                 **output_options,
+                **({"thinking_mode": thinking_mode} if thinking_mode is not None else {}),
             )
 
         if custom_model.provider_kind == "openai":
@@ -1871,6 +1893,8 @@ class LLMGateway:
         context_snapshot: str,
         history_snapshot: str,
         max_output_tokens: int | None = None,
+        request_timeout_seconds: float = 45.0,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
     ) -> ProviderGeneration:
         if not base_url:
             raise RuntimeError("missing OpenAI-compatible base url")
@@ -1883,7 +1907,9 @@ class LLMGateway:
         }
         if max_output_tokens is not None:
             payload["max_tokens"] = max_output_tokens
-        async with httpx.AsyncClient(timeout=45.0) as client:
+        if thinking_mode is not None:
+            payload["thinking"] = {"type": thinking_mode}
+        async with httpx.AsyncClient(timeout=request_timeout_seconds) as client:
             response = await client.post(
                 f"{base_url.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},

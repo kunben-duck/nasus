@@ -19,7 +19,8 @@ export interface IterationCreateAttempt {
 }
 
 export interface DeliveryImagePin {
-  publication_id: string
+  publication_id: string | null
+  review_event_id?: string | null
   baseline_id: string
   image_revision_id: string
   image_artifact_hash: string
@@ -35,7 +36,7 @@ export interface VersionDelivery {
   version_id: string
   name: string
   enabled: boolean
-  stage: 'legacy' | 'image_pinned'
+  stage: 'legacy' | 'image_pinned' | 'requirement_review' | 'requirements_confirmed'
   baseline: DeliveryImagePin | null
   iteration_image: DeliveryImagePin | null
   code_revisions: { binding_id: string; source_id: string; source_revision_id: string; repository: string;

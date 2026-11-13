@@ -15,6 +15,7 @@ class VersionDeliveryRepositoryPort(Protocol):
     def read(self, project_id, version_id): ...
     def code_revisions(self, project_id, members): ...
     def requirement_version(self, project_id, us_id): ...
+    def requirement_progress(self, project_id, version_id): ...
     def create(self, project_id, request, *, invocation_id, actor_id, expected_role, recorded_at,
                prepare, verify, require_access): ...
 
@@ -68,6 +69,12 @@ class VersionDeliveryApplicationService:
         with self.images.verified_read_session(reuse=True):
             for key in ("baseline", "iteration_image"):
                 stored = binding[key]
+                if key == "iteration_image" and stored.get("review_event_id"):
+                    header = self.images.frozen_header(project_id, stored["image_revision_id"])
+                    if (header.artifact_hash, header.manifest_id, header.manifest_hash, header.baseline_id) != (
+                            stored["image_artifact_hash"], stored["manifest_id"], stored["manifest_hash"], stored["baseline_id"]):
+                        raise VersionDeliveryIntegrityError("Iteration requirement projection cannot be verified")
+                    continue
                 pin = self.publications.pin(project_id, stored["publication_id"], require_current=False)
                 if pin.model_dump(mode="json") != stored:
                     raise VersionDeliveryIntegrityError("Stored Version image pin cannot be verified")
@@ -100,5 +107,11 @@ class VersionDeliveryApplicationService:
         version, binding = self.repository.read(project_id, version_id)
         self._verify(project_id, binding)
         result = delivery_view(project_id, version, binding)
+        statuses = self.repository.requirement_progress(project_id, version_id) if binding else []
+        if statuses:
+            ready = all(status == "confirmed" for status in statuses)
+            result = result.model_copy(update={"stage": "requirements_confirmed" if ready else "requirement_review",
+                "blockers": ["formal_test_design_required"] if ready else sorted(set(status for status in statuses if status != "confirmed")),
+                "pending_confirmations": ["requirement_confirmation_required"] if "requirement_confirmation_required" in statuses else []})
         self.authorization.require_current(scope)
         return result

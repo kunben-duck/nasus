@@ -323,6 +323,16 @@ def get_requirement_revisions_application(request: Request) -> RequirementRevisi
 RequirementRevisionApp = Annotated[RequirementRevisionApplicationService, Depends(get_requirement_revisions_application)]
 
 
+from ...application.quality_loop.requirement_reviews import RequirementReviewApplicationService
+
+
+def get_requirement_reviews_application(request: Request) -> RequirementReviewApplicationService:
+    return request.app.state.container.requirement_reviews
+
+
+RequirementReviewApp = Annotated[RequirementReviewApplicationService, Depends(get_requirement_reviews_application)]
+
+
 def get_build_plan_application(request: Request) -> BuildPlanApplicationService:
     return request.app.state.container.build_plans
 

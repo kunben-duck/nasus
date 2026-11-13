@@ -28,3 +28,8 @@
 .requirement-draft { margin: 12px 0; }
 .requirement-text { white-space: pre-wrap; }
 @media (max-width: 640px) { .delivery-pin-grid { grid-template-columns: minmax(0, 1fr); } .delivery-panel { padding: 14px; } }
+.requirement-review { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border, #8883); }
+.requirement-review .review-question { display: grid; gap: 6px; margin: 14px 0; }
+.requirement-review textarea { width: 100%; box-sizing: border-box; }
+.requirement-review details { margin: 12px 0; overflow-wrap: anywhere; }
+.requirement-review dd { margin: 4px 0 12px; white-space: pre-wrap; }

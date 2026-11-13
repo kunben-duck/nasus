@@ -46,6 +46,7 @@ class ToolResult(BaseModel):
     evidence_refs: List[str] = Field(default_factory=list)
     conversation_history: Optional[Dict[str, Any]] = None
     version_delivery: Optional[VersionDeliveryReadModel] = None
+    requirement_review: Optional[Dict[str, Any]] = None
     evidence_query: Optional[EvidenceToolReceipt] = None
     image_query: Optional[ImageQueryReceipt] = None
     build_plan_query: Optional[BuildPlanReadReceipt] = None

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -21,6 +23,9 @@ from .unit_of_work import session_scope
 
 
 class DocumentProjectionRepository:
+    def __init__(self, write_session=None):
+        self._write_session = write_session
+
     @staticmethod
     def _extraction_header(row):
         return {key: getattr(row, key) for key in ("extraction_id", "project_id", "binding_id", "source_revision_id", "summary", "captured_at")}
@@ -83,7 +88,7 @@ class DocumentProjectionRepository:
     def record(self, source, items, *, manifest_hash, report_ref, report_hash, summary, captured_at):
         if source.source_type not in {"us_doc", "test_asset"}:
             raise ValueError("document source kind mismatch")
-        with session_scope() as session:
+        with nullcontext(self._write_session) if self._write_session is not None else session_scope() as session:
             SourceSnapshotRepository._lock(session, source.project_id)
             revision = session.scalar(select(SourceRevisionRecord).join(SourceBindingRecord,
                 (SourceBindingRecord.project_id == SourceRevisionRecord.project_id)

@@ -27,6 +27,7 @@
     "verify:exweb": "bash -c 'source scripts/dev-runtime-env.sh && exec ./.venv/bin/python scripts/verify-exweb-canonical.py \"$@\"' --",
     "verify:realworld-loop": "./.venv/bin/python scripts/verify-realworld-loop.py",
     "verify:realworld-m1": "bash scripts/verify-realworld-m1.sh",
+    "verify:realworld-m2": "bash -c 'source scripts/dev-runtime-env.sh && exec ./.venv/bin/python scripts/verify-realworld-m2.py'",
     "verify:v1-release": "scripts/verify-v1-release.sh"
   },
   "devDependencies": {

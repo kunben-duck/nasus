@@ -10,10 +10,23 @@ from ....application.quality_loop.version_delivery_models import VersionDelivery
 from ....application.quality_loop.version_delivery_errors import delivery_error
 from ....domain.system_image.image_revision import ImageArtifactUnavailable, ImageRevisionIntegrityError
 from ....application.system_image.source_uploads import SourceUploadFile, SourceUploadResult
-from ..dependencies import GovernanceApp, ProjectWorkspaceApp, SourceUploadApp, SystemImageApp, VersionDeliveryApp, RequirementRevisionApp
+from ..dependencies import GovernanceApp, ProjectWorkspaceApp, SourceUploadApp, SystemImageApp, VersionDeliveryApp, RequirementRevisionApp, RequirementReviewApp
+from ....application.quality_loop.requirement_review_models import ReviewSelection
 from ..errors import error_response
 
 router = APIRouter()
+
+
+@router.get("/v1/projects/{project_id}/versions/{version_id}/requirements/{revision_id}/review")
+def get_requirement_review(project_id: str, version_id: str, revision_id: str, reviews: RequirementReviewApp,
+                           response: Response, preview: bool = False):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        selection = ReviewSelection(project_id=project_id, version_id=version_id, revision_id=revision_id)
+        return reviews.preview(selection) if preview else reviews.read(selection)
+    except (ValueError, KeyError, PermissionError, ImageArtifactUnavailable, ImageRevisionIntegrityError) as exc:
+        error = delivery_error(exc)
+        raise error_response(error.code, error.message, error.status_code) from exc
 
 
 @router.get("/v1/projects/{project_id}/versions/{version_id}/requirements")

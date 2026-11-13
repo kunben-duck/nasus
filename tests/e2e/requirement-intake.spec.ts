@@ -60,7 +60,7 @@ for (const theme of ['light', 'dark']) test(`requirement intake revisions, refre
     await expect(panel.locator('.requirement-draft')).toContainText('Only the author may edit an article')
     await page.reload()
     await expect(panel.locator('.requirement-draft')).toContainText('No; reject without changing the article.')
-    await expect(panel).toContainText('Draft intake only.')
+    await expect(panel).toContainText('request independent confirmation')
     await panel.getByRole('button', { name: 'Revision history', exact: true }).click()
     await expect(panel.locator('.requirement-draft')).toHaveCount(2)
     const response = await request.get(`${analysisApi}/v1/projects/${v.projectId}/versions/${version}/requirements`, { headers: v.owner.headers })

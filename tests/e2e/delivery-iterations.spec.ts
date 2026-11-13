@@ -91,7 +91,7 @@ for (const theme of ['light', 'dark']) test(`explicit delivery creation, lost-re
     await expect(page).toHaveURL(new RegExp(`version_id=${createdVersion}$`))
     const delivery = page.getByTestId('iteration-delivery')
     await expect(delivery).toContainText('Starting image pinned')
-    await expect(delivery).toContainText('Later delivery stages are not implemented yet.')
+    await expect(delivery).toContainText('Submit this iteration\'s requirement to start model review.')
     await expect(delivery.getByRole('region', { name: 'Immutable starting baseline' })).toContainText(v.image.artifact_hash)
     await expect(delivery.getByRole('region', { name: 'Current iteration image' })).toContainText(v.image.image_revision_id)
     const actual = await request.get(`${analysisApi}/v1/projects/${v.projectId}/versions/${createdVersion}/delivery`, { headers: v.owner.headers })

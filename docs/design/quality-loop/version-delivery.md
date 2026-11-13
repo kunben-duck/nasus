@@ -88,7 +88,7 @@ Its result retains `object_refs: ["version:<id>"]` and adds `version_delivery`.
 
 - `project_id`, `version_id`, `name`: strings.
 - `enabled`: true only for a bound Version, not retroactively for older Versions.
-- `stage`: exactly `legacy` or `image_pinned` in M1.
+- `stage`: `legacy`, `image_pinned`, `requirement_review`, or `requirements_confirmed`.
 - `baseline`, `iteration_image`: null for legacy Versions; otherwise identical
   `PublishedImagePin` objects containing `publication_id`, `baseline_id`,
   `image_revision_id`, `image_artifact_hash`, `manifest_id`, `manifest_hash`,
@@ -96,7 +96,8 @@ Its result retains `object_refs: ["version:<id>"]` and adds `version_delivery`.
 - `code_revisions`: captured `binding_id`, `source_id`, `source_revision_id`,
   `repository`, nullable `tracked_ref`, `external_revision`, nullable `commit_sha`,
   `content_hash`, and `manifest_hash`. Non-Git captures have no invented SHA.
-- `blockers`: `["delivery_m2_not_implemented"]` for bound Versions, otherwise `[]`.
+- `blockers`: starts with `requirement_input_required` for a bound Version;
+  subsequent blockers come from current requirement review facts.
 - `pending_confirmations`: `[]` in M1. No M2 confirmation is manufactured.
 - `available_actions`: `["view_pinned_image"]` for bound Versions, otherwise `[]`.
 
@@ -121,12 +122,12 @@ or `version_delivery_invalid` (400). Request-shape validation remains 422.
 An already-running idempotent request may return `version_creation_pending`
 (409); retry with the same key. Tool failures expose the code in `followup_reason`.
 
-## M2 Requirement Intake Increment (Not M2 Completion)
+## M2 Requirement Review and Confirmation
 
-The implemented increment is immutable requirement intake in an image-bound
-Version. It does **not** evaluate requirements with a model, project them into a
-new working image, approve acceptance criteria, or authorize test generation.
-The M1 delivery blocker remains until those downstream contracts are delivered.
+Requirement intake now continues through live-model review, persisted clarification,
+source-backed acceptance proposals and independent human confirmation. See
+[the M2 contract](requirement-review.md) for the model, authority and replay details.
+It does not authorize test generation, execution or release.
 
 - `quality.requirement.revise` uses the canonical ToolInvocationRuntime. Inputs
   include explicit project, Version and exact image/hash, title, original text
@@ -157,16 +158,17 @@ The Version page supports creation, correction, clarification answers and
 revision history in light/dark and narrow layouts. Lost responses retain the
 original scoped idempotency key and payload in session storage; refreshing can
 retry that command without guessing whether it committed. Access errors hide
-the last fetched requirement content. The UI labels all these records drafts,
-not approved requirements or completed reviews.
+the last fetched requirement content. Draft intake and the current review/approval
+state are displayed separately; saving text never constitutes approval.
 
-Still required before the M2 exit condition: durable live-model evaluation with
-fixed inputs, a verifiable source projection and append-only working-image
-adoption, exact-revision human confirmation, and conversational clarification
-that consumes the same persisted facts. M3 formal Django HTTP execution, M4
-defect/fix/regression and M5 Version gate/promotion are not delivered by this
-increment. `verify:realworld-loop --phase full` must not report success until
-the full live-model/real-target evidence chain exists.
+Migration `0127_requirement_reviews` adds append-only review events. Confirmation
+adopts the source-backed candidate as the Version's working image, without moving
+its initial baseline or the project's publication head. The derived working pin
+has a `review_event_id` and nullable `publication_id`; it is not a new publication.
+`requirements_confirmed` still exposes `formal_test_design_required`. M3 formal
+Django HTTP execution, M4 defect/fix/regression and M5 Version gate/promotion are
+not delivered by M2. `verify:realworld-loop --phase full` must not report success
+until that full evidence chain exists.
 
 ## Preflight Reliability Corrections
 

@@ -9,13 +9,19 @@ import { RequirementIntakePanel } from './RequirementIntakePanel'
 export function DeliveryDetails({ projectId, versionId }: { projectId: string; versionId: string }) {
   const { t, tx } = useI18n(), { query, view } = useVersionDelivery(projectId, versionId)
   const [params, setParams] = useSearchParams()
+  const blockers = { requirement_input_required: "Submit this iteration's requirement to start model review.",
+    requirement_review_required: 'Model review is required.', requirement_clarification_required: 'Answer the blocking clarification questions.',
+    requirement_confirmation_required: 'Independent requirement confirmation is required.', requirement_approval_invalidated: 'Acceptance approval is no longer valid.',
+    requirement_review_failed: 'Model review failed. Inspect the original command before retrying.', requirement_review_pending: 'Model review has not completed.',
+    formal_test_design_required: 'M2 is complete. M3 formal test design, case review and execution are next.' } as const
+  const blockerLabel = (key: string) => key in blockers ? t(blockers[key as keyof typeof blockers]) : tx(key)
   const pinKeys = ['publication_id', 'baseline_id', 'image_revision_id', 'image_artifact_hash'] as const
   const inspecting = pinKeys.some((key) => params.has(key))
   const inspected = view && [view.baseline, view.iteration_image].find((pin) => pin && pinKeys.every((key) =>
-    params.getAll(key).length === 1 && params.get(key) === pin[key]))
+    params.getAll(key).length === 1 && params.get(key) === (pin[key] ?? '')))
   function imageHref(pin: DeliveryImagePin) {
     const selection = new URLSearchParams({ version_id: versionId })
-    pinKeys.forEach((key) => selection.set(key, pin[key]))
+    pinKeys.forEach((key) => selection.set(key, pin[key] ?? ''))
     return `/projects/${encodeURIComponent(projectId)}/versions?${selection}`
   }
   function closeImage() {
@@ -30,7 +36,8 @@ export function DeliveryDetails({ projectId, versionId }: { projectId: string; v
     {query.isError && <p role="alert">{t('Iteration could not be verified. Previous content is hidden; reload to check access.')}</p>}
     {view && <>
       <p><code>{view.version_id}</code></p>
-      <p>{t('Delivery stage')}: <strong>{t(view.stage === 'image_pinned' ? 'Starting image pinned' : 'Legacy version without a delivery pin')}</strong></p>
+      <p>{t('Delivery stage')}: <strong>{t(({ image_pinned: 'Starting image pinned', legacy: 'Legacy version without a delivery pin',
+        requirement_review: 'Requirement review in progress', requirements_confirmed: 'Requirements independently confirmed' } as const)[view.stage])}</strong></p>
       {!view.enabled ? <p>{t('This legacy version has no delivery image binding. No baseline was selected automatically.')}</p> :
         <div className="delivery-pin-grid">
           <DeliveryPin title={t('Immutable starting baseline')} pin={view.baseline!} href={imageHref(view.baseline!)} />
@@ -44,10 +51,10 @@ export function DeliveryDetails({ projectId, versionId }: { projectId: string; v
           {source.tracked_ref && <span>{source.tracked_ref}</span>}<code>{source.commit_sha ?? source.external_revision}</code>
         </li>)}</ul> : <p>{t('No source commits recorded for this iteration.')}</p>}
       <h3>{t('Delivery blockers')}</h3>
-      {view.blockers.length ? <ul>{view.blockers.map((item) => <li key={item}>{item === 'delivery_m2_not_implemented' ? t('Later delivery stages are not implemented yet.') : tx(item)}</li>)}</ul>
+      {view.blockers.length ? <ul>{view.blockers.map((item) => <li key={item}>{blockerLabel(item)}</li>)}</ul>
         : <p>{t('No delivery blockers reported. This is not a release verdict.')}</p>}
       <h3>{t('Next independent confirmation')}</h3>
-      {view.pending_confirmations.length ? <ol>{view.pending_confirmations.map((item) => <li key={item}>{tx(item)}</li>)}</ol>
+      {view.pending_confirmations.length ? <ol>{view.pending_confirmations.map((item) => <li key={item}>{blockerLabel(item)}</li>)}</ol>
         : <p>{t('No pending confirmation reported. Later delivery stages are not completed by this page.')}</p>}
       {view.available_actions.length > 0 && <><h3>{t('Available delivery actions')}</h3>
         <ul>{view.available_actions.map((action) => <li key={action}>{t('View the pinned image')}</li>)}</ul></>}
@@ -64,7 +71,7 @@ export function DeliveryDetails({ projectId, versionId }: { projectId: string; v
 function DeliveryPin({ title, pin, href }: { title: string; pin: DeliveryImagePin; href: string }) {
   const { t } = useI18n()
   return <section className="delivery-pin" aria-label={title}><h3>{title}</h3><dl>
-    <dt>{t('Publication ID')}</dt><dd>{pin.publication_id}</dd>
+    <dt>{t(pin.publication_id ? 'Publication ID' : 'Requirement confirmation')}</dt><dd>{pin.publication_id ?? pin.review_event_id}</dd>
     <dt>{t('Baseline ID')}</dt><dd>{pin.baseline_id}</dd>
     <dt>{t('Image revision')}</dt><dd>{pin.image_revision_id}</dd>
     <dt>{t('Artifact hash')}</dt><dd>{pin.image_artifact_hash}</dd>

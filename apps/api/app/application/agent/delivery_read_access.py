@@ -6,7 +6,7 @@ from ...domain.system_image.source_access import SourceAccessDenied, StaleSource
 
 
 class DeliveryConversationReadAccess:
-    metadata_keys = ("delivery_intake", "version_delivery")
+    metadata_keys = ("delivery_intake", "version_delivery", "requirement_intake")
 
     def __init__(self, source_access):
         self.source_access = source_access

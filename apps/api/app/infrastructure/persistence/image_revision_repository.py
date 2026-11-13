@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, fields, replace
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from copy import deepcopy
 from uuid import uuid4
@@ -59,8 +59,8 @@ class ImageRevisionRepository:
                 raise ImageRevisionIntegrityError("freeze invocation has multiple candidate outputs")
             return ids[0] if ids else None
 
-    def pin_evidence(self, project_id, members):
-        with session_scope() as session:
+    def pin_evidence(self, project_id, members, *, session=None):
+        with nullcontext(session) if session is not None else session_scope() as session:
             ids = [member.entity_revision_id for member in members if member.kind == "code_entity"]
             rows = session.execute(select(CodeEntityEvidenceRecord.entity_revision_id, CodeEntityEvidenceRecord.evidence_id).where(
                 CodeEntityEvidenceRecord.project_id == project_id, CodeEntityEvidenceRecord.entity_revision_id.in_(ids))).all()
@@ -83,15 +83,15 @@ class ImageRevisionRepository:
                                        if field.name != "publication"})
 
     def record(self, manifest, baseline_id, *, artifact_ref, artifact_hash, members, relationship_count,
-               invocation_id, recorded_at, build_commit=None, review_commit=None):
+               invocation_id, recorded_at, build_commit=None, review_commit=None, requirement_projection=None, session=None):
         require_frozen_inputs(manifest)
-        if build_commit is not None and review_commit is not None:
+        if sum(value is not None for value in (build_commit, review_commit, requirement_projection)) > 1:
             raise ValueError("a candidate cannot combine structural execution and review admission")
         members = tuple(sorted(members, key=lambda item: item.object_id))
         if not members or len({item.object_id for item in members}) != len(members):
             raise ValueError("Image object membership is empty or duplicated.")
         membership_hash = snapshot_digest([member_payload(item) for item in members])
-        with session_scope() as session:
+        with nullcontext(session) if session is not None else session_scope() as session:
             # Same project lock as capture: a new manifest cannot replace the
             # accepted inputs between the head check and candidate commit.
             SourceSnapshotRepository._lock(session, manifest.project_id)
@@ -147,7 +147,10 @@ class ImageRevisionRepository:
                     if replace(canonical, captured_at="") != manifest:
                         raise ImageRevisionIntegrityError("reviewed image source manifest mismatch")
                     manifest = canonical
-            if build_commit is None and review_commit is None and (head is None or head.manifest_id != manifest.manifest_id):
+            if requirement_projection is not None:
+                from .requirement_image_projection import validate_projection_commit
+                validate_projection_commit(session, requirement_projection, manifest, baseline_id, members, invocation_id)
+            if build_commit is None and review_commit is None and requirement_projection is None and (head is None or head.manifest_id != manifest.manifest_id):
                 raise ImageRevisionConflict("Source inputs changed while the image was being built.")
             if row is None or SourceSnapshotRepository._manifest(session, row) != manifest:
                 raise ImageRevisionIntegrityError("Image source manifest mismatch.")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
@@ -28,15 +28,20 @@ class DeliveryCodeRevision(BaseModel):
     manifest_hash: str
 
 
+class IterationImagePin(PublishedImagePin):
+    publication_id: Optional[str] = None
+    review_event_id: Optional[str] = None
+
+
 class VersionDeliveryReadModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     project_id: str
     version_id: str
     name: str
     enabled: bool
-    stage: Literal["legacy", "image_pinned"]
+    stage: Literal["legacy", "image_pinned", "requirement_review", "requirements_confirmed"]
     baseline: Optional[PublishedImagePin] = None
-    iteration_image: Optional[PublishedImagePin] = None
+    iteration_image: Optional[Union[PublishedImagePin, IterationImagePin]] = None
     code_revisions: list[DeliveryCodeRevision] = Field(default_factory=list)
     blockers: list[str] = Field(default_factory=list)
     pending_confirmations: list[str] = Field(default_factory=list)
@@ -46,5 +51,5 @@ class VersionDeliveryReadModel(BaseModel):
 def delivery_view(project_id, version, binding):
     return VersionDeliveryReadModel(project_id=project_id, version_id=version.id, name=version.name,
         enabled=binding is not None, stage="image_pinned" if binding else "legacy",
-        **(binding or {}), blockers=["delivery_m2_not_implemented"] if binding else [],
+        **(binding or {}), blockers=["requirement_input_required"] if binding else [],
         available_actions=["view_pinned_image"] if binding else [])

@@ -21,6 +21,7 @@ class ConversationMessageApplicationService:
         self._tool_ids = frozenset(tool.tool_id for tool in tools)
         self.guided_build = None
         self.guided_delivery = None
+        self.guided_requirement = None
 
     async def post_message(
         self,
@@ -60,6 +61,10 @@ class ConversationMessageApplicationService:
         unavailable = unavailable_project_action(content, self._tool_ids)
         if unavailable is not None:
             return {"route": unavailable.kind, "decision": self._to_plain_data(unavailable)}
+        if self.guided_requirement is not None:
+            guided = await self.guided_requirement.handle(conversation_id, content)
+            if guided is not None:
+                return {"route": "finalize", "result": guided}
         if self.guided_delivery is not None:
             guided = await self.guided_delivery.handle(conversation_id, content)
             if guided is not None:

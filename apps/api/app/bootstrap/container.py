@@ -14,6 +14,7 @@ from ..application.platform.identity_administration import (
 from ..application.platform.project_workspace import ProjectWorkspaceApplicationService
 from ..application.quality_loop.version_delivery import VersionDeliveryApplicationService
 from ..application.quality_loop.requirement_revisions import RequirementRevisionApplicationService
+from ..application.quality_loop.requirement_reviews import RequirementReviewApplicationService
 from ..application.platform.readiness import ReadinessApplicationService
 from ..application.platform.use_cases import PlatformApplicationService
 from ..application.system_image import SystemImageApplicationService
@@ -170,6 +171,7 @@ class ApplicationContainer:
     image_publications: ImagePublicationApplicationService
     version_delivery: VersionDeliveryApplicationService
     requirement_revisions: RequirementRevisionApplicationService
+    requirement_reviews: RequirementReviewApplicationService
     frozen_indexes: FrozenIndexApplicationService
     context_retrievals: ContextRetrievalApplicationService
     context_retrieval_jobs: ContextRetrievalJobApplicationService
@@ -314,6 +316,7 @@ def _build_application_container() -> ApplicationContainer:
         image_publications=runtime.image_publications,
         version_delivery=runtime.version_delivery,
         requirement_revisions=runtime.requirement_revisions,
+        requirement_reviews=runtime.requirement_reviews,
         frozen_indexes=runtime.frozen_indexes,
         context_retrievals=runtime.context_retrievals,
         context_retrieval_jobs=runtime.context_retrieval_jobs,

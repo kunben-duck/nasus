@@ -43,7 +43,61 @@ class VersionDeliveryRepository:
                 or any(row.payload["baseline"].get(key) != getattr(row, key) for key in
                        ("baseline_id", "publication_id", "image_revision_id"))):
             raise VersionDeliveryIntegrityError("Version image binding integrity failed")
-        return deepcopy(row.payload)
+        result = deepcopy(row.payload)
+        # Confirmation events form an append-only working-image chain. The M1
+        # binding remains untouched, including its initial publication receipt.
+        from .requirement_review_models import RequirementReviewEventRecord
+        events = session.scalars(select(RequirementReviewEventRecord).where(
+            RequirementReviewEventRecord.project_id == project_id,
+            RequirementReviewEventRecord.version_id == version_id,
+            RequirementReviewEventRecord.kind == "confirmed").order_by(
+                RequirementReviewEventRecord.recorded_at, RequirementReviewEventRecord.event_id)).all()
+        for event in events:
+            if snapshot_digest(event.payload) != event.content_hash:
+                raise VersionDeliveryIntegrityError("Iteration requirement confirmation is corrupt")
+            projection = event.payload["projection"]
+            if projection["parent_image_revision_id"] != result["iteration_image"]["image_revision_id"]:
+                raise VersionDeliveryIntegrityError("Iteration working image chain is broken")
+            result["iteration_image"] = {**result["iteration_image"],
+                **{key: projection[key] for key in ("image_revision_id", "image_artifact_hash", "manifest_id", "manifest_hash", "baseline_id")},
+                "publication_id": None, "review_event_id": event.event_id}
+        return result
+
+    def requirement_progress(self, project_id, version_id):
+        from .requirement_revision_models import RequirementRevisionRecord
+        from .requirement_review_models import RequirementReviewEventRecord
+        from .acceptance_specification_models import AcceptanceRevisionRecord
+        with session_scope() as session:
+            revisions = session.scalars(select(RequirementRevisionRecord).where(
+                RequirementRevisionRecord.project_id == project_id, RequirementRevisionRecord.version_id == version_id)
+                .order_by(RequirementRevisionRecord.sequence.desc())).all()
+            latest = {}
+            for revision in revisions:
+                latest.setdefault(revision.us_id, revision)
+            statuses = []
+            for revision in latest.values():
+                events = session.scalars(select(RequirementReviewEventRecord).where(
+                    RequirementReviewEventRecord.revision_id == revision.revision_id).order_by(
+                        RequirementReviewEventRecord.recorded_at, RequirementReviewEventRecord.event_id)).all()
+                if any(snapshot_digest(event.payload) != event.content_hash for event in events):
+                    raise VersionDeliveryIntegrityError("Requirement progress integrity failed")
+                status = "requirement_review_required"
+                if events and events[-1].kind == "confirmed":
+                    valid = True
+                    for revision_id in events[-1].payload["approvals"].values():
+                        approved = session.get(AcceptanceRevisionRecord, revision_id)
+                        head = session.scalar(select(AcceptanceRevisionRecord).where(
+                            AcceptanceRevisionRecord.ac_id == approved.ac_id).order_by(AcceptanceRevisionRecord.sequence.desc()).limit(1)) if approved else None
+                        valid = valid and head is not None and head.revision_id == revision_id and head.status == "approved"
+                    status = "confirmed" if valid else "requirement_approval_invalidated"
+                elif events and events[-1].kind == "evaluated":
+                    status = "requirement_clarification_required" if any(q["blocking"] for q in events[-1].payload["assessment"]["questions"]) else "requirement_confirmation_required"
+                elif events and events[-1].kind == "failed":
+                    status = "requirement_review_failed"
+                elif events and events[-1].kind == "reserved":
+                    status = "requirement_review_pending"
+                statuses.append(status)
+            return statuses
 
     def read(self, project_id, version_id):
         with session_scope() as session:

@@ -5,6 +5,18 @@ from .tool_models import ToolDefinition
 
 def core_tool_definitions() -> list[ToolDefinition]:
     return [
+        ToolDefinition(tool_id="quality.requirement.evaluate", label="Review Iteration Requirement", tool_kind="quality",
+            scope="central", risk_level="high", confirmation_mode="user_confirm",
+            description="One real model assessment of an exact requirement revision with pinned image evidence and model. Preview inputs and obtain explicit source-egress confirmation first. Questions and acceptance criteria are proposals, never approval. Requires project_id, version_id, revision_id, input_digest, model_digest.",
+            required_context=["project_id", "version_id", "revision_id", "input_digest", "model_digest"], produced_objects=["RequirementReview"]),
+        ToolDefinition(tool_id="quality.requirement.confirm", label="Confirm Reviewed Requirement", tool_kind="governance",
+            scope="central", risk_level="high", confirmation_mode="user_confirm",
+            description="Independent human confirmation of the exact current unblocked requirement evaluation, after the same reviewer has approved each projected source AC through quality.acceptance_specification.review. Does not publish the project image, generate tests or release. Never synthesize confirmed_by_user.",
+            required_context=["project_id", "version_id", "revision_id", "evaluation_id", "review_digest", "reason"], produced_objects=["RequirementConfirmation"]),
+        ToolDefinition(tool_id="query.quality.requirement_review", label="Read Requirement Review", tool_kind="query",
+            scope="central", risk_level="low", confirmation_mode="none",
+            description="Read actual requirement review status for explicit project_id, version_id and revision_id; never infer approval from chat history.",
+            required_context=["project_id", "version_id", "revision_id"], produced_objects=["RequirementReview"]),
         ToolDefinition(tool_id="quality.requirement.revise", label="Save Iteration Requirement Draft", tool_kind="version",
             scope="central", risk_level="medium", confirmation_mode="none",
             description="Append an unapproved requirement revision in an explicitly selected image-bound Version. Input project_id, version_id, image_revision_id, image_artifact_hash, title, text; optional clarification_answers=[{question,answer}]. Editing requires us_id AND expected_revision_id; retain earlier answers or correct them explicitly. This is intake only, NOT model evaluation, requirement confirmation, image publication or test generation. Never guess a Version or image.",

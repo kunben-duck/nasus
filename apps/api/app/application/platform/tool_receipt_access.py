@@ -22,7 +22,8 @@ RESOURCE_RECEIPT_TOOLS = RUN_PLAN_RECEIPT_TOOLS | RUN_PLAN_BUILD_RECEIPT_TOOLS |
 
 def require_receipt_access(resources, invocation):
     required = (invocation.tool_id in RESOURCE_RECEIPT_TOOLS or invocation.tool_id in HISTORY_TOOLS
-        or invocation.tool_id in {"quality.requirement.revise", "query.quality.requirements"}
+        or invocation.tool_id in {"quality.requirement.revise", "query.quality.requirements",
+            "quality.requirement.evaluate", "quality.requirement.confirm", "query.quality.requirement_review"}
         or invocation.tool_id == "version.create" and bool(invocation.input_payload.get("image_binding")))
     applies = getattr(resources, "applies", None)
     if (resources is None or callable(applies) and not applies(invocation)) and required:

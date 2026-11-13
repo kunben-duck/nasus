@@ -1088,6 +1088,15 @@ class RuntimeAssembly:
         from .infrastructure.persistence.requirement_revision_repository import RequirementRevisionRepository
         self.requirement_revisions = RequirementRevisionApplicationService(RequirementRevisionRepository(),
             self.version_delivery, self.source_access)
+        from .application.quality_loop.requirement_reviews import RequirementReviewApplicationService
+        from .infrastructure.persistence.requirement_review_repository import RequirementReviewRepository
+        from .infrastructure.persistence.requirement_image_projection import RequirementImageProjection
+        from .infrastructure.llm.requirement_review_model import RequirementReviewModel
+        self.requirement_reviews = RequirementReviewApplicationService(RequirementReviewRepository(
+            RequirementImageProjection(self.image_revisions, self.source_ingestion.snapshots, image_artifacts, image_repository)),
+            self.requirement_revisions, self.image_revisions,
+            RequirementReviewModel(self.llm, self.get_settings, self.model_configuration.get_custom_model_api_key),
+            self.acceptance_specifications)
         self.project_versions = ProjectVersionApplicationService(
             self.project_version_workspace,
             self.system_image_app,
@@ -1247,7 +1256,7 @@ class RuntimeAssembly:
         self.source_refresh_receipt_access = SourceRefreshReceiptAccess(self.source_access)
         self.tool_receipt_access = ToolReceiptAccess(ConversationHistoryReceiptAccess(self.conversation_memory),
             VersionDeliveryReceiptAccess(self.version_delivery),
-            RequirementRevisionReceiptAccess(self.version_delivery),
+            RequirementRevisionReceiptAccess(self.version_delivery, self.requirement_reviews),
             self.source_refresh_receipt_access, RunPlanReceiptAccess(self.run_plans),
             RunPlanBuildReceiptAccess(self.run_plan_builds), RunPlanObservationReceiptAccess(self.run_plan_observation_records),
             RunPlanEnvironmentReceiptAccess(self.run_plan_environments),
@@ -1362,6 +1371,11 @@ class RuntimeAssembly:
             self.tool_handler_registry.register(history_tool, ConversationHistoryToolHandler(
                 self.conversation_memory, self.platform_events, self.agent_replies))
         from .application.platform.tool_handlers.requirement_revisions import RequirementRevisionToolHandler
+        from .application.platform.tool_handlers.requirement_reviews import RequirementReviewToolHandler
+        from .application.quality_loop.requirement_review_models import REVIEW_TOOLS
+        for review_tool in REVIEW_TOOLS:
+            self.tool_handler_registry.register(review_tool, RequirementReviewToolHandler(
+                self.requirement_reviews, self.platform_events, self.project_access))
         for requirement_tool in ("quality.requirement.revise", "query.quality.requirements"):
             self.tool_handler_registry.register(requirement_tool, RequirementRevisionToolHandler(
                 self.requirement_revisions, self.platform_events, self.project_access))
@@ -1491,6 +1505,10 @@ class RuntimeAssembly:
             conversations=self.conversation_management,
         )
         from .application.agent.delivery_dialogue import GuidedDeliveryConversation
+        from .application.agent.requirement_dialogue import GuidedRequirementConversation
+        self.conversation_messages.guided_requirement = GuidedRequirementConversation(
+            self.agent_application_ports.conversation_runtime, self.requirement_revisions,
+            self.requirement_reviews, self.version_delivery, self.project_workspace)
         self.conversation_messages.guided_delivery = GuidedDeliveryConversation(
             runtime=self.agent_application_ports.conversation_runtime,
             projects=self.project_workspace, snapshots=self.system_image_app.snapshots,

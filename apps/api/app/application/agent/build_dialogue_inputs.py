@@ -142,8 +142,8 @@ class BuildIntakeExtractor:
             "project_name": r"(?:项目(?:名(?:称)?)?(?:叫|为|是|[：:])|名字(?:叫|为|是|[：:])|(?:project(?: name)?\s*(?:is|:|called|named)))\s*[\"“]?([^\n，,。\"”]+)",
             "code": r"(?:代码(?:路径|仓库|地址)?|仓库(?:地址)?|(?:git|code)(?:\s+(?:url|path|repository))?)\s*[：:=]?\s*((?:https?://|git@|/|file://)[^\s，,；;。]+)",
             "code_ref": r"(?:tracked_ref|分支|提交(?:SHA)?|commit|branch)\s*[：:=]?\s*([^\s，,；;。]+)",
-            "requirements": r"(?:需求(?:文档)?(?:地址|路径)?|US\s*(?:docs?|文档)(?:\s*URI)?|requirements?)\s*[：:=]?\s*((?:https?://|/|file://|upload://|s3://|local-object://)[^\s，,；;。]+)",
-            "tests": r"(?:测试(?:资产|用例)(?:地址|路径)?|test\s*(?:assets?|cases?)(?:\s*URI)?)\s*[：:=]?\s*((?:https?://|/|file://|upload://|s3://|local-object://)[^\s，,；;。]+)",
+            "requirements": r"(?:需求(?:文档)?(?:地址|路径)?|US\s*(?:docs?|文档)(?:\s*URI)?|requirements?)\s*[：:=]?\s*((?:https?://|/|file://|upload://|s3://|minio://|object://|local-object://)[^\s，,；;。]+)",
+            "tests": r"(?:测试(?:资产|用例)(?:地址|路径)?|test\s*(?:assets?|cases?)(?:\s*URI)?)\s*[：:=]?\s*((?:https?://|/|file://|upload://|s3://|minio://|object://|local-object://)[^\s，,；;。]+)",
         }
         for key, pattern in patterns.items():
             match = re.search(pattern, text, re.I)

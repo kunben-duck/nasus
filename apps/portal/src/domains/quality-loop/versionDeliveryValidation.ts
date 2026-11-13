@@ -1,8 +1,8 @@
 import type { VersionDelivery, DeliveryImagePin, IterationImageBinding } from './types/delivery'
 import { deliveryHash, deliveryId } from './iterationCreation'
 
-function validPin(pin: DeliveryImagePin | null) {
-  return !!pin && deliveryId(pin.publication_id) && deliveryId(pin.baseline_id)
+function validPin(pin: DeliveryImagePin | null, working = false) {
+  return !!pin && (deliveryId(pin.publication_id) || (working && pin.publication_id === null && deliveryId(pin.review_event_id))) && deliveryId(pin.baseline_id)
     && deliveryId(pin.image_revision_id) && deliveryHash(pin.image_artifact_hash)
     && deliveryId(pin.manifest_id) && deliveryHash(pin.manifest_hash) && Number.isSafeInteger(pin.sequence) && pin.sequence > 0
     && pin.quality_generation_authorized === false && pin.release_authorized === false
@@ -10,10 +10,10 @@ function validPin(pin: DeliveryImagePin | null) {
 
 export function verifyVersionDelivery(value: VersionDelivery, projectId: string, versionId: string) {
   if (value.project_id !== projectId || value.version_id !== versionId || typeof value.name !== 'string'
-      || typeof value.enabled !== 'boolean' || value.stage !== (value.enabled ? 'image_pinned' : 'legacy')
+      || typeof value.enabled !== 'boolean' || (value.enabled ? !['image_pinned', 'requirement_review', 'requirements_confirmed'].includes(value.stage) : value.stage !== 'legacy')
       || !Array.isArray(value.code_revisions) || !Array.isArray(value.blockers)
       || !Array.isArray(value.pending_confirmations) || !Array.isArray(value.available_actions)
-      || (value.enabled && (!validPin(value.baseline) || !validPin(value.iteration_image)))
+      || (value.enabled && (!validPin(value.baseline) || !validPin(value.iteration_image, true)))
       || (!value.enabled && (value.baseline !== null || value.iteration_image !== null))) throw new Error('Iteration delivery scope mismatch')
   if ((value.enabled && value.code_revisions.length === 0)
       || value.code_revisions.some((item) => !deliveryId(item.binding_id) || !deliveryId(item.source_id)

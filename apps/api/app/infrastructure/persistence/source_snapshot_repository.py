@@ -151,7 +151,7 @@ class SourceSnapshotRepository:
             return self.freeze_members(session, project_id, members, captured_at=captured_at)
 
     def freeze_members(self, session: Session, project_id: str, members: Sequence[SourceManifestMember], *,
-                       captured_at: str) -> CapturedSourceManifest:
+                       captured_at: str, advance_head: bool = True) -> CapturedSourceManifest:
         self._lock(session, project_id)
         members = tuple(sorted(members, key=lambda item: item.binding_id))
         if not members or len({item.binding_id for item in members}) != len(members):
@@ -164,7 +164,8 @@ class SourceSnapshotRepository:
             frozen = self._manifest(session, existing)
             if frozen.members != members:
                 raise ValueError("source manifest digest differs from its members")
-            self._set_head(session, project_id, existing.manifest_id)
+            if advance_head:
+                self._set_head(session, project_id, existing.manifest_id)
             return frozen
         row = SourceManifestRecord(
             manifest_id=str(uuid4()), project_id=project_id, content_hash=digest, captured_at=captured_at,
@@ -177,7 +178,8 @@ class SourceSnapshotRepository:
         self._event(session, "manifest.captured", project_id, row.manifest_id, captured_at, {
             "manifest_id": row.manifest_id, "content_hash": digest,
         })
-        self._set_head(session, project_id, row.manifest_id)
+        if advance_head:
+            self._set_head(session, project_id, row.manifest_id)
         return CapturedSourceManifest(row.manifest_id, project_id, digest, captured_at, members)
 
     def latest_manifest(self, project_id: str) -> CapturedSourceManifest | None:

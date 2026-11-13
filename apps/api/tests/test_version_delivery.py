@@ -79,7 +79,7 @@ def test_bound_read_is_historical_and_does_not_claim_m2(service):
     application, state = service
     _, view = application.create("project", command())
     assert view.stage == "image_pinned" and view.baseline == view.iteration_image == state.pin
-    assert view.blockers == ["delivery_m2_not_implemented"] and view.pending_confirmations == []
+    assert view.blockers == ["requirement_input_required"] and view.pending_confirmations == []
     assert view.available_actions == ["view_pinned_image"]
     assert state.current_calls == [True]
     assert application.read("project", "ver") == view

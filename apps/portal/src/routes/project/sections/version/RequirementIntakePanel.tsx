@@ -5,6 +5,7 @@ import { requirementAttemptKey, requirementRevisionsApi, restoreRequirementAttem
 import type { ClarificationAnswer, RequirementAttempt, RequirementRevision } from '../../../../domains/quality-loop/requirementRevisions'
 import type { DeliveryImagePin } from '../../../../domains/quality-loop/types/delivery'
 import { useI18n } from '../../../../shared/i18n/I18nProvider'
+import { RequirementReviewPanel } from './RequirementReviewPanel'
 
 type Props = { projectId: string; versionId: string; image: DeliveryImagePin }
 
@@ -67,7 +68,7 @@ function RequirementIntake({ projectId, versionId, image, actorId }: Props & { a
   return <section className="delivery-panel" data-testid="requirement-intake" aria-label={t('Iteration requirements')}>
     <div className="delivery-toolbar"><h2>{t('Iteration requirements')}</h2>
       <button type="button" className="small-btn" disabled={query.isFetching} onClick={() => void query.refetch()}>{t('Reload requirements')}</button></div>
-    <p className="delivery-notice">{t('Draft intake only. Semantic review, source projection and independent confirmation are still required before formal test generation.')}</p>
+    <p className="delivery-notice">{t('Save a requirement, review it with the model, answer clarification questions, then request independent confirmation.')}</p>
     {query.isFetching && <p role="status">{t('Verifying requirement access...')}</p>}
     {query.isError && <p role="alert">{t('Requirements could not be verified. Previous content is hidden.')}</p>}
     {page && <>
@@ -81,6 +82,7 @@ function RequirementIntake({ projectId, versionId, image, actorId }: Props & { a
           {!historyId && <button type="button" className="small-btn" disabled={!!attempt || write.isPending} onClick={() => edit(item)}>{t('Revise requirement')}</button>}
           <button type="button" className="small-btn" onClick={() => { setHistoryId(item.us_id); setOffset(0) }}>{t('Revision history')}</button>
         </div>
+        <RequirementReviewPanel revision={item} actorId={actorId} />
       </article>)}
       {!page.items.length && <p>{t('No requirement drafts in this iteration yet.')}</p>}
       <div className="delivery-links">

@@ -74,7 +74,7 @@ def test_legacy_opt_in_atomic_version_and_read_contract(publication):
     assert result["baseline"]["quality_generation_authorized"] is False
     assert result["baseline"]["release_authorized"] is False
     assert result["stage"] == "image_pinned" and result["enabled"] is True
-    assert result["blockers"] == ["delivery_m2_not_implemented"] and result["pending_confirmations"] == []
+    assert result["blockers"] == ["requirement_input_required"] and result["pending_confirmations"] == []
     assert result["available_actions"] == ["view_pinned_image"] and len(result["code_revisions"]) == 1
     assert result["code_revisions"][0]["commit_sha"] is None
     assert create(v, head, key=key).json() == version

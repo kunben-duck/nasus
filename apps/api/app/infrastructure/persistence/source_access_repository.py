@@ -111,11 +111,12 @@ class SourceAccessRepository:
     def set_policy(
         self, project_id: str, binding_id: str, rule: SourceAccessRule, *,
         expected_epoch: int, changed_by: str, invocation_id: str,
+        session=None,
     ) -> int:
         """Internal persistence port, to be called by a governed application command."""
         if type(expected_epoch) is not int or expected_epoch < 0 or not changed_by or not invocation_id:
             raise ValueError("policy update needs an epoch, actor and invocation")
-        with session_scope() as session:
+        with nullcontext(session) if session is not None else session_scope() as session:
             session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {
                 "key": f"nasus:source-access:{project_id}",
             })
