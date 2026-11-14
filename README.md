@@ -165,6 +165,10 @@ workflow worker、API 和 Portal。运行日志位于 `.nasus/dev/logs/`。
 单独调试 API 时使用 `npm run dev:api`，该命令同样加载统一开发环境并
 连接 PostgreSQL；不支持绕过 migration 继续写入历史 SQLite 状态文件。
 
+使用 Podman 替代 Docker 运行外部组件时，见 [Podman 本地开发启动指南](./docs/design/backend/podman-development.md)。
+该指南采用应用本机分终端启动；现有 `dev:up` / `dev:foreground` 仍依赖 Docker，不能直接套用。
+Podman 路径尚未完成实机启动验收，具体限制和验证步骤见指南。
+
 ### 使用 exweb 试用
 
 在 `npm run dev:status` 确认 `database_schema: current` 后，打开

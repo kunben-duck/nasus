@@ -98,6 +98,7 @@ Nasus 的产品一级模块当前收敛为 3 个：
 - [后端 API 与事件契约](./design/backend/api-and-events.md)
 - [后端执行与治理](./design/backend/execution-governance.md)
 - [后端运维与测试基线](./design/backend/ops-and-test-baseline.md)
+- [Podman 本地开发启动指南](./design/backend/podman-development.md)
 - [备份与恢复运行手册](./design/backend/backup-and-recovery-runbook.md)
 - [端到端数据流示例](./design/backend/end-to-end-flow-examples.md)
 
