@@ -28,8 +28,9 @@ class ScriptReviewArtifactPort(Protocol):
 
 class AutomationScriptReviewApplicationService:
     def __init__(self, scripts: ScriptDraftReadPort, authorization, repository: ScriptReviewRepositoryPort,
-                 artifacts: ScriptReviewArtifactPort):
+                 artifacts: ScriptReviewArtifactPort, *, independent):
         self.scripts, self.authorization, self.repository, self.artifacts = scripts, authorization, repository, artifacts
+        self.independent = independent
 
     def _draft(self, request, *, current=False):
         value = self.scripts.read(request.project_id, request.script_revision_id)
@@ -81,12 +82,14 @@ class AutomationScriptReviewApplicationService:
         access = self.authorization.scope(request.project_id)
         draft = self._draft(request)
         history = self._history(request.project_id, request.script_revision_id, draft)
+        can_review = (access.effective_project_role in {"qa_lead", "project_admin", "platform_admin"}
+            and self.independent.script(request.project_id, draft, access.actor_id))
         self.authorization.require_current(access)
         return {"project_id": request.project_id, "script_revision_id": request.script_revision_id,
             "script_artifact_hash": request.script_artifact_hash, "script_pin": self._pin(draft),
             "head": history[-1] if history else None, "history": [value["revision"] for value in history],
             "input_current": draft["current_use"]["input_current"],
-            "can_review": access.effective_project_role in {"qa_lead", "project_admin", "platform_admin"},
+            "can_review": can_review,
             "execution_authorized": False}
 
     def review(self, request, *, invocation_id, recorded_at):
@@ -103,6 +106,8 @@ class AutomationScriptReviewApplicationService:
             require_access()
             return prior
         draft = self._draft(request, current=request.decision == "review")
+        if request.decision == "review":
+            self.independent.require(self.independent.script(request.project_id, draft, access.actor_id))
         history = self._history(request.project_id, request.script_revision_id, draft)
         previous = history[-1]["revision"]["revision_id"] if history else None
         if previous != request.expected_previous_revision_id:
@@ -118,6 +123,8 @@ class AutomationScriptReviewApplicationService:
 
         def current():
             fresh = self._draft(request, current=request.decision == "review")
+            if request.decision == "review":
+                self.independent.require(self.independent.script(request.project_id, fresh, access.actor_id))
             if self._pin(fresh) != payload["script_pin"]:
                 raise ScriptReviewIntegrityError("script derivation changed before review commit")
             self._history(request.project_id, request.script_revision_id, fresh)
@@ -153,6 +160,8 @@ class AutomationScriptReviewApplicationService:
             raise ScriptReviewIntegrityError("script review history missing its selected revision")
         current = (history[-1]["revision"]["revision_id"] == revision_id
             and value["revision"]["status"] == "reviewed" and draft["current_use"]["input_current"])
+        if current:
+            current = self.independent.script(project_id, draft, value["revision"]["authority_actor"])
         self.authorization.require_current(access)
         return {**value, "historical_not_live": True, "current_use": {"review_current": current,
             "review_complete": bool(current and value["assessment"] and value["assessment"]["review_complete"]),

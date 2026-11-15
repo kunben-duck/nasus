@@ -26,10 +26,16 @@ def validate_scope_contract(contract, context):
     ids = {item["object_id"] for item in constraints}
     if not ids or len(ids) != len(constraints):
         raise ValueError("a scope requires a complete, unique requirement denominator")
-    if not context.get("publication_pin") or any(
+    iteration = context.get("iteration_pin")
+    if iteration and (context.get("policy_version") != "nasus.test-design-context.v6"
+            or any(iteration.get(key) != context.get(key) for key in ("project_id", "image_revision_id", "image_artifact_hash"))
+            or not iteration.get("confirmation_id") or not iteration.get("approval_ids")
+            or not set(iteration["approval_ids"]).issubset(ids)):
+        raise ValueError("a scope requires exact iteration confirmation ancestry")
+    if not (context.get("publication_pin") or iteration) or any(
         item.get("oracle") is None or item["authority"].get("status") != "approved" for item in constraints
     ):
-        raise ValueError("a scope requires published inputs and independently approved oracles")
+        raise ValueError("a scope requires published or confirmed iteration inputs and independently approved oracles")
     examples = contract["examples"]
     if len(examples) != len(ids) or {item["constraint_id"] for item in examples} != ids:
         raise ValueError("positive and negative examples must account for every AC and business rule")

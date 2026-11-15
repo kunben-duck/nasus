@@ -176,7 +176,8 @@ def review_service():
         def require_current(self, access):
             if self.revoked: raise SourceAccessDenied("explicit access withdrawal")
     auth, repo, artifacts = Authorization(), Repository(), Artifacts()
-    app = AutomationScriptReviewApplicationService(SimpleNamespace(read=lambda *args: deepcopy(draft)), auth, repo, artifacts)
+    app = AutomationScriptReviewApplicationService(SimpleNamespace(read=lambda *args: deepcopy(draft)), auth, repo, artifacts,
+        independent=SimpleNamespace(script=lambda *args: True, require=lambda allowed: None))
     return app, draft, request, auth, repo, artifacts
 
 

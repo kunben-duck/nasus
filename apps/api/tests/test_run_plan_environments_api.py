@@ -139,3 +139,24 @@ def test_live_source_or_role_revocation_during_metadata_read_cannot_complete_ins
     assert updates and updates[-1].patch["status"] == "failed"
     assert all(event.patch["status"] != "completed" for event in updates)
     assert all(event.payload["tool_invocation"]["result"] is None for event in updates)
+
+
+def test_registered_environment_options_are_private_read_only_and_reviewer_scoped(configured_environment):
+    v, _, commands, registry, _ = configured_environment
+    url = f"/v1/projects/{v['project_id']}/quality/target-environments"
+    value = v["client"].get(url, headers=v["headers"])
+    assert value.status_code == 200, value.text
+    assert value.headers["cache-control"] == "private, no-store"
+    assert value.json()["execution_authorized"] is False and value.json()["target_verified"] is False
+    assert len(value.json()["options"]) == 1 and not commands.calls
+    assert not any(key in value.text for key in ("container_id", "network_id", "owner"))
+    member = f"/v1/projects/{v['project_id']}/members/{v['member']['id']}"
+    assert v["client"].put(member, headers=v["headers"], json={"role": "viewer"}).status_code == 200
+    denied = v["client"].get(url, headers=v["member_headers"])
+    assert denied.status_code == 403 and "inventory_hash" not in denied.text, denied.text
+    assert denied.headers["cache-control"] == "private, no-store"
+    registry.unlink()
+    failed = v["client"].get(url, headers=v["headers"])
+    assert failed.status_code == 503 and "container_id" not in failed.text
+    assert failed.headers["cache-control"] == "private, no-store"
+    assert not commands.calls

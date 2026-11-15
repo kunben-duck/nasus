@@ -57,6 +57,11 @@ for (const [theme, language, scriptProtocol] of [['light', 'en', 'v1'], ['dark',
       const sources: RunPlanSources = { project_id: v.projectId, image_revision_id: image.revision.image_revision_id,
         image_artifact_hash: image.revision.artifact_hash, manifest_id: image.revision.manifest_id, manifest_hash: image.revision.manifest_hash, source_members: image.items }
       const plans = await installRunPlanProtocol(page, draft, review, sources, () => scripts.reviews.at(-1)?.revision.status === 'reviewed')
+      await page.route(`**/v1/projects/${v.projectId}/quality/target-environments`, (route) => route.fulfill({ json: {
+        schema: 'nasus.target-environment-options.v1', project_id: v.projectId, target_verified: false, execution_authorized: false,
+        options: [{ environment_id: 'declaration-only', profile: 'nasus.java21-pg-redis.v1', kind: 'local',
+          base_url: 'http://127.0.0.1:8080', inventory_hash: 'sha256:' + 'b'.repeat(64) }],
+      } }))
       expect((await request.patch(`${analysisApi}/v1/settings`, { headers: v.owner.headers, data: { theme, language } })).ok()).toBeTruthy()
       await page.addInitScript(({ token, locale }) => { localStorage.setItem('nasus_api_token', token); localStorage.setItem('nasus.locale', locale) }, { token: v.owner.token, locale: language })
       const errors: string[] = []; page.on('pageerror', (error) => errors.push(error.message))
@@ -79,10 +84,11 @@ for (const [theme, language, scriptProtocol] of [['light', 'en', 'v1'], ['dark',
       const h = 'sha256:' + 'b'.repeat(64)
       for (const [name, value] of [['Build artifact name', buildDeclarationSpecimen.name], ['Build artifact SHA-256', buildDeclarationSpecimen.artifact], ['Build definition SHA-256', buildDeclarationSpecimen.definition],
         ['Target runtime', 'Java'], ['Runtime version', '21'], ['Build tool', 'Maven'], ['Build tool version', '3.9.11'],
-        ['Target environment ID', 'declaration-only'], ['Target HTTP origin', 'http://127.0.0.1:8080'], ['Environment inventory SHA-256', h],
         ['Environment isolation declaration', 'Declaration only; no actual environment'], ['Execution plan preparation reason', 'Explicit UI protocol specimen']] as const)
         await panel.getByRole('textbox', { name: label(name), exact: true }).fill(value)
-      await panel.getByRole('combobox', { name: label('Target environment kind'), exact: true }).selectOption('local')
+      await expect(panel.getByRole('textbox', { name: label('Target HTTP origin'), exact: true })).toHaveCount(0)
+      await expect(panel.getByRole('textbox', { name: label('Target environment ID'), exact: true })).toHaveCount(0)
+      await panel.getByRole('combobox', { name: label('Registered target environment'), exact: true }).selectOption('declaration-only')
       const cases = panel.locator('fieldset details')
       const fixtureDefinition = await fixtureDefinitionSpecimen(prepared.cases[0])
       for (let i = 0; i < await cases.count(); i++) {

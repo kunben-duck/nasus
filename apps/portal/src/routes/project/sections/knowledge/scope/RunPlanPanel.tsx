@@ -34,7 +34,10 @@ function PlanPanel({ draft, review, current, onFailure, actorId }: Props & { act
           <li key={item.binding_id}><code>{item.binding_id}</code><code>{item.source_revision_id}</code></li>)}</ul>
       </details>}
       {!state.stored.attempt && !state.stored.invalid && state.source && state.canPrepare && <>
-        <RunPlanDeclarations draft={draft} fields={state.fields} edit={state.edit} disabled={state.busy} />
+        {state.environments.isFetching && <p role="status">{t('Loading registered target environments...')}</p>}
+        {state.environments.isError && <p role="alert">{t('Target environment registry is unavailable. Reload before preparing a plan.')}</p>}
+        {state.environmentOptions?.options.length === 0 && <p role="status">{t('No isolated target environment is registered for this project. Ask an operator to register one.')}</p>}
+        <RunPlanDeclarations draft={draft} fields={state.fields} edit={state.edit} disabled={state.busy} environments={state.environmentOptions} />
         <button type="button" className="small-btn" disabled={!state.mayPreview} onClick={state.prepare}>{t('Preview exact execution plan')}</button>
       </>}
       {state.preview.isError && <p role="alert">{t('Plan preview was rejected. Check every target declaration and reload the original inputs before confirming.')}</p>}

@@ -16,6 +16,7 @@ export function verifyPartitions(bundle: TestDesignContext, verifyPart: (part: T
     if (!/^sha256:[0-9a-f]{64}$/.test(id) || !partition || partition.rule_inheritance !== 'all_source_business_rules'
         || !same(partition.global_constraint_ids, globals) || !same(context.retrieval, bundle.retrieval)
         || !same(context.publication_pin, bundle.publication_pin)
+        || !same(context.iteration_pin, bundle.iteration_pin)
         || context.source_manifest_id !== bundle.source_manifest_id || context.source_manifest_hash !== bundle.source_manifest_hash
         || new Set(partition.target_object_ids).size !== partition.target_object_ids.length
         || partition.target_object_ids.some((target) => !targets.includes(target))

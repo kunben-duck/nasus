@@ -8,12 +8,13 @@ const root = (project: string) => `/v1/projects/${encodeURIComponent(project)}/s
 const digest = (value: string) => /^sha256:[0-9a-f]{64}$/.test(value)
 const sameScope = (a: ContextSelection, b: ContextSelection) => a.project_id === b.project_id && a.image_revision_id === b.image_revision_id && a.image_artifact_hash === b.image_artifact_hash
 const bindingsKey = (value: ContextRequest) => value.retrieval_bindings === undefined ? undefined : JSON.stringify(Object.entries(value.retrieval_bindings).sort(([a], [b]) => a.localeCompare(b)))
-const sameRequest = (a: ContextRequest, b: ContextRequest) => sameScope(a, b) && a.purpose === b.purpose && a.policy_revision === b.policy_revision && a.max_tokens === b.max_tokens && a.candidate_limit === b.candidate_limit && a.publication_id === b.publication_id && bindingsKey(a) === bindingsKey(b)
+const iterationKey = (value: ContextRequest) => value.iteration === undefined ? undefined : JSON.stringify(Object.entries(value.iteration).sort(([a], [b]) => a.localeCompare(b)))
+const sameRequest = (a: ContextRequest, b: ContextRequest) => sameScope(a, b) && a.purpose === b.purpose && a.policy_revision === b.policy_revision && a.max_tokens === b.max_tokens && a.candidate_limit === b.candidate_limit && a.publication_id === b.publication_id && bindingsKey(a) === bindingsKey(b) && iterationKey(a) === iterationKey(b)
 export class StaleContextPreview extends Error {}
 
 function verifyContext(context: TestDesignContext, selection: ContextRequest, child = false) {
   const indexed = selection.policy_revision === 'nasus.test-design-context.v5'
-  const partitioned = ['nasus.test-design-context.v2', 'nasus.test-design-context.v3', 'nasus.test-design-context.v4', 'nasus.test-design-context.v5'].includes(selection.policy_revision)
+  const partitioned = ['nasus.test-design-context.v2', 'nasus.test-design-context.v3', 'nasus.test-design-context.v4', 'nasus.test-design-context.v5', 'nasus.test-design-context.v6'].includes(selection.policy_revision)
   const expectedSchema = partitioned && !child ? 'nasus.context-bundle.v1' : 'nasus.context-pack.v1'
   if (!sameScope(context, selection) || context.schema_version !== expectedSchema || context.purpose !== 'test_design'
       || context.policy_version !== selection.policy_revision || !context.source_manifest_id || !digest(context.source_manifest_hash)
@@ -40,6 +41,17 @@ function verifyContext(context: TestDesignContext, selection: ContextRequest, ch
         || pin.quality_generation_authorized !== false || pin.release_authorized !== false
         || context.readiness.reason_codes.includes('image_not_published')) throw new Error('Context publication mismatch')
   } else if (pin !== undefined || selection.publication_id !== undefined) throw new Error('Legacy context cannot claim publication')
+  const iteration = context.iteration_pin
+  if (selection.policy_revision === 'nasus.test-design-context.v6') {
+    if (!selection.iteration || !iteration || !sameScope(iteration, selection)
+        || Object.entries(selection.iteration).some(([key, value]) => iteration[key as keyof typeof iteration] !== value)
+        || !digest(iteration.confirmation_hash) || !digest(iteration.requirement_hash) || !iteration.us_id
+        || iteration.manifest_id !== context.source_manifest_id || iteration.manifest_hash !== context.source_manifest_hash
+        || !iteration.approval_ids || !Object.keys(iteration.approval_ids).length || !iteration.code_revisions?.length
+        || !child && Object.keys(iteration.approval_ids).some((id) => !context.required_constraints.some((c) => c.object_id === id))
+        || context.required_constraints.some((c) => c.kind === 'acceptance_criterion' && iteration.approval_ids[c.object_id] !== c.authority.revision_id))
+      throw new Error('Context iteration confirmation mismatch')
+  } else if (iteration !== undefined || selection.iteration !== undefined) throw new Error('Legacy context cannot claim iteration authority')
   if (indexed) {
     const bindings = selection.retrieval_bindings
     const targets = context.required_constraints.filter((c) => c.kind === 'acceptance_criterion').map((c) => c.object_id)
@@ -71,7 +83,7 @@ function verifyContext(context: TestDesignContext, selection: ContextRequest, ch
 function verifyMetadata(item: ContextMetadata, selection: ContextSelection) {
   if (!sameScope(item, selection) || !item.context_id || !item.invocation_id || !item.actor_id || !item.recorded_at
       || !digest(item.input_digest) || !digest(item.artifact_hash) || !digest(item.content_hash)
-      || item.purpose !== 'test_design' || !['nasus.test-design-context.v1', 'nasus.test-design-context.v2', 'nasus.test-design-context.v3', 'nasus.test-design-context.v4', 'nasus.test-design-context.v5'].includes(item.policy_revision)
+      || item.purpose !== 'test_design' || !['nasus.test-design-context.v1', 'nasus.test-design-context.v2', 'nasus.test-design-context.v3', 'nasus.test-design-context.v4', 'nasus.test-design-context.v5', 'nasus.test-design-context.v6'].includes(item.policy_revision)
       || !['partial', 'blocked'].includes(item.readiness) || !Number.isInteger(item.mandatory_count)
       || item.mandatory_count < 0 || item.mandatory_count > (item.policy_revision === 'nasus.test-design-context.v1' ? 32 : 256)) throw new Error('Context metadata mismatch')
 }
@@ -83,6 +95,7 @@ export const contextPackApi = {
       max_tokens: String(selection.max_tokens), candidate_limit: String(selection.candidate_limit) })
     if (selection.publication_id) params.set('publication_id', selection.publication_id)
     if (selection.retrieval_bindings !== undefined) params.set('retrieval_bindings', JSON.stringify(selection.retrieval_bindings))
+    if (selection.iteration !== undefined) params.set('iteration', JSON.stringify(selection.iteration))
     const result = await request<ContextPreview>(`${root(selection.project_id)}/preview?${params}`, { signal, cache: 'no-store' })
     if (!sameRequest(result.request, selection) || !digest(result.input_digest)) throw new Error('Context preview mismatch')
     verifyContext(result.context, selection)
@@ -114,7 +127,7 @@ export const contextPackApi = {
         || value.derivation.historical_not_live !== true || value.derivation.input_digest !== value.metadata.input_digest
         || value.derivation.request.expected_input_digest !== value.metadata.input_digest || value.current_use.generation_authorized !== false
         || typeof value.current_use.stale !== 'boolean'
-        || (value.current_use.stale ? !['inputs_changed', 'current_mandatory_context_over_budget', 'published_image_head_changed', 'retrieval_model_configuration_changed', 'source_change_invalidated'].includes(value.current_use.reason)
+        || (value.current_use.stale ? !['inputs_changed', 'current_mandatory_context_over_budget', 'published_image_head_changed', 'retrieval_model_configuration_changed', 'source_change_invalidated', 'iteration_requirement_or_image_changed'].includes(value.current_use.reason)
           : value.current_use.reason !== 'draft_investigation_only')
         || (value.current_use.reason === 'source_change_invalidated'
           ? typeof value.current_use.invalidation_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.current_use.invalidation_id)

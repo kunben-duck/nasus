@@ -3,8 +3,16 @@ from typing import Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_serializer, model_validator
 
 from ...domain.system_image.context_pack import CONTEXT_POLICY
-from ...domain.system_image.context_partition import PARTITION_POLICY, RULE_AUTHORITY_POLICY, PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY, MAX_CONSTRAINTS
+from ...domain.system_image.context_partition import PARTITION_POLICY, RULE_AUTHORITY_POLICY, PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY, ITERATION_CONTEXT_POLICY, MAX_CONSTRAINTS
 from ...domain.system_image.context_authorities import CONTEXT_AUTHORITY_POLICY
+
+
+class IterationContextSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    version_id: StrictStr = Field(min_length=1, max_length=128)
+    requirement_revision_id: StrictStr = Field(min_length=1, max_length=128)
+    confirmation_id: StrictStr = Field(min_length=1, max_length=128)
+    confirmation_hash: StrictStr = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class ContextPreviewInput(BaseModel):
@@ -14,7 +22,8 @@ class ContextPreviewInput(BaseModel):
     image_artifact_hash: StrictStr = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     purpose: Literal["test_design"] = "test_design"
     # Omitted-policy commands and their historical hashes retain v1 semantics.
-    policy_revision: Literal[CONTEXT_POLICY, PARTITION_POLICY, RULE_AUTHORITY_POLICY, PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY] = CONTEXT_POLICY
+    policy_revision: Literal[CONTEXT_POLICY, PARTITION_POLICY, RULE_AUTHORITY_POLICY, PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY, ITERATION_CONTEXT_POLICY] = CONTEXT_POLICY
+    iteration: Optional[IterationContextSelection] = None
     publication_id: Optional[StrictStr] = Field(default=None, min_length=1, max_length=128)
     retrieval_bindings: Optional[dict[StrictStr, StrictStr]] = None
     max_tokens: StrictInt = Field(default=12000, ge=512, le=32768)
@@ -22,6 +31,8 @@ class ContextPreviewInput(BaseModel):
 
     @model_validator(mode="after")
     def publication_scope(self):
+        if (self.policy_revision == ITERATION_CONTEXT_POLICY) != (self.iteration is not None):
+            raise ValueError("Iteration context v6 requires an exact requirement confirmation")
         if (self.policy_revision in {PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY}) != (self.publication_id is not None):
             raise ValueError("Published context v4/v5 requires a publication_id")
         if (self.policy_revision == INDEXED_CONTEXT_POLICY) != (self.retrieval_bindings is not None):
@@ -38,6 +49,8 @@ class ContextPreviewInput(BaseModel):
             value.pop("publication_id", None)
         if self.policy_revision != INDEXED_CONTEXT_POLICY:
             value.pop("retrieval_bindings", None)
+        if self.policy_revision != ITERATION_CONTEXT_POLICY:
+            value.pop("iteration", None)
         return value
 
 

@@ -89,6 +89,14 @@ class RunPlanEnvironmentApplicationService:
             raise SourceAccessDenied("target inspection requires a current project reviewer")
         return access
 
+    def options(self, project_id):
+        access = self._access(project_id)
+        current = lambda: self.authorization.require_current(access)
+        options = self.environments.options(project_id, require_work=current)
+        current()
+        return {"schema": "nasus.target-environment-options.v1", "project_id": project_id,
+            "options": options, "target_verified": False, "execution_authorized": False}
+
     def _inputs(self, query, *, current):
         reader = getattr(self.bindings, "read_with_plan", None)
         if callable(reader):

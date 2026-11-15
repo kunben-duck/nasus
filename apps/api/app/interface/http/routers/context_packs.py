@@ -51,7 +51,8 @@ def preview_context(project_id: str, application: ContextPackApp, response: Resp
                     image_revision_id: str = Query(..., min_length=1, max_length=128),
                     image_artifact_hash: str = Query(..., pattern=r"^sha256:[0-9a-f]{64}$"),
                     purpose: Literal["test_design"] = Query("test_design"),
-                    policy_revision: Literal["nasus.test-design-context.v1", "nasus.test-design-context.v2", "nasus.test-design-context.v3", "nasus.test-design-context.v4", "nasus.test-design-context.v5"] = Query("nasus.test-design-context.v1"),
+                    policy_revision: Literal["nasus.test-design-context.v1", "nasus.test-design-context.v2", "nasus.test-design-context.v3", "nasus.test-design-context.v4", "nasus.test-design-context.v5", "nasus.test-design-context.v6"] = Query("nasus.test-design-context.v1"),
+                    iteration: Optional[str] = Query(None, max_length=1024),
                     publication_id: Optional[str] = Query(None, min_length=1, max_length=128),
                     retrieval_bindings: Optional[str] = Query(None, max_length=65536),
                     max_tokens: int = Query(12000, ge=512, le=32768), candidate_limit: int = Query(5, ge=1, le=10)):
@@ -60,6 +61,7 @@ def preview_context(project_id: str, application: ContextPackApp, response: Resp
         request = ContextPreviewInput(project_id=project_id, image_revision_id=image_revision_id,
             image_artifact_hash=image_artifact_hash, purpose=purpose, policy_revision=policy_revision,
             publication_id=publication_id, max_tokens=max_tokens, candidate_limit=candidate_limit,
+            iteration=json.loads(iteration, object_pairs_hook=unique_bindings) if iteration is not None else None,
             retrieval_bindings=json.loads(retrieval_bindings, object_pairs_hook=unique_bindings) if retrieval_bindings is not None else None)
     except (ValidationError, ValueError) as exc:
         raise error_response("invalid_context_request", "Context policy, publication and retrieval selections do not match.", 422) from exc

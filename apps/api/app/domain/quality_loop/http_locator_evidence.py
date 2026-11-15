@@ -14,6 +14,8 @@ LOCATOR_FORMATS = {
     "nasus.frozen-http-route-inventory.v1": ("java.import-resolved-http-locators.v1", LOCATOR_SCHEMA, LOCATOR_POLICY),
     "nasus.frozen-http-route-inventory.v2": ("java.import-resolved-http-locators.v2",
         "nasus.run-plan-http-locators.v2", "nasus.http-locator-static-match.v2"),
+    "nasus.frozen-http-route-inventory.v3": ("python.django-ninja-http-locators.v1",
+        "nasus.run-plan-http-locators.v3", "nasus.http-locator-static-match.v3"),
 }
 HTTP_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD", "TRACE", "ANY"})
 LOCATOR_STATES = ("static_match", "ambiguous", "unresolved", "not_found", "unsupported")
@@ -90,7 +92,8 @@ def _uncertainty_may_match(path, method, scope):
 def compile_http_locator_evidence(plan, inventory):
     try:
         rule, schema, policy = LOCATOR_FORMATS[inventory["schema"]]
-        scoped = inventory["schema"] == "nasus.frozen-http-route-inventory.v2"
+        django = inventory["schema"] == "nasus.frozen-http-route-inventory.v3"
+        scoped = django or inventory["schema"] == "nasus.frozen-http-route-inventory.v2"
         if len(json.dumps(inventory, ensure_ascii=False, allow_nan=False).encode()) > MAX_LOCATOR_REPORT_BYTES:
             raise RunPlanInvalid("complete locator evidence exceeds its bound; never truncate original actions")
         if (plan["plan_digest"] != acceptance_digest({key: value for key, value in plan.items() if key != "plan_digest"})
@@ -125,6 +128,10 @@ def compile_http_locator_evidence(plan, inventory):
                     raise RunPlanIntegrityError("locator route lacks parsed original source evidence")
                 if scoped and route["status"] == "unresolved":
                     _uncertainty_scope(route)
+                    if django:
+                        prefix = route.get("unresolved_path_prefix")
+                        if prefix is not None and (_segments(prefix, template=True) is None or any(c in prefix for c in "{}?")):
+                            raise RunPlanIntegrityError("invalid Django unresolved mount prefix")
                 elif "unresolved_match_scope" in route:
                     raise RunPlanIntegrityError("locator scope cannot change a legacy or observed declaration")
                 routes.append({"binding_id": pin["binding_id"], "source_revision_id": pin["source_revision_id"],
@@ -142,9 +149,12 @@ def compile_http_locator_evidence(plan, inventory):
                     path = action["path"].partition("?")[0]
                     value.update(request_id=action["request_id"], method=action["method"], path=action["path"])
                     unknown = (_segments(path, template=False) is None
-                        or any(file["language"] == "java" and file["status"] != "parsed" for file in files))
+                        or any(file["language"] == ("python" if django else "java") and file["status"] != "parsed" for file in files))
                     for route in routes:
                         if route["status"] != "observed":
+                            prefix = route.get("unresolved_path_prefix") if django else None
+                            if prefix is not None and not (path == prefix or path.startswith(prefix.rstrip("/") + "/")):
+                                continue
                             if not scoped or _uncertainty_may_match(path, action["method"], route["unresolved_match_scope"]):
                                 unknown = True
                             continue

@@ -54,6 +54,16 @@ q=RunPlanLocatorQuery(project_id=p['project_id'],run_plan_id='original-plan',run
 print(json.dumps(dict(plan=p,receipt=RunPlanLocatorApplicationService._receipt(q,p,report),report=report)))`, JSON.stringify(input)], { cwd: repo, encoding: 'utf8' }))
 }
 function saved(v) { return { metadata: { project_id: v.plan.project_id, run_plan_id: 'original-plan', artifact_hash: 'sha256:' + 'a'.repeat(64) }, artifact: { plan: v.plan } } }
+function djangoSpecimen(overlap = false) {
+  return JSON.parse(execFileSync(path.join(repo, '.venv/bin/python'), ['-c', `
+import json,sys
+from apps.api.tests.test_django_http_locators import report,URLS,ARTICLES
+from apps.api.app.application.quality_loop.run_plan_locators import RunPlanLocatorApplicationService,RunPlanLocatorQuery
+urls=URLS.replace(b'"/auth"',b'"/api"') if sys.argv[1]=='true' else URLS
+r,p,_=report({'config/urls.py':urls,'apps/articles/api.py':ARTICLES})
+q=RunPlanLocatorQuery(project_id=p['project_id'],run_plan_id='original-plan',run_plan_artifact_hash='sha256:'+'a'*64)
+print(json.dumps(dict(plan=p,receipt=RunPlanLocatorApplicationService._receipt(q,p,r),report=r)))`, String(overlap)], { cwd: repo, encoding: 'utf8' }))
+}
 function view(v) { return structuredClone({ receipt: v.receipt, report: v.report }) }
 async function rehash(v) {
   const { inventory_hash: _i, ...inventory } = v.report.inventory
@@ -181,6 +191,25 @@ const corruptions = {
   'unauthorized extra metadata': (v) => v.report.token = 'private',
 }
 const base = specimen()
+const django = djangoSpecimen()
+test('Django Ninja cross-file frozen spans validate without claiming runtime dispatch', async () => {
+  for (const [v, status] of [[django, 'static_match'], [djangoSpecimen(true), 'unresolved']]) {
+    const result = await verify(view(v), saved(v))
+    assert.equal(result.report.schema, 'nasus.run-plan-http-locators.v3')
+    assert.equal(result.report.summary[status], result.report.summary.locator_count)
+    assert.equal(result.receipt.execution_authorized, false)
+  }
+})
+for (const [name, mutate] of Object.entries({
+  'foreign supporting file': (v) => v.report.inventory.sources[0].routes[0].supporting_spans[0].relative_path = 'foreign.py',
+  'foreign supporting hash': (v) => v.report.inventory.sources[0].routes[0].supporting_spans[0].source_file_hash = 'sha256:' + 'f'.repeat(64),
+  'wrong language provider': (v) => v.report.inventory.provider = 'tree-sitter',
+  'missing mount scope': (v) => delete v.report.inventory.sources[0].routes.find((r) => r.status === 'unresolved').unresolved_path_prefix,
+  'dynamic mount claimed disjoint': (v) => v.report.inventory.sources[0].routes.find((r) => r.status === 'unresolved').unresolved_path_prefix = '/{prefix}',
+})) test(`Django locator rejects rehashed ${name}`, async () => {
+  const value = view(django); mutate(value); await rehash(value)
+  await assert.rejects(verify(value, saved(django)))
+})
 for (const [name, mutate] of Object.entries(corruptions)) test(`rehashed locator corruption is rejected: ${name}`, async () => {
   const value = view(base); mutate(value); await rehash(value)
   await assert.rejects(verify(value, saved(base)))

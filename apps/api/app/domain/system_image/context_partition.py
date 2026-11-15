@@ -7,12 +7,13 @@ PARTITION_POLICY = "nasus.test-design-context.v2"
 RULE_AUTHORITY_POLICY = "nasus.test-design-context.v3"
 PUBLISHED_CONTEXT_POLICY = "nasus.test-design-context.v4"
 INDEXED_CONTEXT_POLICY = "nasus.test-design-context.v5"
+ITERATION_CONTEXT_POLICY = "nasus.test-design-context.v6"
 BUNDLE_SCHEMA = "nasus.context-bundle.v1"
 MAX_CONSTRAINTS = 256
 
 
 def partition_context(base, optional_facts, max_tokens):
-    if base.get("policy_version") not in {PARTITION_POLICY, RULE_AUTHORITY_POLICY, PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY} or base.get("purpose") != "test_design" or base.get("schema_version") != "nasus.context-pack.v1":
+    if base.get("policy_version") not in {PARTITION_POLICY, RULE_AUTHORITY_POLICY, PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY, ITERATION_CONTEXT_POLICY} or base.get("purpose") != "test_design" or base.get("schema_version") != "nasus.context-pack.v1":
         raise ContextPackIntegrityError("context partition policy mismatch")
     constraints = base["required_constraints"]
     ids = [item["object_id"] for item in constraints]

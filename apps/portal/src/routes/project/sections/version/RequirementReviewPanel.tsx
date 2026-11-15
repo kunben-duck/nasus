@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useI18n } from '../../../../shared/i18n/I18nProvider'
 import { type RequirementRevision } from '../../../../domains/quality-loop/requirementRevisions'
 import { requirementReviewsApi, type RequirementReviewPreview } from '../../../../domains/quality-loop/requirementReviews'
+import { RequirementTestDesignPanel } from './RequirementTestDesignPanel'
 
 export function RequirementReviewPanel({ revision, actorId }: { revision: RequirementRevision; actorId: string }) {
   const { locale } = useI18n(), client = useQueryClient(), zh = locale === 'zh'
@@ -94,6 +95,7 @@ export function RequirementReviewPanel({ revision, actorId }: { revision: Requir
             <button type="button" className="small-btn primary" disabled={busy || !reason.trim()} onClick={() => void run(confirm)}>
               {zh ? '批准以上验收条件并确认需求' : 'Approve these criteria and confirm requirement'}</button></>}
         </>}
+        <RequirementTestDesignPanel review={view} actorId={actorId} />
       </>}
       {busy && <p role="status">{zh ? '正在处理，请勿重复提交…' : 'Processing the original command...'}</p>}
       {error && <p role="alert">{error}</p>}

@@ -1,4 +1,11 @@
 export const zhCN = {
+  'Registered target environment': '受控执行环境',
+  'Select an isolated environment': '选择已注册的隔离环境',
+  'Registry selection is not health verification or permission to execute.': '已选择注册环境，尚未验证健康状态，也未授权执行。',
+  'Loading registered target environments...': '正在读取受控执行环境…',
+  'Target environment registry is unavailable. Reload before preparing a plan.': '无法核验环境注册表，请重新读取后再准备执行计划。',
+  'No isolated target environment is registered for this project. Ask an operator to register one.': '此项目尚未注册隔离执行环境，请联系运维人员配置。',
+  'Scope approval requires a current published or confirmed iteration context, with every selected AC and business rule approved.': '请使用有效的已发布画像或已确认的迭代上下文，并先批准其中全部验收条件和业务规则。',
   "Submit this iteration's requirement to start model review.": '请提交本次迭代的需求，再开始模型评审。',
   'Model review is required.': '需求尚未完成模型评审。',
   'Answer the blocking clarification questions.': '请补充评审提出的阻塞问题。',

@@ -79,6 +79,32 @@ def test_unconfigured_registry_never_discovers_developer_containers(monkeypatch,
         ConfiguredOwnedTargetEnvironments().inspect(spec.project_id, spec.environment_id, ARTIFACT, require_work=lambda: None)
 
 
+def test_options_are_project_scoped_and_do_not_probe_or_expose_private_container_ids(registry, spec):
+    calls = []
+    adapter = ConfiguredOwnedTargetEnvironments(command=lambda *args, **kwargs: calls.append(args))
+    options = adapter.options(spec.project_id, require_work=lambda: None)
+    assert options == [{"environment_id": spec.environment_id, "profile": spec.profile,
+        "kind": "local", "base_url": "http://127.0.0.1:8080", "inventory_hash": spec.digest}]
+    assert adapter.options("another-project", require_work=lambda: None) == []
+    assert not calls and spec.container_id not in str(options) and spec.owner not in str(options)
+    registry.chmod(0o644)
+    with pytest.raises(NativeEnvironmentInvalid):
+        adapter.options(spec.project_id, require_work=lambda: None)
+
+
+def test_unconfigured_options_are_empty_but_revocation_is_not_hidden(monkeypatch):
+    monkeypatch.delenv("NASUS_TARGET_ENVIRONMENT_REGISTRY", raising=False)
+    adapter = ConfiguredOwnedTargetEnvironments()
+    assert adapter.options("project", require_work=lambda: None) == []
+    calls = []
+    def current():
+        calls.append(1)
+        if len(calls) == 2:
+            raise PermissionError("revoked")
+    with pytest.raises(PermissionError, match="revoked"):
+        adapter.options("project", require_work=current)
+
+
 def test_operator_registry_change_during_inspection_is_not_accepted(registry, spec):
     commands = Commands(spec)
     def changed(_):

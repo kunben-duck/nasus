@@ -170,6 +170,76 @@ Django HTTP execution, M4 defect/fix/regression and M5 Version gate/promotion ar
 not delivered by M2. `verify:realworld-loop --phase full` must not report success
 until that full evidence chain exists.
 
+## M3 Integration Progress (2026-11-16)
+
+M3 is **in progress, not accepted**. The following foundation is implemented:
+
+- A confirmed requirement exposes `test_design_context_request` from the review
+  read model. The Version page uses this exact request under "Test design and
+  execution"; it does not infer the project latest image. In a requirement-scoped
+  conversation, `开始测试设计` prepares a separate confirmation, and
+  `确认准备测试上下文` saves the original context command. Neither step invokes a
+  model, approves cases, or executes tests. Unrelated questions remain ordinary
+  conversation turns.
+- Context policy `nasus.test-design-context.v6` pins `iteration.version_id`,
+  `requirement_revision_id`, `confirmation_id` and `confirmation_hash` together
+  with the exact working image. It retains all confirmed requirement criteria
+  and global business rules. It verifies independent confirmation, current
+  criterion approvals, current working image, immutable code revisions and
+  source ACLs. Legacy context policies and historical hashes are unchanged.
+- A v6 context can enter the existing scope review and budgeted generation
+  path without pretending the working image is published. Model selection,
+  egress consent, budget, mapping, case admission, script review and execution
+  gates remain separate. Approval withdrawal makes current use stale; original
+  archives stay historical rather than gaining new authority.
+- Case admission and script review on this iteration path require a reviewer
+  other than the model-generation author. Identity separation is rechecked
+  before persistence and when reading current approval. Legacy policies retain
+  their original behavior; no historical approval is silently upgraded.
+- Python v3 RunPlans use frozen Python AST evidence for literal Django Ninja
+  mounts and HTTP decorators, including cross-file supporting locations and
+  hashes. No source imports or execution are used. Unknown prefixes, conditional
+  mounts, ambiguous imports and parse failures are unresolved, not successful
+  route matches. The parser is bounded and not a general dynamic Django resolver.
+  Static route evidence is not business correctness or execution evidence.
+- The RunPlan form selects from the project-scoped operator environment registry
+  via `GET /v1/projects/{project_id}/quality/target-environments`. It no longer
+  accepts arbitrary environment IDs, origins or policy hashes. The no-store
+  response contains no container IDs and explicitly grants neither verified
+  health nor execution. Native preparation still verifies actual owned instances,
+  build identity, isolation and health separately.
+
+After confirming a requirement, open its Version review panel, expand the test
+design entry, confirm and archive context, then inspect the existing scope review
+panel. Saved contexts can be selected after refresh. Scope editing is currently
+manual; this entry is **not** the complete promised model-assisted M3 workflow.
+
+Remaining acceptance work includes explicit defect-commit working-image adoption
+and reapproval, model-assisted scope drafting, immutable case editing with
+downstream invalidation, version-scoped execution progress, and the complete
+`verify:realworld-m3` live replay. That verifier is not yet delivered. The M0
+hand-written runtime probe and browser protocol fixtures cannot substitute for
+model-generated cases detecting the injected unauthorized update through the
+formal execution chain. M4/M5 are not claimed by this integration.
+
+Focused PostgreSQL tests cover confirmed working context -> scope approval ->
+generation preflight, stale approval rejection and cross-iteration denial. Static
+locator tests include the fixed RealWorld checkout when present. Browser RunPlan
+tests use explicitly labeled transport specimens, not live acceptance evidence.
+
+Validation for this integration: Portal build/lint and 1,573 contract tests;
+331 selected backend unit/boundary tests; eight selected PostgreSQL + MinIO
+context/admission/script-review tests; four RunPlan browser scenarios; and the
+isolated smoke journey passed. The selected browser scenarios cover light/dark,
+narrow layouts, original-command recovery and source-access failures.
+
+`verify:v1-release` was attempted, but its backend shards were stopped after
+detecting a tool-catalog ranking regression. The regression is fixed and its
+109-test suite passed separately. The full release gate has **not** completed
+on this change. A separate S3-specific approval test initially ran with local
+storage; rerunning it with `test-api-postgres.py --minio` passed without relaxing
+the storage assertion. These results are not a live-model M3 acceptance report.
+
 ## Preflight Reliability Corrections
 
 Explicit confirmation is timestamped by PostgreSQL in the locked execution

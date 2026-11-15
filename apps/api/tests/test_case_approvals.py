@@ -65,7 +65,8 @@ def admission_ports():
     authorization = SimpleNamespace(scope=lambda project: SimpleNamespace(project_id=project, actor_id="reviewer",
         effective_project_role=state.role), require_current=access)
     service = CaseApprovalApplicationService(SimpleNamespace(prepare=prepare, replay=replay), authorization,
-        repository, SimpleNamespace(put=put, read=read))
+        repository, SimpleNamespace(put=put, read=read),
+        independent=SimpleNamespace(cases=lambda *args: True, require=lambda allowed: None))
     request = CaseApprovalReviewInput(**selection.model_dump(mode="json"), expected_input_digest=prepared["input_digest"],
         expected_previous_revision_id=None, decision="approve", reason="Independent review of exact original cases")
     return service, request, state

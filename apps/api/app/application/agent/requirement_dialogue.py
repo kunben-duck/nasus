@@ -32,8 +32,10 @@ class GuidedRequirementConversation:
         select = re.fullmatch(r"(?:重新评审需求|帮我评审需求|评审需求|查看需求评审|review requirement|requirement review)(?:\s+(.+))?", text, re.I)
         answer = re.fullmatch(r"(?:回答|补充|answer)\s*[：:]\s*(.{1,4000})", text, re.I | re.S)
         confirm = text in {"确认评审需求", "confirm requirement review"}
+        design = text in {"开始测试设计", "生成测试用例", "准备测试上下文", "start test design", "generate test cases"}
+        confirm_design = text in {"确认准备测试上下文", "confirm test context"}
         # Questions and unrelated messages do not consume a pending clarification.
-        if not any((add, select, answer, confirm)):
+        if not any((add, select, answer, confirm, design, confirm_design)):
             return None
         if not version_id:
             return await self.reply(conversation, {}, "请先在迭代页面选择一个迭代，再提交需求；不会自动使用其他版本。")
@@ -60,6 +62,8 @@ class GuidedRequirementConversation:
             return await self.reply(conversation, state, "请先输入“需求：你的需求描述”，或在迭代页面选择已保存的需求。")
         selection = ReviewSelection(**{key: state[key] for key in ReviewSelection.model_fields})
         view = self.reviews.read(selection)
+        if design or confirm_design:
+            return await self.test_design(conversation, state, view, confirm=confirm_design)
         if answer:
             if view["status"] != "clarification_required":
                 return await self.reply(conversation, state, "当前没有待回答的评审问题。请先查看评审结果，或修订需求。")
@@ -101,6 +105,30 @@ class GuidedRequirementConversation:
             tool_id=tool, input=payload, initiator_surface="chat", initiator_actor="user",
             idempotency_key=f"requirement:{user.id}:{tool}"))
 
+    async def test_design(self, conversation, state, view, *, confirm):
+        request = view.get("test_design_context_request")
+        if not request:
+            return await self.reply(conversation, state, "当前需求还没有有效的独立确认，或迭代画像已变化。请先完成需求评审；不会使用旧批准生成用例。")
+        link = f"/projects/{conversation.project_id}/versions?version_id={state['version_id']}"
+        if confirm:
+            if not state.get("test_context_command_id"):
+                return await self.reply(conversation, state, "请先输入“开始测试设计”，核对本次固定输入后再确认。")
+            result = await self.runtime.confirm_tool_invocation(state["test_context_command_id"])
+            if result.status != "completed":
+                return await self.reply(conversation, state, "测试上下文未保存成功。请检查当前需求批准、画像与来源权限；不会自动重发新命令。")
+            return await self.reply(conversation, state, "测试上下文已保存，尚未调用模型生成用例。请打开[迭代测试设计](" + link
+                + ")，选择已保存上下文，审核测试范围，再确认模型及预算。用例和脚本仍需独立审核后才能执行。")
+        preview = await self.invoke(conversation, "query.system_image.context.preview", request)
+        if preview.status != "completed" or not preview.result or not preview.result.context_pack:
+            return await self.reply(conversation, state, "无法核验测试设计输入，请检查当前需求、画像和来源权限。没有保存上下文或调用模型。")
+        result = await self.invoke(conversation, "system_image.context.compile", {
+            **request, "expected_input_digest": preview.result.context_pack.input_digest})
+        if result.status != "waiting_confirmation":
+            return await self.reply(conversation, state, "测试上下文准备命令尚未进入待确认状态，请打开迭代页查看原命令结果。")
+        return await self.reply(conversation, {**state, "test_context_command_id": result.id},
+            "将固定当前迭代已确认的需求、完整验收条件、业务规则和代码来源，保存正式测试设计上下文。"
+            "\n\n回复 **确认准备测试上下文** 后保存。这一步不调用模型、不批准用例，也不执行测试。")
+
     async def prepare(self, conversation, state):
         selection = ReviewSelection(**{key: state[key] for key in ReviewSelection.model_fields})
         try:
@@ -124,7 +152,8 @@ class GuidedRequirementConversation:
             text = "评审尚未形成当前有效结论。请打开迭代需求页检查原命令、最新需求及画像；需要再次评审时输入“重新评审需求”。不会沿用旧结论。"
         else:
             link = f"/projects/{conversation.project_id}/versions?version_id={state['version_id']}"
-            text = ("需求已由独立审核人确认，验收条件已保存。下一步是正式测试设计，不代表用例执行或质量门禁已通过。"
+            text = ("需求已由独立审核人确认，验收条件已保存。可以回复 **开始测试设计**，或打开[迭代测试设计](" + link
+                + ")继续。不代表用例执行或质量门禁已通过。"
                 if view["status"] == "confirmed" else
                 "请打开[迭代需求评审](" + link + ")，查看模型建议、来源和验收条件，由独立审核人逐项批准并确认。当前对话不会代为批准。")
         return await self.reply(conversation, state, text)

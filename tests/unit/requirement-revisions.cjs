@@ -66,3 +66,22 @@ test('save verifies the acknowledged command rather than trusting a success labe
   receipt.input_payload = { ...input, version_id: 'another' }
   await assert.rejects(() => api.requirementRevisionsApi.save(attempt), /command mismatch/)
 })
+
+test('test design uses only the current exact independently confirmed iteration selection', () => {
+  const { requirementTestDesignSelection: select } = load('requirementReviews')
+  const selection = { project_id: 'project', image_revision_id: 'image', image_artifact_hash: hash,
+    purpose: 'test_design', policy_revision: 'nasus.test-design-context.v6', iteration: {
+      version_id: 'version', requirement_revision_id: 'revision', confirmation_id: 'confirmation', confirmation_hash: hash } }
+  const review = { project_id: 'project', version_id: 'version', revision_id: 'revision', current: true, status: 'confirmed',
+    generation_authorized: false, confirmation: { event_id: 'confirmation', content_hash: hash,
+      payload: { projection: { image_revision_id: 'image', image_artifact_hash: hash } } }, test_design_context_request: selection }
+  assert.equal(select(review), selection)
+  for (const change of [{ status: 'awaiting_confirmation' }, { status: 'superseded' }, { current: false }, { confirmation: null },
+    { test_design_context_request: null }, { generation_authorized: true }, { version_id: 'other' }, { project_id: 'other' }, { revision_id: 'other' }])
+    assert.equal(select({ ...review, ...change }), null)
+  for (const field of ['version_id', 'requirement_revision_id', 'confirmation_id', 'confirmation_hash'])
+    assert.equal(select({ ...review, test_design_context_request: { ...selection, iteration: { ...selection.iteration, [field]: 'other' } } }), null)
+  for (const change of [{ image_artifact_hash: 'other' }, { image_revision_id: 'other' }, { policy_revision: 'nasus.test-design-context.v4' },
+    { purpose: 'automation' }, { iteration: null }])
+    assert.equal(select({ ...review, test_design_context_request: { ...selection, ...change } }), null)
+})

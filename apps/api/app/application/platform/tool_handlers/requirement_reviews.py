@@ -24,6 +24,8 @@ class RequirementReviewToolHandler:
             else:
                 value = await asyncio.to_thread(self.application.read, ReviewSelection.model_validate(payload))
                 receipt = {key: value[key] for key in ("project_id", "version_id", "revision_id", "status", "current", "generation_authorized")}
+                if value.get("test_design_context_request"):
+                    receipt["test_design_context_request"] = value["test_design_context_request"]
                 if value["evaluation"] and value["status"] not in {"review_failed", "review_pending", "image_changed"}:
                     receipt["assessment"] = value["evaluation"]["payload"]["assessment"]
             self.access.require_invocation_project_scope(invocation)

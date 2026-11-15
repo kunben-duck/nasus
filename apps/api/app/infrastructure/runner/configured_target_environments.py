@@ -62,6 +62,17 @@ class ConfiguredOwnedTargetEnvironments:
     def __init__(self, *, command=bounded_command, registry_path=None):
         self.command, self.registry_path = command, registry_path
 
+    def options(self, project_id, *, require_work):
+        require_work()
+        path = self.registry_path if self.registry_path is not None else os.environ.get("NASUS_TARGET_ENVIRONMENT_REGISTRY", "")
+        # An unconfigured registry is distinct from a configured but invalid one.
+        specs = read_registry(path) if path else ()
+        values = [{"environment_id": spec.environment_id, "profile": spec.profile,
+            "kind": "local", "base_url": "http://127.0.0.1:8080", "inventory_hash": spec.digest}
+            for spec in specs if spec.project_id == project_id]
+        require_work()
+        return sorted(values, key=lambda value: value["environment_id"])
+
     def _spec(self, project_id, environment_id, require_work):
         require_work()
         path = self.registry_path if self.registry_path is not None else os.environ.get("NASUS_TARGET_ENVIRONMENT_REGISTRY", "")

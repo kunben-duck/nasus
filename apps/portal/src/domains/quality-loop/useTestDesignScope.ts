@@ -24,7 +24,7 @@ export function useTestDesignScope(context: ContextArchive, sessionId: string, o
     onSuccess: () => { setDraft(null); setEditing(false); setSelected(''); setReason('') },
     onSettled: () => { setConsent(''); void client.invalidateQueries({ queryKey: ['test-design-scope', m.project_id, m.context_id] }) } })
   const content = view && !archive.isFetching && !archive.isError ? (selected ? archive.data : view.head) : undefined
-  const mayApprove = !!view && !view.context_current_use.stale && !!context.context.publication_pin && context.context.required_constraints.length > 0
+  const mayApprove = !!view && !view.context_current_use.stale && !!(context.context.publication_pin || context.context.iteration_pin) && context.context.required_constraints.length > 0
     && context.context.required_constraints.every((item) => item.oracle && item.authority.status === 'approved')
   const consentKey = JSON.stringify([m, query.dataUpdatedAt, view?.head?.revision.artifact_hash, decision, draft, reason])
   const confirmed = !!view && consent === consentKey

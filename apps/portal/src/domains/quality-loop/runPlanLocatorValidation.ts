@@ -8,6 +8,7 @@ import type { ActionLocator, FrozenRouteFact, LocatorCandidate, LocatorStatus, R
 const formats = {
   'nasus.frozen-http-route-inventory.v1': { rule: 'java.import-resolved-http-locators.v1', schema: 'nasus.run-plan-http-locators.v1', policy: 'nasus.http-locator-static-match.v1' },
   'nasus.frozen-http-route-inventory.v2': { rule: 'java.import-resolved-http-locators.v2', schema: 'nasus.run-plan-http-locators.v2', policy: 'nasus.http-locator-static-match.v2' },
+  'nasus.frozen-http-route-inventory.v3': { rule: 'python.django-ninja-http-locators.v1', schema: 'nasus.run-plan-http-locators.v3', policy: 'nasus.http-locator-static-match.v3' },
 } as const
 const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD', 'TRACE', 'ANY']
 const flags = ['runtime_locators_verified', 'fixtures_verified', 'execution_authorized', 'business_coverage_verified']
@@ -47,22 +48,26 @@ function uncertaintyScope(route: FrozenRouteFact) {
     }
   }
 }
-function routeShape(route: FrozenRouteFact, rule: string, scoped: boolean) {
+function routeShape(route: FrozenRouteFact, rule: string, scoped: boolean, django: boolean) {
   keys(route, ['relative_path', 'kind', 'name', 'start_line', 'end_line', 'rule', 'status', 'method', 'route_path',
-    'source_file_hash', 'snippet_hash', 'supporting_spans', ...(scoped && route.status === 'unresolved' ? ['unresolved_match_scope'] : [])])
+    'source_file_hash', 'snippet_hash', 'supporting_spans', ...(scoped && route.status === 'unresolved' ? ['unresolved_match_scope', ...(django ? ['unresolved_path_prefix'] : [])] : [])])
   path(route.relative_path)
   requireRunPlan(route.kind === 'route' && route.rule === rule && text(route.name)
     && scriptNumber(route.start_line) && route.start_line > 0 && scriptNumber(route.end_line) && route.end_line >= route.start_line
     && generationDigest(route.source_file_hash) && generationDigest(route.snippet_hash)
-    && ['observed', 'unresolved'].includes(route.status) && Array.isArray(route.supporting_spans) && route.supporting_spans.length <= 16)
+    && ['observed', 'unresolved'].includes(route.status) && Array.isArray(route.supporting_spans) && route.supporting_spans.length <= (django ? 256 : 16))
   requireRunPlan(route.status === 'observed' ? text(route.route_path) && route.route_path.startsWith('/')
     && methods.includes(route.method!)
     : route.method === null && route.route_path === null)
   if (scoped && route.status === 'unresolved') uncertaintyScope(route)
+  if (django && route.status === 'unresolved' && route.unresolved_path_prefix !== null)
+    requireRunPlan(text(route.unresolved_path_prefix) && segments(route.unresolved_path_prefix, true) !== null
+      && !/[{}?]/u.test(route.unresolved_path_prefix))
   for (const span of route.supporting_spans) {
-    keys(span, ['start_line', 'end_line', 'role', 'snippet_hash'])
+    keys(span, ['start_line', 'end_line', 'role', 'snippet_hash', ...(django ? ['relative_path', 'source_file_hash'] : [])])
     requireRunPlan(scriptNumber(span.start_line) && span.start_line > 0 && scriptNumber(span.end_line) && span.end_line >= span.start_line
-      && ['controller', 'class_mapping'].includes(span.role) && generationDigest(span.snippet_hash))
+      && (django ? span.role === 'route_support' : ['controller', 'class_mapping'].includes(span.role)) && generationDigest(span.snippet_hash))
+    if (django) { path(span.relative_path); requireRunPlan(generationDigest(span.source_file_hash)) }
   }
 }
 function segments(value: string, template: boolean) {
@@ -96,8 +101,9 @@ export async function verifyRunPlanLocators(value: unknown, saved: RunPlanArchiv
   keys(report, ['schema', 'policy', 'project_id', 'plan_digest', 'script_pin', 'source_pin', 'inventory', 'locators', 'summary', 'scope', 'report_hash', ...flags, ...counts])
   const inventory = report.inventory
   keys(inventory, ['schema', 'rule', 'provider', 'provider_version', 'sources', 'inventory_hash'])
-  requireRunPlan(inventory.schema === 'nasus.frozen-http-route-inventory.v1' || inventory.schema === 'nasus.frozen-http-route-inventory.v2')
-  const { rule, schema, policy } = formats[inventory.schema], scoped = inventory.schema === 'nasus.frozen-http-route-inventory.v2'
+  requireRunPlan(Object.hasOwn(formats, inventory.schema))
+  const django = inventory.schema === 'nasus.frozen-http-route-inventory.v3'
+  const { rule, schema, policy } = formats[inventory.schema], scoped = django || inventory.schema === 'nasus.frozen-http-route-inventory.v2'
   requireRunPlan(new TextEncoder().encode(JSON.stringify(report)).length <= 4 * 1024 * 1024
     && plan.plan_digest === await canonicalDigest(Object.fromEntries(Object.entries(plan).filter(([key]) => key !== 'plan_digest')))
     && receipt.schema === 'nasus.run-plan-locator-receipt.v1' && report.schema === schema && (!scoped || plan.schema === 'nasus.run-plan.v3')
@@ -109,7 +115,7 @@ export async function verifyRunPlanLocators(value: unknown, saved: RunPlanArchiv
     && receipt.historical_not_live === true && receipt.durable_locator_evidence_verified === false
     && flags.every((key) => report[key as keyof typeof report] === false && receipt[key as keyof typeof receipt] === false)
     && counts.every((key) => report[key as keyof typeof report] === 0 && receipt[key as keyof typeof receipt] === 0))
-  requireRunPlan(inventory.rule === rule && inventory.provider === 'tree-sitter'
+  requireRunPlan(inventory.rule === rule && inventory.provider === (django ? 'python-ast-django-ninja' : 'tree-sitter')
     && text(inventory.provider_version, 128) && Array.isArray(inventory.sources) && inventory.sources.length > 0 && inventory.sources.length <= 64
     && generationDigest(inventory.inventory_hash) && receipt.inventory_hash === inventory.inventory_hash
     && await canonicalDigest(Object.fromEntries(Object.entries(inventory).filter(([key]) => key !== 'inventory_hash'))) === inventory.inventory_hash
@@ -134,9 +140,13 @@ export async function verifyRunPlanLocators(value: unknown, saved: RunPlanArchiv
         && Array.isArray(file.rules) && file.rules.length <= 32 && file.rules.every((item) => text(item, 128)))
     }
     for (const route of source.routes) {
-      routeShape(route, rule, scoped)
+      routeShape(route, rule, scoped, django)
       const file = source.files.find((item) => item.relative_path === route.relative_path)
       requireRunPlan(file?.status === 'parsed' && file.source_file_hash === route.source_file_hash)
+      if (django) for (const span of route.supporting_spans) {
+        const support = source.files.find((item) => item.relative_path === span.relative_path)
+        requireRunPlan(support?.status === 'parsed' && support.source_file_hash === span.source_file_hash)
+      }
       routes.push({ binding_id: source.pin.binding_id, source_revision_id: source.pin.source_revision_id,
         snapshot_manifest_hash: source.pin.snapshot_manifest_hash, ...route })
     }
@@ -150,9 +160,11 @@ export async function verifyRunPlanLocators(value: unknown, saved: RunPlanArchiv
       requireRunPlan(typeof action.path === 'string' && typeof action.method === 'string' && typeof action.request_id === 'string')
       Object.assign(item, { request_id: action.request_id, method: action.method, path: action.path })
       const pathname = action.path.split('?')[0]
-      let unknown = segments(pathname, false) === null || files.some((file) => file.language === 'java' && file.status !== 'parsed')
+      let unknown = segments(pathname, false) === null || files.some((file) => file.language === (django ? 'python' : 'java') && file.status !== 'parsed')
       for (const route of routes) {
         if (route.status !== 'observed') {
+          const prefix = django ? route.unresolved_path_prefix : null
+          if (prefix != null && !(pathname === prefix || pathname.startsWith(prefix.replace(/\/$/u, '') + '/'))) continue
           if (!scoped || uncertaintyMayMatch(pathname, action.method, route.unresolved_match_scope)) unknown = true
           continue
         }

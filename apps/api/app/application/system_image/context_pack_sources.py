@@ -1,21 +1,24 @@
 from dataclasses import asdict
 
 from ...domain.system_image.context_pack import ContextPackIntegrityError, MandatoryContextTooLarge, budget_context
-from ...domain.system_image.context_partition import PARTITION_POLICY, RULE_AUTHORITY_POLICY, PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY, MAX_CONSTRAINTS, partition_context
+from ...domain.system_image.context_partition import PARTITION_POLICY, RULE_AUTHORITY_POLICY, PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY, ITERATION_CONTEXT_POLICY, MAX_CONSTRAINTS, partition_context
 from ...domain.system_image.source_snapshots import snapshot_digest
 from .image_query_models import ImageScreenedCandidatesInput, ImageScreenedCandidatesReceipt
 from .context_publications import ContextPublicationPort, context_publication
 from .indexed_context_recall import INDEXED_RECALL_METHOD
+from .context_iterations import IterationContextPort, context_iteration
 
 
 class TestDesignContextSources:
     """Use application ports; never inspect another bounded context's tables."""
 
-    def __init__(self, images, authority, image_queries, *, rules=None, publications: ContextPublicationPort = None, indexed_recall=None):
+    def __init__(self, images, authority, image_queries, *, rules=None, publications: ContextPublicationPort = None, indexed_recall=None,
+                 iterations: IterationContextPort = None):
         self.images, self.authority, self.image_queries = images, authority, image_queries
         self.rules = rules
         self.publications = publications
         self.indexed_recall = indexed_recall
+        self.iterations = iterations
 
     def require_image(self, request):
         header, image = self.images.frozen_snapshot(request.project_id, request.image_revision_id)
@@ -31,16 +34,26 @@ class TestDesignContextSources:
     def _prepare(self, request, *, pinned=None):
         publication = (context_publication(self.publications, request, historical=pinned is not None)
             if request.policy_revision in {PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY} else None)
+        iteration = (context_iteration(self.iterations, request, historical=pinned is not None)
+            if request.policy_revision == ITERATION_CONTEXT_POLICY else None)
         header, image = self.require_image(request)
         if publication and (publication["manifest_id"] != header.manifest_id or publication["manifest_hash"] != header.manifest_hash):
             raise ContextPackIntegrityError("Context publication source manifest mismatch")
+        if iteration and (iteration["manifest_id"] != header.manifest_id or iteration["manifest_hash"] != header.manifest_hash):
+            raise ContextPackIntegrityError("Context iteration source manifest mismatch")
         members = {m["object_id"]: m for m in image["members"]}
         targets = sorted((o for o in image["objects"] if o["type"] in {"SourceAcceptanceCriterion", "SourceBusinessRule"}), key=lambda o: o["id"])
+        if iteration:
+            # The confirmation, never retrieval rank, selects the requirement.
+            # Business rules remain global until separately scoped by authority.
+            targets = [obj for obj in targets if obj["type"] == "SourceBusinessRule" or obj["id"] in iteration["approval_ids"]]
         indexed = request.policy_revision == INDEXED_CONTEXT_POLICY
-        with_rule_authority = request.policy_revision in {RULE_AUTHORITY_POLICY, PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY}
+        with_rule_authority = request.policy_revision in {RULE_AUTHORITY_POLICY, PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY, ITERATION_CONTEXT_POLICY}
         if with_rule_authority and self.rules is None:
             raise ContextPackIntegrityError("business rule authority port is required for this context policy")
-        partitioned = request.policy_revision in {PARTITION_POLICY, RULE_AUTHORITY_POLICY, PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY}
+        partitioned = request.policy_revision in {PARTITION_POLICY, RULE_AUTHORITY_POLICY, PUBLISHED_CONTEXT_POLICY, INDEXED_CONTEXT_POLICY, ITERATION_CONTEXT_POLICY}
+        if iteration and not set(iteration["approval_ids"]).issubset({obj["id"] for obj in targets}):
+            raise ContextPackIntegrityError("Iteration context omitted confirmed acceptance criteria")
         if len(targets) > (MAX_CONSTRAINTS if partitioned else 32):
             raise MandatoryContextTooLarge("Mandatory source constraint count exceeds this policy's limit; no top-k selection is allowed")
         if indexed:
@@ -123,13 +136,15 @@ class TestDesignContextSources:
                 "reason_codes": [*([] if constraints else ["missing_requirements"]),
                     *([] if all(c["oracle"] for c in constraints) else ["unapproved_mandatory_constraint"]),
                     "behavior_risk_contract_not_verified", *(["bounded_saved_trace_recall", "structural_recall_not_run"] if indexed else ["lexical_retrieval_only"]),
-                    *([] if publication else ["image_not_published"]), "model_budget_not_bound"]},
+                    *([] if publication or iteration else ["image_not_published"]), "model_budget_not_bound"]},
             "use_policy": "draft_investigation_only_not_generation_or_execution_authorization",
             "retrieval": {"method": INDEXED_RECALL_METHOD if indexed else "nasus.link-recall.reviewed.v2",
                 "fallback_used": any(r["fallback_used"] for r in retrievals) if indexed else True,
                 "truncated": any(r["truncated"] for r in retrievals)}, "conflicts": {"status": "not_evaluated"}}
         if publication:
             base["publication_pin"] = publication
+        if iteration:
+            base["iteration_pin"] = iteration
         compiler = partition_context if partitioned else budget_context
         context = compiler(base, facts, request.max_tokens)
         for fact in context["facts"]:
@@ -144,6 +159,10 @@ class TestDesignContextSources:
                 raise ContextPackIntegrityError("Context publication changed during compilation")
         if indexed and pinned is None:
             self.indexed_recall.require_current(request.project_id, replays)
+        if iteration:
+            provenance["iteration_pin"] = context_iteration(self.iterations, request, historical=pinned is not None)
+            if provenance["iteration_pin"] != iteration:
+                raise ContextPackIntegrityError("Iteration confirmation changed during compilation")
         if pinned is not None and snapshot_digest(provenance) != snapshot_digest(pinned):
             raise ContextPackIntegrityError("context provenance does not match fixed source and authority")
         return context, provenance

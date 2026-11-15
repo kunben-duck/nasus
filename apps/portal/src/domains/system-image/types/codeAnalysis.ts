@@ -78,7 +78,8 @@ export interface CodeFileAnalysis {
   byte_count: number
   rules: string[]
 }
-export interface CodeStructureSpan { start_line: number; end_line: number; role: string; snippet_hash: string }
+export interface CodeStructureSpan { start_line: number; end_line: number; role: string; snippet_hash: string
+  relative_path?: string; source_file_hash?: string }
 export interface CodeStructureFact {
   relative_path: string
   kind: StructureKind

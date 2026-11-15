@@ -1,7 +1,7 @@
 from typing import ContextManager, Protocol
 from uuid import uuid4
 
-from ...domain.system_image.context_pack import CONTEXT_SCHEMA, ContextPackChanged, ContextPackIntegrityError, ContextPublicationChanged, ContextIndexChanged, MandatoryContextTooLarge, context_metadata
+from ...domain.system_image.context_pack import CONTEXT_SCHEMA, ContextPackChanged, ContextPackIntegrityError, ContextPublicationChanged, ContextIndexChanged, ContextIterationChanged, MandatoryContextTooLarge, context_metadata
 from ...domain.system_image.source_snapshots import snapshot_digest
 from ...domain.system_image.context_authorities import archived_authority_pins
 from ...domain.system_image.source_access import SourceAccessDenied
@@ -71,6 +71,26 @@ class ContextPackApplicationService:
         page = self.repository.list(request)
         self.authorization.require_current(scope)
         return {"request": request.model_dump(mode="json"), **page}
+
+    def review_identity(self, project_id, context_id):
+        """Read immutable policy identity, not current-use or generation authority.
+
+        Review consumers already verify their complete parent chain. Rebuilding it
+        again merely to decide identity separation amplifies nested review reads.
+        """
+        scope = self.authorization.scope(project_id)
+        metadata, ref = self.repository.get(project_id, context_id)
+        payload = self.artifacts.read(project_id, ref, metadata["artifact_hash"])
+        request = ContextCompileInput.model_validate(payload["request"])
+        if (payload.get("schema") != CONTEXT_SCHEMA or payload.get("context_id") != context_id
+                or payload.get("project_id") != project_id or request.project_id != project_id
+                or context_metadata(payload, snapshot_digest(payload)) != metadata
+                or any(payload[key] != getattr(request, key) for key in ("image_revision_id", "image_artifact_hash", "policy_revision"))
+                or payload["context"].get("policy_version") != request.policy_revision):
+            raise ContextPackIntegrityError("review context identity differs from its fixed archive")
+        self.sources.require_image(request)
+        self.authorization.require_current(scope)
+        return {"metadata": metadata, "context": {"policy_version": request.policy_revision}}
 
     def compile(self, request: ContextCompileInput, *, invocation_id, recorded_at):
         scope = self.authorization.scope(request.project_id)
@@ -194,6 +214,8 @@ class ContextPackApplicationService:
             stale, reason = True, "published_image_head_changed"
         except ContextIndexChanged:
             stale, reason = True, "retrieval_model_configuration_changed"
+        except ContextIterationChanged:
+            stale, reason = True, "iteration_requirement_or_image_changed"
         try:
             invalidation = self.repository.stale_state(project_id, context_id, metadata["artifact_hash"])
         except Exception:

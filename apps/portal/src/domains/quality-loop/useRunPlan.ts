@@ -5,6 +5,7 @@ import { readRunPlanSources, runPlanApi } from './runPlanApi'
 import { emptyRunPlanFields, runPlanFieldsValid, runPlanSelection } from './runPlanDraft'
 import { runPlanRecovery } from './runPlanRecovery'
 import { expectedRunPlan, planSelection, requireRunPlan } from './runPlanValidation'
+import { readTargetEnvironments, registeredEnvironment } from './targetEnvironments'
 import type { ScriptArchive, ScriptReviewArchive } from './types/automationScripts'
 import type { RunPlanAttempt, RunPlanFields, RunPlanRequest } from './types/runPlans'
 
@@ -18,10 +19,13 @@ export function useRunPlan(draft: ScriptArchive, review: ScriptReviewArchive, ac
   const sources = useQuery({ ...sensitive, enabled: open, queryKey: [...prefix, 'sources', draft.result.prepared.context_pin],
     queryFn: ({ signal }) => readRunPlanSources(draft, signal) })
   const source = !sources.isFetching && !sources.isError ? sources.data : undefined
+  const environments = useQuery({ ...sensitive, enabled: open && !stored.attempt, queryKey: ['target-environments', m.project_id, actorId],
+    queryFn: ({ signal }) => readTargetEnvironments(m.project_id, signal) })
+  const environmentOptions = !environments.isFetching && !environments.isError ? environments.data : undefined
   const canPrepare = current && draft.current_use.input_current && review.revision.status === 'reviewed' && review.assessment?.review_complete === true
   const key = JSON.stringify([fields, source, review, canPrepare])
   const preview = useMutation({ retry: false, mutationFn: async () => {
-    requireRunPlan(source && canPrepare)
+    requireRunPlan(source && canPrepare && registeredEnvironment(fields, environmentOptions))
     const selection = await runPlanSelection(fields, draft, review, source)
     return { key, value: await runPlanApi.preview(selection, draft, review, source) }
   } })
@@ -58,10 +62,11 @@ export function useRunPlan(draft: ScriptArchive, review: ScriptReviewArchive, ac
   const busy = sources.isFetching || preview.isPending || write.isPending || recovery.isFetching || archive.isFetching
   const confirmationKey = JSON.stringify([prepared, original?.input, original?.command.status, sources.dataUpdatedAt, recovery.dataUpdatedAt, canPrepare])
   const confirmed = consent === confirmationKey && !!(prepared || original)
-  const mayPreview = open && !busy && !stored.invalid && !stored.attempt && !write.isError && canPrepare && !!source && runPlanFieldsValid(fields, draft)
+  const mayPreview = open && !busy && !stored.invalid && !stored.attempt && !write.isError && canPrepare && !!source
+    && registeredEnvironment(fields, environmentOptions) && runPlanFieldsValid(fields, draft)
   const result = original && !archive.isFetching && !archive.isError ? archive.data : undefined
   const mayConfirmOriginal = !busy && !failed && canPrepare && original?.command.status === 'waiting_confirmation' && confirmed
-  return { open, fields, source, prepared, original, result, confirmed, busy, failed, stored, preview, write, recovery,
+  return { open, fields, source, prepared, original, result, confirmed, busy, failed, stored, preview, write, recovery, environments, environmentOptions,
     canPrepare, mayPreview, maySave: mayPreview && !!prepared && confirmed, mayConfirmOriginal,
     toggle: () => { if (!write.isPending) { setOpen(!open); setConsent('') } },
     edit: (value: Partial<RunPlanFields>) => { if (!busy && !stored.attempt && !stored.invalid) { setFields({ ...fields, ...value }); setConsent(''); preview.reset() } },
@@ -73,7 +78,7 @@ export function useRunPlan(draft: ScriptArchive, review: ScriptReviewArchive, ac
       setConsent(''); preview.reset(); submitted.current = false
       try { setStored({ attempt: runPlanRecovery.read(actorId, m.project_id, m.script_revision_id, review.revision.revision_id), invalid: false }) }
       catch { setStored({ attempt: null, invalid: true }) }
-      void sources.refetch(); if (stored.attempt) void recovery.refetch(); if (original?.command.status === 'completed') void archive.refetch()
+      void sources.refetch(); if (!stored.attempt) void environments.refetch(); if (stored.attempt) void recovery.refetch(); if (original?.command.status === 'completed') void archive.refetch()
     } },
     another: () => { if (!busy && result && original) { runPlanRecovery.clear(actorId, original.attempt); setStored({ attempt: null, invalid: false });
       submitted.current = false; setConsent(''); preview.reset(); write.reset(); setFields(emptyRunPlanFields(draft)) } },

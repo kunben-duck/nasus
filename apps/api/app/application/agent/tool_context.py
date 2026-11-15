@@ -78,6 +78,12 @@ def compact_tool_catalog_json(
             score += 30
         if any(tool.tool_id.startswith(prefix) for prefix in intent_prefixes):
             score += 55
+        if tool.tool_id in {"quality.requirement.evaluate", "quality.requirement.confirm", "quality.requirement.revise",
+                "query.quality.requirement_review", "query.quality.requirements"}:
+            requirement_intent = any(word in intent_text for word in ("requirement", "需求", tool.tool_id))
+            # Review descriptions mention execution only to deny its authority.
+            # They must not crowd actual execution actions out of unrelated turns.
+            score += 220 if requirement_intent else -100
         if tool.tool_id in {"quality.run_plan.execute_http", "quality.run_plan.cancel_http",
                 "query.quality.run_plan_case_execution"}:
             case_execution = any(phrase in intent_text for phrase in (

@@ -25,6 +25,10 @@ class ContextIndexChanged(ContextPackChanged):
     pass
 
 
+class ContextIterationChanged(ContextPackChanged):
+    pass
+
+
 class MandatoryContextTooLarge(ValueError):
     pass
 

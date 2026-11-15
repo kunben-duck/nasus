@@ -1,10 +1,11 @@
 import type { ScriptArchive } from '../../../../../domains/quality-loop/types/automationScripts'
 import type { RunPlanFields } from '../../../../../domains/quality-loop/types/runPlans'
+import type { TargetEnvironmentOptions } from '../../../../../domains/quality-loop/targetEnvironments'
 import { useI18n } from '../../../../../shared/i18n/I18nProvider'
 import { ScopeText } from './ScopeInputs'
 
-export function RunPlanDeclarations({ draft, fields, edit, disabled }: {
-  draft: ScriptArchive; fields: RunPlanFields; edit: (value: Partial<RunPlanFields>) => void; disabled: boolean
+export function RunPlanDeclarations({ draft, fields, edit, disabled, environments }: {
+  draft: ScriptArchive; fields: RunPlanFields; edit: (value: Partial<RunPlanFields>) => void; disabled: boolean; environments?: TargetEnvironmentOptions
 }) {
   const { t } = useI18n()
   const text = (name: keyof Omit<RunPlanFields, 'fixtures' | 'kind'>, label: string, limit = 128) => <label>{label}
@@ -15,10 +16,13 @@ export function RunPlanDeclarations({ draft, fields, edit, disabled }: {
       {text('artifactName', t('Build artifact name'))}{text('artifactHash', t('Build artifact SHA-256'), 71)}
       {text('definitionHash', t('Build definition SHA-256'), 71)}{text('runtime', t('Target runtime'))}
       {text('runtimeVersion', t('Runtime version'))}{text('buildTool', t('Build tool'))}{text('buildToolVersion', t('Build tool version'))}
-      {text('environmentId', t('Target environment ID'))}
-      <label>{t('Target environment kind')}<select value={fields.kind} onChange={(event) => edit({ kind: event.target.value as RunPlanFields['kind'] })}>
-        <option value="local">{t('Local')}</option><option value="test">{t('Test environment')}</option><option value="staging">{t('Staging')}</option></select></label>
-      {text('origin', t('Target HTTP origin'), 2048)}{text('inventoryHash', t('Environment inventory SHA-256'), 71)}
+      <label>{t('Registered target environment')}<select value={fields.environmentId} disabled={!environments} onChange={(event) => {
+        const selected = environments?.options.find((item) => item.environment_id === event.target.value)
+        edit({ environmentId: selected?.environment_id ?? '', kind: 'local', origin: selected?.base_url ?? '', inventoryHash: selected?.inventory_hash ?? '' })
+      }}><option value="">{t('Select an isolated environment')}</option>
+        {environments?.options.map((item) => <option key={item.environment_id} value={item.environment_id}>{item.environment_id} · {item.profile}</option>)}
+      </select></label>
+      {fields.environmentId && <p>{t('Registry selection is not health verification or permission to execute.')}<code>{fields.origin}</code><code>{fields.inventoryHash}</code></p>}
     </div>
     <ScopeText label={t('Environment isolation declaration')} value={fields.isolation} onChange={(isolation) => edit({ isolation })} />
     {draft.result.prepared.cases.map((item) => { const fixture = fields.fixtures[item.case_id]

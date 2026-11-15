@@ -1,5 +1,6 @@
 import { request } from '../../shared/api/client'
 import { platformApi } from '../platform/api'
+import type { ContextRequest } from '../system-image/types/contextPack'
 
 export type ReviewSelection = { project_id: string; version_id: string; revision_id: string }
 export type Oracle = { preconditions: string; action: string; observation: string; expected_result: string }
@@ -10,11 +11,12 @@ export type Assessment = {
 }
 export type ReviewEvent = {
   event_id: string; content_hash: string; actor_id: string; kind: string; recorded_at: string
-  payload: { assessment: Assessment; model: { model: string }; projection: { image_revision_id: string } | null }
+  payload: { assessment: Assessment; model: { model: string }; projection: { image_revision_id: string; image_artifact_hash: string } | null }
 }
 export type RequirementReview = ReviewSelection & {
   status: string; current: boolean; can_confirm: boolean; generation_authorized: false
   evaluation: ReviewEvent | null; confirmation: ReviewEvent | null
+  test_design_context_request?: ContextRequest | null
   approval_requests: { title: string; input: Record<string, unknown>; current: {
     revision_id: string; authority_actor: string; status: string
   } | null }[]
@@ -26,6 +28,17 @@ export type RequirementReviewPreview = {
 }
 
 const url = (selection: ReviewSelection) => `/v1/projects/${encodeURIComponent(selection.project_id)}/versions/${encodeURIComponent(selection.version_id)}/requirements/${encodeURIComponent(selection.revision_id)}/review`
+
+export function requirementTestDesignSelection(review: RequirementReview): ContextRequest | null {
+  const selection = review.test_design_context_request, projection = review.confirmation?.payload.projection
+  if (!review.current || review.status !== 'confirmed' || !review.confirmation || !projection || !selection
+    || review.generation_authorized !== false || selection.purpose !== 'test_design'
+    || selection.project_id !== review.project_id || selection.image_revision_id !== projection.image_revision_id
+    || selection.image_artifact_hash !== projection.image_artifact_hash || selection.policy_revision !== 'nasus.test-design-context.v6'
+    || selection.iteration?.version_id !== review.version_id || selection.iteration.requirement_revision_id !== review.revision_id
+    || selection.iteration.confirmation_id !== review.confirmation.event_id || selection.iteration.confirmation_hash !== review.confirmation.content_hash) return null
+  return selection
+}
 
 export const requirementReviewsApi = {
   async read(selection: ReviewSelection, signal?: AbortSignal) {

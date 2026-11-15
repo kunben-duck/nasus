@@ -121,13 +121,23 @@ class RequirementReviewApplicationService:
             status = "image_changed"
         if not current:
             status = "superseded"
+        test_design = None
+        if (status == "confirmed" and current and confirmation
+                and delivery.iteration_image.image_revision_id == confirmation["payload"]["projection"]["image_revision_id"]
+                and delivery.iteration_image.image_artifact_hash == confirmation["payload"]["projection"]["image_artifact_hash"]):
+            projection = confirmation["payload"]["projection"]
+            test_design = {"project_id": selection.project_id, "image_revision_id": projection["image_revision_id"],
+                "image_artifact_hash": projection["image_artifact_hash"], "purpose": "test_design",
+                "policy_revision": "nasus.test-design-context.v6", "max_tokens": 32768, "candidate_limit": 5,
+                "iteration": {"version_id": selection.version_id, "requirement_revision_id": selection.revision_id,
+                    "confirmation_id": confirmation["event_id"], "confirmation_hash": confirmation["content_hash"]}}
         self.images.authorization.require_current(scope)
         return {**selection.model_dump(), "us_id": revision.us_id, "status": status, "current": current,
             "evaluation": evaluation, "confirmation": confirmation, "events": events,
             "approval_requests": requests, "can_confirm": current and status in {"awaiting_confirmation", "approval_invalidated"}
                 and scope.actor_id != revision.actor_id and scope.actor_id != (evaluation or {}).get("actor_id")
                 and scope.effective_project_role in {"project_admin", "platform_admin"},
-            "generation_authorized": False}
+            "test_design_context_request": test_design, "generation_authorized": False}
 
     def confirm(self, request, *, invocation_id):
         scope, revision, _ = self._scope(request)

@@ -743,10 +743,12 @@ class RuntimeAssembly:
         self.automation_inputs = AutomationInputApplicationService(self.test_design_mappings, self.test_design_results,
             self.test_design_generation, self.source_access)
         from .application.quality_loop.case_approvals import CaseApprovalApplicationService
+        from .application.quality_loop.independent_iteration_review import IndependentIterationReview
         from .infrastructure.persistence.case_approval_repository import CaseApprovalRepository
         from .infrastructure.storage.case_approval_artifacts import CaseApprovalArtifacts
         self.case_approvals = CaseApprovalApplicationService(self.automation_inputs, self.source_access,
-            CaseApprovalRepository(), CaseApprovalArtifacts(self.object_storage))
+            CaseApprovalRepository(), CaseApprovalArtifacts(self.object_storage),
+            independent=IndependentIterationReview(self.context_packs, self.test_design_results))
         from .application.quality_loop.context_dependencies import QualityContextDependencyApplicationService
         from .application.system_image.context_change_impact import ContextChangeImpactApplicationService
         from .infrastructure.persistence.context_dependency_inventory import QualityContextDependencyInventory
@@ -785,7 +787,8 @@ class RuntimeAssembly:
         from .infrastructure.persistence.automation_script_review_repository import AutomationScriptReviewRepository
         from .infrastructure.storage.automation_script_review_artifacts import AutomationScriptReviewArtifacts
         self.automation_script_reviews = AutomationScriptReviewApplicationService(self.automation_scripts, self.source_access,
-            AutomationScriptReviewRepository(), AutomationScriptReviewArtifacts(self.object_storage))
+            AutomationScriptReviewRepository(), AutomationScriptReviewArtifacts(self.object_storage),
+            independent=IndependentIterationReview(self.context_packs, self.test_design_results))
         from .application.quality_loop.run_plans import RunPlanApplicationService
         from .infrastructure.persistence.run_plan_repository import RunPlanRepository
         from .infrastructure.storage.run_plan_artifacts import RunPlanArtifacts
@@ -1097,6 +1100,8 @@ class RuntimeAssembly:
             self.requirement_revisions, self.image_revisions,
             RequirementReviewModel(self.llm, self.get_settings, self.model_configuration.get_custom_model_api_key),
             self.acceptance_specifications)
+        from .application.quality_loop.iteration_context import IterationContextApplicationService
+        self.context_packs.sources.iterations = IterationContextApplicationService(self.requirement_reviews, self.version_delivery)
         self.project_versions = ProjectVersionApplicationService(
             self.project_version_workspace,
             self.system_image_app,

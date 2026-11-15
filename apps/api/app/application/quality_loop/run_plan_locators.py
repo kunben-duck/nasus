@@ -38,7 +38,7 @@ class LocatorSummary(GenerationValue):
 class RunPlanLocatorReceipt(GenerationValue):
     schema_version: Literal["nasus.run-plan-locator-receipt.v1"] = Field(alias="schema")
     query: RunPlanLocatorQuery
-    policy: Literal["nasus.http-locator-static-match.v1", "nasus.http-locator-static-match.v2"]
+    policy: Literal["nasus.http-locator-static-match.v1", "nasus.http-locator-static-match.v2", "nasus.http-locator-static-match.v3"]
     plan_digest: Digest
     image_revision_id: Id
     image_artifact_hash: Digest

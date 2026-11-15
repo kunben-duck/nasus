@@ -14,7 +14,7 @@
 
 ## RealWorld 首个真实迭代闭环
 
-当前已实现 **M0 运行环境与失败回放、M1 对话建项目与画像绑定迭代**，不是 M2–M5 完整业务闭环交付。
+当前已实现 **M0 运行环境与失败回放、M1 对话建项目与画像绑定迭代、M2 模型需求评审与独立确认**。M3 正在接入正式测试设计与执行，尚未完成真实闭环验收；M4–M5 未交付。
 
 - 被测代码固定为 `c4ffein/realworld-django-ninja@87dd078c883a046f5ff20269df2fb004d8b5f83f`；规格固定为 `realworld-apps/realworld@25588846c314b15a5e427ffe816e6b4af7be68c7`。
 - 已注册 Python 3.12 / Django / zipapp 构建和 PG-only 环境规格，保留原 Java / Maven / PG+Redis 路径。正式构建仍经过原 ToolInvocation 确认、工作租约、私有归档和 Outbox；新增格式不会获得执行或发布授权。
@@ -22,7 +22,9 @@
 - 真实回放结果：原始版 6/6 通过，缺陷版仅越权修改失败，修复版 6/6 通过。原始接口与规格若出现差异会报 `contract_mismatch`，不会降低断言。
 - `business_loop_verified` 始终为 `false`：M0 使用人工编写的诊断用例，不声称已经完成模型需求评审、独立人工审批、正式 RunPlan 逐例派发或缺陷关单。Hurl 仅作为规格来源归档，不作为脚本执行器。
 - M1 复用现有 Version：对话收集项目名、代码仓库与固定提交，可跳过需求文档及历史测试；采集、结构候选、人工审核和正式发布分别展示。创建迭代必须明确选择发布记录并确认，原始基线不随项目后续发布变化。聊天和按钮均走 `version.create`，支持刷新、原命令重试和按迭代查看绑定。
-- M2 需求修订评审、M3 正式链路适配、M4 缺陷生命周期、M5 版本门禁与完成事务尚待实现。Python 路由证据适配也需要在 M3 补齐，不能借用 Java 路由证据。默认 `--phase full` 明确返回未实现，不以诊断回放替代最终验收。
+- M2 使用 live chat 模型进行需求评审、保存澄清修订，由独立审核者确认来源支持的验收条件；可运行 `npm run verify:realworld-m2`，详见 [需求评审说明](docs/design/quality-loop/requirement-review.md)。
+- M3 已接入已确认迭代需求的 Context、对话与迭代页入口、Django Ninja 冻结源码路由证据、独立人员审核检查和注册环境选择。不可变用例编辑、缺陷提交工作画像采纳及 live 模型到真实逐例失败证据的验收仍待完成。详见 [M3 当前边界](docs/design/quality-loop/version-delivery.md#m3-integration-progress-2026-11-16)。
+- M4 缺陷生命周期、M5 版本门禁与完成事务尚待实现。默认 `--phase full` 明确返回未实现，不以 M0 诊断回放或浏览器协议夹具替代最终验收。
 
 ### 复现 M1
 

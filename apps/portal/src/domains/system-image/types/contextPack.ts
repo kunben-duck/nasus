@@ -3,11 +3,15 @@ import type { LinkCandidateEndpoint } from '../linkCandidateApi'
 import type { SystemImageData } from './data'
 
 export interface ContextSelection { project_id: string; image_revision_id: string; image_artifact_hash: string }
-export type ContextPolicy = 'nasus.test-design-context.v1' | 'nasus.test-design-context.v2' | 'nasus.test-design-context.v3' | 'nasus.test-design-context.v4' | 'nasus.test-design-context.v5'
+export type ContextPolicy = 'nasus.test-design-context.v1' | 'nasus.test-design-context.v2' | 'nasus.test-design-context.v3' | 'nasus.test-design-context.v4' | 'nasus.test-design-context.v5' | 'nasus.test-design-context.v6'
+export interface IterationContextSelection {
+  version_id: string; requirement_revision_id: string; confirmation_id: string; confirmation_hash: string
+}
 export interface ContextRequest extends ContextSelection {
   purpose: 'test_design'; policy_revision: ContextPolicy; max_tokens: number; candidate_limit: number
   publication_id?: string
   retrieval_bindings?: Record<string, string>
+  iteration?: IterationContextSelection
 }
 export interface ContextConstraint {
   object_id: string; source_revision_id: string; document_revision_id: string; evidence_ids: string[]
@@ -20,6 +24,10 @@ export interface TestDesignContext extends ContextSelection {
   schema_version: 'nasus.context-pack.v1' | 'nasus.context-bundle.v1'; purpose: 'test_design'; policy_version: ContextPolicy
   source_manifest_id: string; source_manifest_hash: string
   publication_pin?: NonNullable<NonNullable<SystemImageData['read_state']>['pin']>
+  iteration_pin?: IterationContextSelection & ContextSelection & {
+    us_id: string; requirement_hash: string; manifest_id: string; manifest_hash: string
+    approval_ids: Record<string, string>; code_revisions: { binding_id: string; source_revision_id: string; commit_sha: string | null }[]
+  }
   required_constraints: ContextConstraint[]
   facts: { target_object_id: string; relation: 'implements' | 'asserts'; endpoint: LinkCandidateEndpoint
     review_status: string; semantic_class: 'retrieval_candidate_not_coverage' }[]
@@ -41,7 +49,7 @@ export interface ContextMetadata extends ContextSelection {
 export interface ContextArchive {
   metadata: ContextMetadata; context: TestDesignContext
   derivation: { request: ContextRequest & { expected_input_digest: string }; input_digest: string; historical_not_live: true }
-  current_use: { stale: boolean; generation_authorized: false; reason: 'inputs_changed' | 'draft_investigation_only' | 'current_mandatory_context_over_budget' | 'published_image_head_changed' | 'retrieval_model_configuration_changed' | 'source_change_invalidated'; invalidation_id?: string }
+  current_use: { stale: boolean; generation_authorized: false; reason: 'inputs_changed' | 'draft_investigation_only' | 'current_mandatory_context_over_budget' | 'published_image_head_changed' | 'retrieval_model_configuration_changed' | 'source_change_invalidated' | 'iteration_requirement_or_image_changed'; invalidation_id?: string }
 }
 export interface ContextHistory {
   request: ContextSelection & { limit: number; after_id: string }; items: ContextMetadata[]; next_after_id: string | null

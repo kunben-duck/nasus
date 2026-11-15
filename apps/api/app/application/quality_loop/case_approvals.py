@@ -39,8 +39,9 @@ class CaseApprovalArtifactPort(Protocol):
 
 
 class CaseApprovalApplicationService:
-    def __init__(self, inputs, authorization, repository: CaseApprovalRepositoryPort, artifacts: CaseApprovalArtifactPort):
+    def __init__(self, inputs, authorization, repository: CaseApprovalRepositoryPort, artifacts: CaseApprovalArtifactPort, *, independent):
         self.inputs, self.authorization, self.repository, self.artifacts = inputs, authorization, repository, artifacts
+        self.independent = independent
 
     def _basis(self, selection, *, historical=False):
         prepared = self.inputs.replay(selection) if historical else self.inputs.prepare(selection)
@@ -65,10 +66,12 @@ class CaseApprovalApplicationService:
             "input_current": current, "cohort_id": cohort,
             "head": history[-1] if history else None, "history_count": len(history),
             "head_revision_id": history[-1]["revision_id"] if history else None,
-            "can_review": access.effective_project_role in {"qa_lead", "project_admin", "platform_admin"},
+            "can_review": access.effective_project_role in {"qa_lead", "project_admin", "platform_admin"}
+                and self.independent.cases(selection.project_id, basis, access.actor_id),
             "execution_authorized": False, "business_coverage_verified": False}
         if len(json.dumps(value, ensure_ascii=False).encode()) > 512 * 1024:
             raise CaseApprovalIntegrityError("complete case admission preview exceeds its byte budget; no truncation")
+        self.authorization.require_current(access)
         return value
 
     def review(self, request: CaseApprovalReviewInput, *, invocation_id, recorded_at):
@@ -90,6 +93,8 @@ class CaseApprovalApplicationService:
             require_access()
             return prior
         historical = request.decision == "withdraw"
+        if not historical:
+            self.independent.require(self.independent.cases(request.project_id, basis, access.actor_id))
         if not historical and self._basis(request.selection()) != basis:
             raise CaseApprovalChanged("case admission dependencies changed before confirmation")
         payload = {"schema": CASE_APPROVAL_SCHEMA, "request": request.model_dump(mode="json"),
@@ -100,6 +105,8 @@ class CaseApprovalApplicationService:
         if acceptance_digest(payload) != digest:
             raise CaseApprovalIntegrityError("case admission artifact write mismatch")
         def require_current():
+            if not historical:
+                self.independent.require(self.independent.cases(request.project_id, basis, access.actor_id))
             if self._basis(request.selection(), historical=historical) != basis:
                 raise CaseApprovalChanged("case admission dependencies changed during commit")
             require_access()
@@ -167,6 +174,8 @@ class CaseApprovalApplicationService:
                 current = False
         if current:
             current = self.repository.history(project_id, revision["cohort_id"]) == history
+        if current:
+            current = self.independent.cases(project_id, basis, revision["authority_actor"])
         if not current:
             live_input = None
         self.authorization.require_current(access)

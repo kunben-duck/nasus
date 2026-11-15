@@ -8,6 +8,7 @@ from ...domain.quality_loop.acceptance_specification import acceptance_digest
 from ...domain.system_image.evidence import source_lines, text_digest
 from .java_structure_inventory import LOCATOR_RULE, RULE
 from .tree_sitter_code_intelligence import TreeSitterCodeIntelligenceAdapter
+from .django_http_locators import DjangoHttpLocators, RULE as DJANGO_RULE, SCHEMA as DJANGO_SCHEMA
 
 
 class FrozenHttpLocatorInventory:
@@ -38,6 +39,11 @@ class FrozenHttpLocatorInventory:
                     raise ValueError("locator history route file differs")
                 lines = source_lines(original.body.decode("utf-8", errors="strict"))
                 for span in (route, *route["supporting_spans"]):
+                    if inventory["schema"] == DJANGO_SCHEMA:
+                        supporting = files.get(span["relative_path"])
+                        if supporting is None or span["source_file_hash"] != byte_digest(supporting.body):
+                            raise ValueError("locator history supporting file differs")
+                        lines = source_lines(supporting.body.decode("utf-8", errors="strict"))
                     if (type(span["start_line"]) is not int or type(span["end_line"]) is not int
                             or not 1 <= span["start_line"] <= span["end_line"] <= len(lines)
                             or span["snippet_hash"] != text_digest("".join(lines[span["start_line"] - 1:span["end_line"]]))):
@@ -48,12 +54,16 @@ class FrozenHttpLocatorInventory:
         context = plan["prepared"]["context_pin"]
         results = []
         scoped = plan["schema"] == "nasus.run-plan.v3"
+        python = scoped and plan["selection"]["target_build"]["runtime"].lower() == "python"
         rule = "java.import-resolved-http-locators.v2" if scoped else LOCATOR_RULE
         parser = TreeSitterCodeIntelligenceAdapter(strict_http_locators=True)
         for selected in sorted(plan["selection"]["target_build"]["code_sources"], key=lambda pin: pin["binding_id"]):
             require_access()
             source = self.sources.read(project_id=plan["project_id"], image_revision_id=context["image_revision_id"],
                 image_artifact_hash=context["image_artifact_hash"], **selected)
+            if python:
+                results.append({"pin": asdict(source.pin), **DjangoHttpLocators(source.files, require_access=require_access).inspect()})
+                continue
             units = []
             for file in source.files:
                 try:
@@ -85,6 +95,10 @@ class FrozenHttpLocatorInventory:
             results.append({"pin": asdict(source.pin), "files": inventory["files"],
                 "routes": routes})
         require_access()
+        if python:
+            value = {"schema": DJANGO_SCHEMA, "rule": DJANGO_RULE, "provider": DjangoHttpLocators.provider,
+                "provider_version": DjangoHttpLocators.provider_version, "sources": results}
+            return {**value, "inventory_hash": acceptance_digest(value)}
         value = {"schema": "nasus.frozen-http-route-inventory.v2" if scoped else "nasus.frozen-http-route-inventory.v1", "rule": rule,
             "provider": parser.provider, "provider_version": parser.provider_version, "sources": results}
         return {**value, "inventory_hash": acceptance_digest(value)}

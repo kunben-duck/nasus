@@ -48,6 +48,7 @@ def service():
         return version, deepcopy(binding)
 
     repository = SimpleNamespace(enabled=lambda project: state.enabled,
+        requirement_progress=lambda *args: [],
         read=lambda *args: (version, deepcopy(state.binding)), code_revisions=lambda *args: deepcopy(state.code), create=create)
     images = SimpleNamespace(verified_read_session=lambda **kwargs: nullcontext(),
         frozen_source_members=lambda *args: (SimpleNamespace(artifact_hash=HASH), []))

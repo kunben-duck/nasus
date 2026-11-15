@@ -20,7 +20,7 @@ export function TestDesignScopePanel({ context, scope }: { context: ContextArchi
       {state.write.isSuccess && <p role="status">{t('Scope decision recorded. Generation remains separately gated.')}<code>{state.write.data}</code></p>}
       {state.write.isError && <p role="alert">{state.stale ? t('Scope inputs or head changed. Reload and confirm a new decision.') : t('Scope decision was not acknowledged. Reload history before retrying; no automatic retry was sent.')}</p>}
       {view && <>
-        {!state.mayApprove && <p role="status">{t('A new scope approval requires a current published context with every AC and business rule independently approved.')}</p>}
+        {!state.mayApprove && <p role="status">{t('Scope approval requires a current published or confirmed iteration context, with every selected AC and business rule approved.')}</p>}
         {!view.head && <p>{t('No reviewed scope for this context.')}</p>}
         {content && <div className="scope-record" aria-label={t('Recorded scope decision')}>
           <strong>{content.revision.status === 'withdrawn' ? t('Withdrawn scope') : content.current_use.scope_current ? t('Current reviewed scope') : t('Historical scope; not current')}</strong>

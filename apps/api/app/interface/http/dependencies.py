@@ -46,6 +46,7 @@ from ...application.quality_loop.automation_script_generation import AutomationS
 from ...application.quality_loop.automation_script_reviews import AutomationScriptReviewApplicationService
 from ...application.quality_loop.run_plans import RunPlanApplicationService
 from ...application.quality_loop.run_plan_locators import RunPlanLocatorApplicationService
+from ...application.quality_loop.run_plan_environments import RunPlanEnvironmentApplicationService
 from ...application.quality_loop.http_locator_records import HttpLocatorRecordApplicationService
 from ...application.quality_loop.http_fixture_recipes import HttpFixtureRecipeApplicationService
 from ...application.quality_loop.http_fixture_grants import HttpFixtureGrantApplicationService
@@ -188,6 +189,13 @@ def get_run_plan_application(request: Request) -> RunPlanApplicationService:
 
 
 RunPlanApp = Annotated[RunPlanApplicationService, Depends(get_run_plan_application)]
+
+
+def get_run_plan_environment_application(request: Request) -> RunPlanEnvironmentApplicationService:
+    return request.app.state.container.run_plan_environments
+
+
+RunPlanEnvironmentApp = Annotated[RunPlanEnvironmentApplicationService, Depends(get_run_plan_environment_application)]
 
 
 def get_run_plan_locator_application(request: Request) -> RunPlanLocatorApplicationService:

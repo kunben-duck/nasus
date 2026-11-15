@@ -20,6 +20,8 @@ from ..dependencies import RunPlanApp, RunPlanLocatorApp, RunPlanBuildApp, RunPl
 from ..dependencies import HttpLocatorRecordsApp, HttpFixtureRecipesApp
 from ..dependencies import HttpFixtureGrantsApp, HttpFixtureJobsApp
 from ..dependencies import RunPlanCaseJobsApp
+from ..dependencies import RunPlanEnvironmentApp
+from ....domain.quality_loop.native_environment import NativeEnvironmentInvalid
 from ..errors import error_response
 from ..evidence_errors import evidence_read_errors
 from .acceptance_specifications import acceptance_errors
@@ -32,6 +34,16 @@ from .test_design_scopes import scope_errors
 
 
 router = APIRouter()
+
+
+@router.get("/v1/projects/{project_id}/quality/target-environments")
+def list_target_environments(project_id: str, application: RunPlanEnvironmentApp, response: Response):
+    response.headers["Cache-Control"] = "private, no-store"
+    with private_read_errors(), revision_errors():
+        try:
+            return application.options(project_id)
+        except NativeEnvironmentInvalid as exc:
+            raise error_response("target_registry_unavailable", "The operator target registry cannot be verified.", 503) from exc
 
 
 @router.get("/v1/projects/{project_id}/quality/run-plan-case-executions/{invocation_id}")
