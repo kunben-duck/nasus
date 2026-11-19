@@ -76,6 +76,9 @@ def verify_http_assertion_results(receipt, steps, responses):
     for original, observed in zip(steps, receipt['steps']):
         if observed['kind'] != 'assertion' or observed['status'] not in {'passed', 'failed'}:
             continue
+        if original['action'] == 'assert_unchanged' and receipt['schema'] == 'nasus.runner-http-execution.v4':
+            # The v4 verifier compares both bound responses, not a literal oracle.
+            continue
         response = responses.get(original.get('request_id'))
         if response is None:
             raise RunnerObservationInvalid("HTTP oracle lacks the original response")

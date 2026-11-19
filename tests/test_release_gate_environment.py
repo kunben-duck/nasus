@@ -72,7 +72,7 @@ def test_backend_uses_operator_services_not_unstarted_compose_ports(gate, operat
     command, separator, suites = lines[4].partition(" --minio ")
     assert command.endswith("test-api-postgres.py") and separator
     assert suites.split() == ["apps/api/tests", "tests/test_docker_stack_contract.py", "tests/test_ddd_boundaries.py",
-        "tests/test_isolated_test_storage.py", "tests/test_release_gate_environment.py", "-q"]
+        "tests/test_isolated_test_storage.py", "tests/test_clock_preflight.py", "tests/test_realworld_m3_preflight.py", "tests/test_release_gate_environment.py", "-q"]
 
 
 def test_backend_preserves_explicit_test_server_and_private_storage(gate):

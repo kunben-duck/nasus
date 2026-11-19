@@ -31,6 +31,22 @@ class DeliveryCodeRevision(BaseModel):
 class IterationImagePin(PublishedImagePin):
     publication_id: Optional[str] = None
     review_event_id: Optional[str] = None
+    adoption_id: Optional[str] = None
+
+
+ADOPT_ITERATION_IMAGE = "quality.iteration_image.adopt"
+
+
+class AdoptIterationImage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    project_id: StrictStr = Field(min_length=1, max_length=128)
+    version_id: StrictStr = Field(min_length=1, max_length=128)
+    expected_image_revision_id: StrictStr = Field(min_length=1, max_length=128)
+    expected_image_artifact_hash: StrictStr = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    image_revision_id: StrictStr = Field(min_length=1, max_length=128)
+    image_artifact_hash: StrictStr = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    code_commits: dict[StrictStr, StrictStr] = Field(min_length=1, max_length=32)
+    reason: StrictStr = Field(min_length=1, max_length=2000)
 
 
 class VersionDeliveryReadModel(BaseModel):

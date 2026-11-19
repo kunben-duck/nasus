@@ -3,6 +3,7 @@ import { captureHttpBinding, pathBindings, resolveHttpPath } from './http-bindin
 import { HTTP_ASSERTIONS, validateHttpJob } from './http-job.mjs'
 import { pinHttpTarget, requestHttp } from './http-transport.mjs'
 import { matchesHttpAssertion } from './http-oracles.mjs'
+import { HTTP_READBACK_SCHEMA, matchesUnchanged, readbackStepAllowed, snapshotValue } from './http-readback.mjs'
 
 const TOTAL_RESPONSE_BYTES = 16 * 1024 * 1024
 class HttpAssertionFailed extends Error {}
@@ -12,18 +13,22 @@ const artifact = (name, body, media = 'application/octet-stream') => ({ artifact
 export async function executeHttpJob(raw, { wireBody, signal, requestTransport = requestHttp } = {}) {
   const job = validateHttpJob(raw), startedAt = new Date().toISOString()
   const deadline = AbortSignal.timeout(job.timeoutMs), stop = signal ? AbortSignal.any([signal, deadline]) : deadline
+  const withReadback = job.receiptProtocol === HTTP_READBACK_SCHEMA
   const tracker = createExecutionReceipt(job, requestHash(wireBody ?? Buffer.from(JSON.stringify(raw))),
-    { schema: job.receiptProtocol, assertions: HTTP_ASSERTIONS })
+    { schema: job.receiptProtocol, assertions: withReadback ? new Set([...HTTP_ASSERTIONS, 'assert_unchanged']) : HTTP_ASSERTIONS })
   const replies = new Map(), requests = [], artifacts = [], timeline = []
   const bindings = new Map(), bindingObservations = [], fixtureObservations = []
-  const withFixture = job.receiptProtocol === HTTP_FIXTURE_RECEIPT_SCHEMA
-  const withBindings = withFixture || job.receiptProtocol === HTTP_BINDING_RECEIPT_SCHEMA
-  let total = 0, status = 'error', failure = ''
+  const withFixture = job.receiptProtocol === HTTP_FIXTURE_RECEIPT_SCHEMA || withReadback && !!job.fixture
+  const withBindings = withReadback || withFixture || job.receiptProtocol === HTTP_BINDING_RECEIPT_SCHEMA
+  const snapshots = new Map()
+  let total = 0, status = 'error', failure = '', failed = false
   try {
     const pin = await pinHttpTarget(job.base, stop)
     for (let index = 0; index < job.steps.length; index++) {
-      stop.throwIfAborted(); tracker.start(index)
       const step = job.steps[index]
+      if (withReadback && !readbackStepAllowed(step, failed, replies)) continue
+      stop.throwIfAborted()
+      tracker.start(index)
       if (step.action === 'request') {
         const resolved = withBindings ? { ...step, path: resolveHttpPath(step.path, bindings) } : step
         const response = await requestTransport(resolved, job.base, pin, stop, TOTAL_RESPONSE_BYTES - total)
@@ -47,14 +52,24 @@ export async function executeHttpJob(raw, { wireBody, signal, requestTransport =
         const observed = captureHttpBinding(step, replies.get(step.request_id), index)
         bindings.set(step.binding_id, observed.value)
         bindingObservations.push(observed)
+      } else if (step.action === 'capture_snapshot') {
+        const response = replies.get(step.request_id)
+        if (!response || response.status < 200 || response.status >= 300) throw new Error('Snapshot requires a successful response.')
+        snapshots.set(step.snapshot_id, snapshotValue(step, response))
       } else {
         const response = replies.get(step.request_id)
-        const matches = matchesHttpAssertion(step, response)
-        if (!matches) { tracker.observe(index, 'failed'); throw new HttpAssertionFailed('HTTP oracle did not match the actual response.') }
+        const matches = step.action === 'assert_unchanged' ? matchesUnchanged(step, response, snapshots) : matchesHttpAssertion(step, response)
+        if (!matches) {
+          tracker.observe(index, 'failed'); failed = true
+          if (!withReadback) throw new HttpAssertionFailed('HTTP oracle did not match the actual response.')
+          timeline.push(`Step ${index + 1}/${job.steps.length}: assertion failed; only reviewed readback may continue`)
+          continue
+        }
       }
       tracker.observe(index, 'passed'); timeline.push(`Step ${index + 1}/${job.steps.length}: ${step.action}`)
     }
-    status = 'passed'
+    status = failed ? 'failed' : 'passed'
+    if (failed) failure = 'HTTP oracle did not match the actual response.'
   } catch (error) {
     status = deadline.aborted ? 'timed_out' : error instanceof HttpAssertionFailed ? 'failed' : 'error'
     failure = status === 'timed_out' ? 'HTTP execution deadline reached.' : error instanceof HttpAssertionFailed

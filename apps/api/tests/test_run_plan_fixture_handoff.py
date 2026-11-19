@@ -29,8 +29,8 @@ from apps.api.tests.test_run_plan_case_execution import Journal, Artifacts
 from apps.api.tests.test_run_plan_case_inputs import case_inputs, spec
 
 
-def fixture_saved_inputs():
-    draft, review, sources, selection = fixture_plan_inputs()
+def fixture_saved_inputs(protocol="nasus.runner-http-execution.v3"):
+    draft, review, sources, selection = fixture_plan_inputs(protocol)
     selection["environment"]["base_url"] = "http://127.0.0.1:8080"
     for declaration in selection["fixtures"]:
         recipe = {**manifest(), **{key: declaration[key] for key in ("case_id", "preconditions_digest", "setup", "cleanup")}}
@@ -45,7 +45,7 @@ def fixture_saved_inputs():
 
 
 @pytest.fixture
-def fixture_inputs(spec, monkeypatch, *, seal_archive=None):
+def fixture_inputs(spec, monkeypatch, *, seal_archive=None, protocol="nasus.runner-http-execution.v3"):
     from apps.api.tests import test_run_plan_case_inputs as module
     original_inventory = module.inventory_for
 
@@ -53,7 +53,7 @@ def fixture_inputs(spec, monkeypatch, *, seal_archive=None):
         return original_inventory(plan, java='import org.springframework.web.bind.annotation.*;\n'
             '@RestController class Controller { @GetMapping("/sessions/{id}") String read() { return "ok"; } }')
 
-    monkeypatch.setattr(module, "http_saved_inputs", fixture_saved_inputs)
+    monkeypatch.setattr(module, "http_saved_inputs", lambda: fixture_saved_inputs(protocol))
     monkeypatch.setattr(module, "inventory_for", inventory)
     return case_inputs.__wrapped__(spec, monkeypatch, seal_archive=seal_archive)
 
@@ -245,10 +245,10 @@ def seal_portal_archive(saved):
         "target_verified": False, "execution_authorized": False})
 
 
-def portal_specimen(*, public_archive=False):
+def portal_specimen(*, public_archive=False, protocol="nasus.runner-http-execution.v3"):
     with pytest.MonkeyPatch.context() as monkeypatch:
         v = fixture_inputs.__wrapped__(spec.__wrapped__(), monkeypatch,
-            seal_archive=seal_portal_archive if public_archive else None)
+            seal_archive=seal_portal_archive if public_archive else None, protocol=protocol)
         if public_archive:
             v.snapshot["input_payload"].update(idempotency_key="original-case-key",
                 case_claim_protocol="nasus.run-plan-case-preparation.v1")

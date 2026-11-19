@@ -2,6 +2,7 @@ import { HTTP_RECEIPT_SCHEMA, HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_
 import { BINDING_ID, pathBindings } from './http-bindings.mjs'
 import { verifyFixtureInput } from './http-fixture-input.mjs'
 import { strictJson } from './strict-json.mjs'
+import { HTTP_READBACK_SCHEMA, readbackProjection } from './http-readback.mjs'
 
 export const HTTP_ASSERTIONS = new Set(['assert_status', 'assert_json', 'assert_header', 'assert_body'])
 const fields = {
@@ -16,6 +17,13 @@ function text(value, { empty = false, length = 4096 } = {}) {
   return value
 }
 export function validateHttpJob(raw) {
+  if (raw?.receipt_protocol === HTTP_READBACK_SCHEMA) {
+    if (!Array.isArray(raw.steps) || raw.steps.length < 1 || raw.steps.length > 100) throw new Error('HTTP readback requires 1..100 explicit steps.')
+    const projected = { ...raw, receipt_protocol: raw.fixture_input ? HTTP_FIXTURE_RECEIPT_SCHEMA : HTTP_BINDING_RECEIPT_SCHEMA,
+      steps: readbackProjection(raw.steps) }
+    const job = validateHttpJob(projected)
+    return { ...job, steps: structuredClone(raw.steps), receiptProtocol: HTTP_READBACK_SCHEMA }
+  }
   const withFixture = raw?.receipt_protocol === HTTP_FIXTURE_RECEIPT_SCHEMA
   const keys = ['job_id', 'project_id', 'us_id', 'base_url', 'steps', 'timeout_ms', 'metadata', 'receipt_protocol', 'execution_kind',
     ...(withFixture ? ['fixture_input'] : [])]

@@ -40,6 +40,34 @@ test('delivery validates immutable and current pins independently without releas
     code_revisions: [], available_actions: [] }, 'project-1', 'version-1').enabled, false)
 })
 
+test('working image adoption is not a publication or generation grant', () => {
+  const adopted = clone(view)
+  adopted.iteration_image = { ...pin, publication_id: null, adoption_id: 'adopt-1', image_revision_id: 'image-2' }
+  assert.equal(load('versionDeliveryValidation').verifyVersionDelivery(adopted, 'project-1', 'version-1'), adopted)
+  adopted.iteration_image.review_event_id = 'review-1'
+  assert.throws(() => load('versionDeliveryValidation').verifyVersionDelivery(adopted, 'project-1', 'version-1'))
+})
+
+const adoption = { request: { project_id: 'project-1', version_id: 'version-1', expected_image_revision_id: 'image-1',
+  expected_image_artifact_hash: hash, image_revision_id: 'image-2', image_artifact_hash: hash,
+  code_commits: { 'binding-1': 'b'.repeat(40) } },
+  code_revisions: [{ ...view.code_revisions[0], source_revision_id: 'source-rev-2', external_revision: 'b'.repeat(40), commit_sha: 'b'.repeat(40) }],
+  adoption_authorized: false }
+test('adoption preview pins exact repositories, commits, image and iteration', () => {
+  assert.equal(load('iterationImageAdoption').verifyImageAdoption(adoption, view, 'image-2'), adoption)
+})
+for (const [label, alter] of Object.entries({
+  project: v => { v.request.project_id = 'other' }, version: v => { v.request.version_id = 'other' },
+  parent: v => { v.request.expected_image_revision_id = 'latest' }, hash: v => { v.request.image_artifact_hash = 'latest' },
+  authorization: v => { v.adoption_authorized = true }, missing: v => { v.code_revisions = [] },
+  duplicate: v => { v.code_revisions.push(v.code_revisions[0]) }, repository: v => { v.code_revisions[0].repository = 'other' },
+  branch: v => { v.code_revisions[0].commit_sha = 'main' }, source: v => { v.code_revisions[0].source_id = 'other' },
+  'commit mismatch': v => { v.request.code_commits['binding-1'] = 'c'.repeat(40) },
+})) test(`adoption rejects ${label}`, () => {
+  const value = clone(adoption); alter(value)
+  assert.throws(() => load('iterationImageAdoption').verifyImageAdoption(value, view, 'image-2'))
+})
+
 for (const [label, alter] of Object.entries({
   'wrong project': (v) => { v.project_id = 'other' },
   'wrong version': (v) => { v.version_id = 'other' },

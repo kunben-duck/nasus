@@ -98,7 +98,7 @@ def compile_http_locator_evidence(plan, inventory):
             raise RunPlanInvalid("complete locator evidence exceeds its bound; never truncate original actions")
         if (plan["plan_digest"] != acceptance_digest({key: value for key, value in plan.items() if key != "plan_digest"})
                 or inventory["rule"] != rule
-                or scoped and plan["schema"] != "nasus.run-plan.v3"
+                or scoped and plan["schema"] not in {"nasus.run-plan.v3", "nasus.run-plan.v4"}
                 or inventory["inventory_hash"] != acceptance_digest({key: value for key, value in inventory.items() if key != "inventory_hash"})
                 or type(inventory["sources"]) is not list or not 1 <= len(inventory["sources"]) <= 64):
             raise RunPlanIntegrityError("locator original plan or inventory digest differs")

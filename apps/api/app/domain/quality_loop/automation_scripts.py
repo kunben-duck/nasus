@@ -8,12 +8,14 @@ from .acceptance_specification import acceptance_digest
 from .automation_input import AUTOMATION_INPUT_SCHEMA, AutomationInputInvalid
 from .http_bindings import HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA, validate_http_binding_steps
 from .http_runner_observations import HTTP_RUNNER_RECEIPT_SCHEMA
+from .http_readback import HTTP_READBACK_SCHEMA, validate_readback_steps
 
 
 SCRIPT_PROPOSAL_SCHEMA = "nasus.automation-script-proposal.v1"
 SCRIPT_BINDING_PROPOSAL_SCHEMA = "nasus.automation-script-proposal.v2"
 SCRIPT_FIXTURE_PROPOSAL_SCHEMA = "nasus.automation-script-proposal.v3"
-ASSERT_ACTIONS = frozenset({"assert_text", "assert_visible", "assert_url", "assert_status", "assert_json", "assert_header", "assert_body"})
+SCRIPT_READBACK_PROPOSAL_SCHEMA = "nasus.automation-script-proposal.v4"
+ASSERT_ACTIONS = frozenset({"assert_text", "assert_visible", "assert_url", "assert_status", "assert_json", "assert_header", "assert_body", "assert_unchanged"})
 ACTION_FIELDS = {
     "goto": {"url"}, "click": {"selector"}, "fill": {"selector", "value"},
     "press": {"selector", "key"}, "assert_text": {"selector", "value"},
@@ -69,7 +71,8 @@ def script_http_protocol(proposal):
     if proposal.get("schema") == SCRIPT_PROPOSAL_SCHEMA and "http_protocol" not in proposal:
         return HTTP_RUNNER_RECEIPT_SCHEMA
     protocols = {SCRIPT_BINDING_PROPOSAL_SCHEMA: HTTP_BINDING_RECEIPT_SCHEMA,
-        SCRIPT_FIXTURE_PROPOSAL_SCHEMA: HTTP_FIXTURE_RECEIPT_SCHEMA}
+        SCRIPT_FIXTURE_PROPOSAL_SCHEMA: HTTP_FIXTURE_RECEIPT_SCHEMA,
+        SCRIPT_READBACK_PROPOSAL_SCHEMA: HTTP_READBACK_SCHEMA}
     schema = proposal.get("schema")
     _require(type(schema) is str and schema in protocols
         and proposal.get("http_protocol") == protocols[schema],
@@ -89,9 +92,10 @@ def script_fixture_binding_ids(script):
 
 def validate_script_proposal(prepared, output, *, http_protocol=HTTP_RUNNER_RECEIPT_SCHEMA):
     verify_script_input(prepared)
-    _require(http_protocol in {HTTP_RUNNER_RECEIPT_SCHEMA, HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA}, "unsupported script HTTP protocol")
+    _require(http_protocol in {HTTP_RUNNER_RECEIPT_SCHEMA, HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA}, "unsupported script HTTP protocol")
     bindings_enabled = http_protocol != HTTP_RUNNER_RECEIPT_SCHEMA
-    fixture_enabled = http_protocol == HTTP_FIXTURE_RECEIPT_SCHEMA
+    readback_enabled = http_protocol == HTTP_READBACK_SCHEMA
+    fixture_enabled = http_protocol in {HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA}
     _require(output["input_digest"] == prepared["input_digest"], "scripts belong to another automation input")
     cases = {case["case_id"]: case for case in prepared["cases"]}
     accounted, scripted, gaps = set(), [], []
@@ -109,6 +113,10 @@ def validate_script_proposal(prepared, output, *, http_protocol=HTTP_RUNNER_RECE
         http_fields = {**HTTP_ACTION_FIELDS, **({"capture_json": {"request_id", "pointer", "binding_id"}} if bindings_enabled else {})}
         if fixture_enabled:
             http_fields["use_fixture_binding"] = {"binding_id"}
+        if readback_enabled:
+            http_fields["request"] = http_fields["request"] | {"phase"}
+            http_fields.update(capture_snapshot={"request_id", "pointer", "snapshot_id"},
+                assert_unchanged={"request_id", "pointer", "snapshot_id"})
         for action in actions:
             fields = (http_fields if kind == "http" else ACTION_FIELDS).get(action["action"])
             _require(fields is not None and set(action) == fields | {"action", "source_step_indices"}, "unsupported executable action")
@@ -119,7 +127,7 @@ def validate_script_proposal(prepared, output, *, http_protocol=HTTP_RUNNER_RECE
             observed_steps.update(indices)
             for field in fields:
                 value = action[field]
-                _require(type(value) is str and (value.strip() or action["action"] in {"assert_json", "capture_json"} and field == "pointer") and len(value) <= 4096
+                _require(type(value) is str and (value.strip() or action["action"] in {"assert_json", "capture_json", "capture_snapshot", "assert_unchanged"} and field == "pointer") and len(value) <= 4096
                     and not any(ord(char) < 32 for char in value), "action requires bounded explicit operands")
             if action["action"] in {"goto", "assert_url"}:
                 path = action["url" if action["action"] == "goto" else "value"]
@@ -155,7 +163,8 @@ def validate_script_proposal(prepared, output, *, http_protocol=HTTP_RUNNER_RECE
                             "invalid response header name")
         _require(observed_steps == set(range(len(case["steps"]))), "script omitted an original case step")
         if bindings_enabled and kind == "http":
-            validate_http_binding_steps(tuple(actions),
+            validator = validate_readback_steps if readback_enabled else validate_http_binding_steps
+            validator(tuple(actions),
                 fixture_bindings=script_fixture_binding_ids(script) if fixture_enabled else ())
         expected = {item["row_id"]: item for item in case["assertions"]}
         observed, action_indices = set(), set()
@@ -185,7 +194,7 @@ def validate_script_proposal(prepared, output, *, http_protocol=HTTP_RUNNER_RECE
         accounted.add(ident)
         gaps.append(deepcopy(gap))
     _require(accounted == set(cases), "generation must account for every selected case without truncation")
-    return {"schema": SCRIPT_FIXTURE_PROPOSAL_SCHEMA if fixture_enabled else SCRIPT_BINDING_PROPOSAL_SCHEMA if bindings_enabled else SCRIPT_PROPOSAL_SCHEMA,
+    return {"schema": SCRIPT_READBACK_PROPOSAL_SCHEMA if readback_enabled else SCRIPT_FIXTURE_PROPOSAL_SCHEMA if fixture_enabled else SCRIPT_BINDING_PROPOSAL_SCHEMA if bindings_enabled else SCRIPT_PROPOSAL_SCHEMA,
         **({"http_protocol": http_protocol} if bindings_enabled else {}), "input_digest": prepared["input_digest"],
         "scripts": sorted(scripted, key=lambda item: item["case_id"]), "gaps": sorted(gaps, key=lambda item: item["case_id"]),
         "case_count": len(cases), "script_count": len(scripted), "gap_count": len(gaps),

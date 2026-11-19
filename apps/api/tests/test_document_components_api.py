@@ -1,4 +1,5 @@
 import importlib.util
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -152,8 +153,10 @@ def test_pre_component_v1_image_and_receipt_remain_unchanged_after_reextraction(
     path.write_text(REQUIREMENT)
     v["invoke"]("system_image.sources.register", {"source_specs": [{"source_type": "us_doc", "source_uri": str(path)}]})
     v["invoke"]("system_image.sources.ingest")
+    original_payload = document_projection.DocumentObservation.payload
     with monkeypatch.context() as legacy:
-        legacy.setattr(document_projection, "DOCUMENT_EXTRACTOR", "nasus.explicit-document.v1")
+        legacy.setattr(document_projection.DocumentObservation, "payload", lambda observation, text, file_hash:
+            original_payload(replace(observation, extractor_version="nasus.explicit-document.v1"), text, file_hash))
         legacy.setattr(archived_document_projection, "DOCUMENT_EXTRACTOR", "nasus.explicit-document.v1")
         legacy.setattr(archived_document_projection, "component_payloads", lambda *args: iter(()))
         v["invoke"]("system_image.context.materialize")

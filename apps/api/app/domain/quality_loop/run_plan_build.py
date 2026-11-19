@@ -6,7 +6,8 @@ import json
 from .acceptance_specification import acceptance_digest
 from .native_build import NATIVE_BUILD_SCHEMA
 from .build_profiles import build_profile, validate_toolchain
-from .run_plan import RUN_PLAN_SCHEMA, RUN_PLAN_BINDING_SCHEMA, RUN_PLAN_FIXTURE_SCHEMA, run_plan_artifact_schema, RunPlanInvalid, RunPlanIntegrityError
+from .run_plan import (RUN_PLAN_SCHEMA, RUN_PLAN_BINDING_SCHEMA, RUN_PLAN_FIXTURE_SCHEMA, RUN_PLAN_READBACK_SCHEMA,
+    run_plan_artifact_schema, RunPlanInvalid, RunPlanIntegrityError)
 
 
 RUN_PLAN_BUILD_SCHEMA = "nasus.run-plan-build.v1"
@@ -21,7 +22,7 @@ def compile_run_plan_build(view, selection, builds):
     artifact, metadata = view["artifact"], view["metadata"]
     plan, source = artifact["plan"], artifact["plan"]["source_pin"]
     unsigned = {key: value for key, value in plan.items() if key != "plan_digest"}
-    if (plan.get("schema") not in {RUN_PLAN_SCHEMA, RUN_PLAN_BINDING_SCHEMA, RUN_PLAN_FIXTURE_SCHEMA}
+    if (plan.get("schema") not in {RUN_PLAN_SCHEMA, RUN_PLAN_BINDING_SCHEMA, RUN_PLAN_FIXTURE_SCHEMA, RUN_PLAN_READBACK_SCHEMA}
             or plan.get("schema") != plan.get("selection", {}).get("policy_revision")
             or artifact.get("schema") != run_plan_artifact_schema(plan["schema"])
             or acceptance_digest(unsigned) != plan.get("plan_digest")

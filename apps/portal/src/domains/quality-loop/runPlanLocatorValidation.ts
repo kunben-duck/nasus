@@ -106,7 +106,7 @@ export async function verifyRunPlanLocators(value: unknown, saved: RunPlanArchiv
   const { rule, schema, policy } = formats[inventory.schema], scoped = django || inventory.schema === 'nasus.frozen-http-route-inventory.v2'
   requireRunPlan(new TextEncoder().encode(JSON.stringify(report)).length <= 4 * 1024 * 1024
     && plan.plan_digest === await canonicalDigest(Object.fromEntries(Object.entries(plan).filter(([key]) => key !== 'plan_digest')))
-    && receipt.schema === 'nasus.run-plan-locator-receipt.v1' && report.schema === schema && (!scoped || plan.schema === 'nasus.run-plan.v3')
+    && receipt.schema === 'nasus.run-plan-locator-receipt.v1' && report.schema === schema && (!scoped || ['nasus.run-plan.v3', 'nasus.run-plan.v4'].includes(plan.schema))
     && receipt.policy === policy && report.policy === policy && report.scope === 'fixed_source_static_method_and_path_only'
     && generationEqual(receipt.query, locatorQuery(saved)) && report.project_id === plan.project_id
     && receipt.plan_digest === plan.plan_digest && report.plan_digest === plan.plan_digest

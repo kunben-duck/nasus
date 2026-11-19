@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import socket
+from datetime import datetime, timezone
 from contextlib import ExitStack
 from pathlib import Path
 import subprocess
@@ -22,6 +23,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 from isolated_test_storage import isolated_test_storage
+from test_clock_preflight import require_current_clock
 
 
 def main() -> int:
@@ -41,6 +43,9 @@ def main() -> int:
     created = False
     try:
         with admin.connect() as conn:
+            started = datetime.now(timezone.utc)
+            clock = conn.scalar(text("SELECT clock_timestamp()"))
+            require_current_clock("PostgreSQL", clock, started=started, finished=datetime.now(timezone.utc))
             conn.execute(text(f'CREATE DATABASE "{database}"'))
         created = True
         with tempfile.TemporaryDirectory(prefix="nasus-pg-test-") as directory, ExitStack() as resources:

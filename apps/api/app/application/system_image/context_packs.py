@@ -26,6 +26,7 @@ class ContextPackRepositoryPort(Protocol):
 
 
 class ContextPackArtifactPort(Protocol):
+    def read_session(self) -> ContextManager[object]: ...
     def put(self, project_id, payload): ...
     def read(self, project_id, ref, digest): ...
 
@@ -191,8 +192,9 @@ class ContextPackApplicationService:
             "generation_authorized": False}
 
     def read(self, project_id, context_id):
-        # Reuse only the transport: each authorization statement remains fresh.
-        with self.authorization.live_read_session():
+        # Reuse transports, not bytes or proofs: replay and live checks still
+        # independently read every original and execute every ACL statement.
+        with self.authorization.live_read_session(), self.artifacts.read_session():
             return self._read_current(project_id, context_id)
 
     def _read_current(self, project_id, context_id):

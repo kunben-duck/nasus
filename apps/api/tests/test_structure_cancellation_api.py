@@ -92,11 +92,12 @@ def test_stop_status_is_readonly_current_authority_and_private(queued):
 
 @pytest.mark.parametrize("offset", [-901, 60])
 def test_expired_or_future_stop_confirmation_cannot_write_intent(queued, monkeypatch, offset):
-    import apps.api.app.application.platform.runtime as runtime
+    import apps.api.app.infrastructure.persistence.conversation_repository as claims
     v = queued
     ident, payload = enqueue(v)
     prepared = prepare_cancel(v, ident, payload)
-    monkeypatch.setattr(runtime, "_now_iso", lambda: (datetime.now(timezone.utc) + timedelta(seconds=offset)).isoformat())
+    clock = claims.confirmation_time
+    monkeypatch.setattr(claims, "confirmation_time", lambda session: clock(session) + timedelta(seconds=offset))
     assert confirm(v, prepared["id"])["status"] == "failed"
     with session_scope() as session:
         assert session.get(StructureCancellationRecord, ident) is None

@@ -69,6 +69,16 @@ const badSnapshots = {
   'unknown source kind': (image) => { image.sources[0].source_type = 'run' },
   'controlled identity': (image) => { image.sources[0].id = 'bad\x00id' },
 }
+test('an untouched project has no refreshable sources and cannot submit a refresh', () => {
+  const image = snapshot()
+  image.source_manifest = null
+  image.sources.forEach(source => { source.registered_at = null })
+  assert.equal(api.refreshableSources('project', image).length, 0)
+  assert.equal(api.sourceRefreshScope('project', image), JSON.stringify(['project', null, null, []]))
+  assert.throws(() => api.prepareSourceRefresh('project', image, ['code']))
+  image.sources[0].registered_at = 'today'
+  assert.throws(() => api.refreshableSources('project', image))
+})
 for (const [name, mutate] of Object.entries(badSnapshots)) test(`reject ${name} before preparing a command`, () => {
   const image = snapshot(); mutate(image)
   assert.throws(() => api.prepareSourceRefresh('project', image, ['us']))

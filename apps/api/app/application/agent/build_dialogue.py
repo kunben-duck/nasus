@@ -93,13 +93,13 @@ class GuidedBuildConversation:
             if starting or build_turn_kind(content) is not None or is_intake_confirmation(content):
                 return await self._say(conversation_id, state, prompt_for(state))
             return None
-        if state.capture_started and any(key in fields and fields[key] != getattr(state, key)
-                for key in ("code", "code_ref", "requirements", "tests")):
+        if state.capture_started and any(key in fields and fields[key] != state.model_dump(mode="json")[key]
+                for key in ("code", "code_ref", "requirements", "tests", "additional_code_sources")):
             return await self._say(conversation_id, state,
                 "本次来源已经登记，不能把失败的旧来源当作已删除。请恢复原地址的可访问性后重新确认；如果需要换仓库或资料，请点击“开始新的构建对话”。尚未采集前可以自由修改资料。"
                 if state.locale == "zh" else "These sources have already been registered. Replacing a URL does not remove its failed binding. Restore access to the original sources and confirm again, or start a new build conversation with different inputs. Inputs can be edited freely before capture.")
         if fields:
-            state = state.model_copy(update={**fields, "revision": state.revision + 1})
+            state = BuildIntake.model_validate({**state.model_dump(mode="json"), **fields, "revision": state.revision + 1})
         if state.requirements and state.tests:
             state.optional_decided = True
         if not state.project_name:
@@ -115,11 +115,11 @@ class GuidedBuildConversation:
                 return await self._tool_blocked(conversation_id, state, invocation)
             conversation = self.conversations.bind_created_project(conversation_id, invocation)
             state.project_id = conversation.project_id
-        state.stage = "review" if state.code and state.optional_decided else "sources"
+        state.stage = "review" if state.code and state.optional_decided and not state.source_input_issue else "sources"
         return await self._say(conversation_id, state, prompt_for(state))
 
     async def _capture_and_build(self, conversation, state):
-        if not state.code or state.project_id != conversation.project_id:
+        if not state.code or state.source_input_issue or state.project_id != conversation.project_id:
             raise PlatformApplicationError("invalid_build_inputs", "A verified project and code source are required.", 409)
         if not state.capture_started:
             state.capture_started = True

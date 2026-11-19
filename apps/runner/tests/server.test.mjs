@@ -190,3 +190,13 @@ test('fixture resource imports cannot bypass the owned-target worker through the
   assert.equal(result.message, 'Fixture imports require the private owned-target worker.')
   assert.equal(JSON.stringify(result).includes('must-not-be-echoed'), false)
 })
+
+test('v4 readback cannot bypass the private worker through the public job endpoint', async () => {
+  const response = await fetch(runnerUrl + '/v1/jobs', { method: 'POST', headers: {
+    Authorization: `Bearer ${serviceToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({
+      ...httpJob([httpStep('/')]), receipt_protocol: 'nasus.runner-http-execution.v4' }) })
+  const result = await response.json()
+  assert.equal(response.status, 400)
+  assert.equal(result.execution_receipt, undefined)
+  assert.equal(result.message, 'Readback requires the private owned-target worker.')
+})

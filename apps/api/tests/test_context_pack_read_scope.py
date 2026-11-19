@@ -1,5 +1,5 @@
 """Application control-flow tests; native PG/archive safety is tested separately."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -67,7 +67,8 @@ def reader(monkeypatch):
         calls.append("stale")
         return None
 
-    service = ContextPackApplicationService(None, authorization, SimpleNamespace(stale_state=stale), None)
+    service = ContextPackApplicationService(None, authorization, SimpleNamespace(stale_state=stale),
+        SimpleNamespace(read_session=nullcontext))
     monkeypatch.setattr(service, "_verify_stored", verify)
     monkeypatch.setattr(service, "_prepare", prepare)
     return service, authorization, calls, payload

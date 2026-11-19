@@ -29,6 +29,7 @@ class TestDesignScopeApplicationService:
 
     def __init__(self, contexts: ScopeContextPort, authorization, repository: ScopeRepositoryPort, artifacts: ScopeArtifactPort):
         self.contexts, self.authorization, self.repository, self.artifacts = contexts, authorization, repository, artifacts
+        self.drafts = None
 
     def inspect(self, project_id, context_id):
         access = self.authorization.scope(project_id)
@@ -85,8 +86,24 @@ class TestDesignScopeApplicationService:
             require_access()
             return prior
         context = self._context(request, current=request.decision == "approve")
+        if request.draft_ref is not None:
+            if self.drafts is None or request.decision != "approve":
+                raise TestDesignScopeChanged("scope draft review requires an available draft")
+            suggested = self.drafts.read(request.project_id, request.draft_ref.invocation_id)
+            if (suggested["context_id"] != request.context_id
+                    or suggested["context_artifact_hash"] != request.context_artifact_hash
+                    or suggested["artifact_hash"] != request.draft_ref.artifact_hash
+                    or not suggested["current_use"]["context_current"]):
+                raise TestDesignScopeChanged("scope draft no longer matches this confirmed context")
+            if suggested["actor_id"] == access.actor_id:
+                raise SourceAccessDenied("model scope suggestions require an independent reviewer")
         contract = request.contract.model_dump(mode="json") if request.contract else None
         assessment = validate_scope_contract(contract, context["context"]) if contract else None
+        if request.draft_ref is not None:
+            originals = {item["object_id"]: item["oracle"] for item in context["context"]["required_constraints"]}
+            if any(acceptance_digest(example["positive"]) != acceptance_digest(originals[example["constraint_id"]])
+                   for example in contract["examples"]):
+                raise ValueError("scope review cannot change confirmed requirement oracles; revise the requirement first")
         payload = {"schema": SCOPE_SCHEMA, "project_id": request.project_id, "request": request.model_dump(mode="json"),
                    "context_pin": {k: context["metadata"][k] for k in ("context_id", "artifact_hash", "input_digest", "image_revision_id", "image_artifact_hash")},
                    "assessment": assessment, "authority_actor": access.actor_id, "invocation_id": invocation_id, "recorded_at": recorded_at}

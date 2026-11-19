@@ -21,6 +21,7 @@ export interface IterationCreateAttempt {
 export interface DeliveryImagePin {
   publication_id: string | null
   review_event_id?: string | null
+  adoption_id?: string | null
   baseline_id: string
   image_revision_id: string
   image_artifact_hash: string

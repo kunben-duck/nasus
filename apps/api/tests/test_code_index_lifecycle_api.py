@@ -126,26 +126,32 @@ def test_status_checks_project_source_acl_and_late_revocation(evidence_api, monk
     assert v["client"].get(listing, headers=v["member_headers"], params={"binding_id": pin.binding_id}).status_code == 403
 
 
-def test_canonical_cancel_stops_running_structure_and_retains_durable_pin(evidence_api, monkeypatch, tmp_path):
+@pytest.mark.parametrize("startup_delay", [0, 11], ids=["normal-start", "slow-start"])
+def test_canonical_cancel_stops_running_structure_and_retains_durable_pin(evidence_api, monkeypatch, tmp_path, startup_delay):
     v = evidence_api
     paused, release = Event(), Event()
     class PauseAfterNativeIndex(_FixtureProcessRunner):
         def run(self, args, **kwargs):
+            if len(args) > 2 and args[2] == "index_repository":
+                release.wait(startup_delay)
             result = super().run(args, **kwargs)
             if len(args) > 2 and args[2] == "index_repository":
                 paused.set()
-                deadline = time.monotonic() + 15
                 while not release.wait(.02):
                     kwargs["check_current"]()
-                    if time.monotonic() > deadline:
-                        raise TimeoutError("test worker was not released")
             return result
     install_native(v, monkeypatch, tmp_path, PauseAfterNativeIndex())
     invocation = submit(v, request(v))
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(confirm, v, invocation)
         try:
-            assert paused.wait(10), "native index did not reach the held phase"
+            # Setup competes with the other PG/MinIO release shards. It is not
+            # the cancellation latency assertion below; hold the exact phase
+            # until the parent releases it, including every failure path.
+            setup_deadline = time.monotonic() + 60
+            while not paused.wait(.05):
+                assert not pending.done(), f"native index ended before the held phase: {pending.result()}"
+                assert time.monotonic() < setup_deadline, "native index did not reach the held phase"
             pin = generation(invocation)
             read = v["client"].get(url(v, pin), headers=v["headers"])
             assert read.status_code == 200 and read.json()["status"]["worker_state"] == "active", read.text

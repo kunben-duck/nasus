@@ -2,7 +2,8 @@ import type { VersionDelivery, DeliveryImagePin, IterationImageBinding } from '.
 import { deliveryHash, deliveryId } from './iterationCreation'
 
 function validPin(pin: DeliveryImagePin | null, working = false) {
-  return !!pin && (deliveryId(pin.publication_id) || (working && pin.publication_id === null && deliveryId(pin.review_event_id))) && deliveryId(pin.baseline_id)
+  return !!pin && (deliveryId(pin.publication_id) || (working && pin.publication_id === null
+    && (deliveryId(pin.review_event_id) !== deliveryId(pin.adoption_id)))) && deliveryId(pin.baseline_id)
     && deliveryId(pin.image_revision_id) && deliveryHash(pin.image_artifact_hash)
     && deliveryId(pin.manifest_id) && deliveryHash(pin.manifest_hash) && Number.isSafeInteger(pin.sequence) && pin.sequence > 0
     && pin.quality_generation_authorized === false && pin.release_authorized === false

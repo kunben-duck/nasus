@@ -24,6 +24,8 @@ FACT_EVENTS = {
     "system_image.context.compiled": "context",
     "quality.test_design_scope.reviewed": "scope",
     "quality.test_design.generated": "generation",
+    # A human revision has its own draft/case/coverage nodes, not a new model call.
+    "quality.test_design.revised": "generation",
     "quality.test_design_mapping.reviewed": "mapping",
 }
 

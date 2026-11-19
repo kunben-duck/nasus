@@ -53,7 +53,7 @@ class FrozenHttpLocatorInventory:
     def inspect(self, plan, *, require_access):
         context = plan["prepared"]["context_pin"]
         results = []
-        scoped = plan["schema"] == "nasus.run-plan.v3"
+        scoped = plan["schema"] in {"nasus.run-plan.v3", "nasus.run-plan.v4"}
         python = scoped and plan["selection"]["target_build"]["runtime"].lower() == "python"
         rule = "java.import-resolved-http-locators.v2" if scoped else LOCATOR_RULE
         parser = TreeSitterCodeIntelligenceAdapter(strict_http_locators=True)

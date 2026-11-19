@@ -14,6 +14,7 @@ from .test_design_output import Digest, GenerationValue, Id
 from ...domain.quality_loop.acceptance_specification import acceptance_digest
 from ...domain.quality_loop.run_plan_fixture_captures import CaseFixtureCaptures, collect_case_fixture_captures
 from ...domain.quality_loop.http_bindings import HTTP_FIXTURE_RECEIPT_SCHEMA
+from ...domain.quality_loop.http_readback import HTTP_READBACK_SCHEMA
 from ...domain.quality_loop.http_fixture_binding_input import build_fixture_input
 from ...domain.quality_loop.automation_scripts import script_http_protocol
 from ...domain.quality_loop.environment_observation_record import environment_record_metadata, validate_environment_archive
@@ -206,7 +207,7 @@ class RunPlanCaseInputApplicationService:
             target_artifact_hash=plan["selection"]["target_build"]["artifact_hash"],
             inventory_hash=inventory.inventory_hash, selection=request)
         execution_roster(plan, scope)
-        fixture_bound = script_http_protocol(plan["proposal"]) == HTTP_FIXTURE_RECEIPT_SCHEMA
+        fixture_bound = script_http_protocol(plan["proposal"]) in {HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA}
         original_base = historical_scope.base_scope if isinstance(historical_scope, FixtureBoundRunPlanCaseScope) else historical_scope
         if historical and scope != original_base:
             raise RunPlanChanged("historical case inputs differ from the original persisted execution scope")

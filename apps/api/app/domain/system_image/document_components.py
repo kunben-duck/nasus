@@ -4,7 +4,7 @@ from collections import Counter
 from dataclasses import dataclass, replace
 import re
 
-from .document_projection import DOCUMENT_EXTRACTOR, DocumentObservation
+from .document_projection import DOCUMENT_EXTRACTOR, DocumentObservation, validate_document_extractor
 from .evidence import text_digest, source_lines
 from .source_snapshots import snapshot_digest
 
@@ -50,7 +50,11 @@ class DocumentComponent:
                 "occurrence": self.parent.fields[self.field_indices[0]].start_line,
                 "content": snapshot_digest([self.parent.fields[i].value for i in self.field_indices])}
 
-    def payload(self, parent_payload):
+    def payload(self, parent_payload, *, extractor_version=DOCUMENT_EXTRACTOR):
+        validate_document_extractor(extractor_version, legacy_only=True)
+        validate_document_extractor(self.parent.extractor_version, legacy_only=True)
+        if parent_payload.get("extractor_version") != self.parent.extractor_version:
+            raise ValueError("component parent extractor version mismatch")
         if (self.parent.kind != "requirement" or not self.field_indices
                 or tuple(sorted(set(self.field_indices))) != self.field_indices
                 or any(type(i) is not int or not 0 <= i < len(self.parent.fields) for i in self.field_indices)
@@ -59,7 +63,7 @@ class DocumentComponent:
             raise ValueError("invalid source document component")
         fields = [parent_payload["fields"][i] for i in self.field_indices]
         first, last = fields[0], fields[-1]
-        return {"schema": COMPONENT_SCHEMA, "extractor_version": DOCUMENT_EXTRACTOR,
+        return {"schema": COMPONENT_SCHEMA, "extractor_version": extractor_version,
                 "kind": self.kind, "external_id": self.external_id, "identity_status": self.identity_status,
                 "title": f"{self.parent.external_id} / {first['value']}"[:500],
                 "locator": {**parent_payload["locator"], "start_line": first["start_line"], "end_line": last["end_line"]},
@@ -76,6 +80,7 @@ class DocumentComponent:
 def requirement_components(parent: DocumentObservation) -> tuple[DocumentComponent, ...]:
     if parent.kind != "requirement":
         return ()
+    validate_document_extractor(parent.extractor_version, legacy_only=True)
     groups = []
     for index, field in enumerate(parent.fields):
         if field.name not in COMPONENT_KINDS:
@@ -117,22 +122,18 @@ def component_payloads(parent, parent_payload, text):
 
 def validate_component_payload(payload, parent_payload, parent_identity_hash):
     """Rebuild the projection from its exact parent; never accept caller-made semantics."""
-    from .document_projection import DOCUMENT_SCHEMA, DocumentField
+    from .document_projection import DOCUMENT_SCHEMA
     if parent_payload.get("schema") != DOCUMENT_SCHEMA or parent_payload.get("kind") != "requirement":
         raise ValueError("component parent must be an evidenced requirement")
-    locator = parent_payload["locator"]
-    parent = DocumentObservation(parent_payload["kind"], parent_payload["title"], parent_payload["external_id"],
-        locator["relative_path"], locator["start_line"], locator["end_line"],
-        tuple(DocumentField(**{k: field[k] for k in ("name", "value", "start_line", "end_line")})
-              for field in parent_payload["fields"]), tuple(parent_payload["references"]),
-        tuple(parent_payload["gaps"]), parent_payload["identity_status"])
+    version = validate_document_extractor(payload.get("extractor_version"), legacy_only=True)
+    parent = DocumentObservation.from_payload(parent_payload)
     if snapshot_digest(parent.identity_key) != parent_identity_hash:
         raise ValueError("component parent identity mismatch")
     candidates = [item for item in requirement_components(parent)
                   if list(item.field_indices) == payload.get("parent", {}).get("field_indices")]
     if len(candidates) != 1:
         raise ValueError("component is not an exact parent field group")
-    expected = candidates[0].payload(parent_payload)
+    expected = candidates[0].payload(parent_payload, extractor_version=version)
     expected.update({key: parent_payload[key] for key in ("project_id", "source_id", "source_manifest_hash")})
     # The span hash is verified against archived bytes by source evidence reads.
     expected["snippet_hash"] = payload.get("snippet_hash")

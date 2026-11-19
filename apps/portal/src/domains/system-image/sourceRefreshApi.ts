@@ -20,15 +20,19 @@ export interface SourceRefreshAttempt { input: SourceRefreshInput; requestKey: s
 
 export function refreshableSources(projectId: string, image: SystemImageData): RawAssetRecord[] {
   if (!id(projectId) || image?.project?.id !== projectId || image.read_state?.mode !== 'working_draft'
-      || image.visibility?.mode === 'source_filtered' || image.source_manifest?.project_id !== projectId
-      || !id(image.source_manifest?.manifest_id) || !hash(image.source_manifest?.content_hash)
+      || image.visibility?.mode === 'source_filtered'
       || !Array.isArray(image.sources) || image.sources.some((source) => !source || source.project_id !== projectId
         || !id(source.id) || !['code', 'us_doc', 'test_asset'].includes(source.source_type))
       || new Set(image.sources.map((source) => source.id)).size !== image.sources.length) {
     throw new Error('Working sources could not be verified')
   }
+  const registered = image.sources.filter((source) => typeof source.registered_at === 'string' && source.registered_at.length > 0)
+  // An untouched project has only empty source slots, not a corrupt manifest.
+  if (image.source_manifest === null && image.sources.every((source) => source.registered_at === null)) return []
+  if (image.source_manifest?.project_id !== projectId || !id(image.source_manifest?.manifest_id)
+      || !hash(image.source_manifest?.content_hash)) throw new Error('Working manifest could not be verified')
   // Initial empty source slots have never been registered by a user or command.
-  return image.sources.filter((source) => typeof source.registered_at === 'string' && source.registered_at.length > 0)
+  return registered
 }
 
 export function prepareSourceRefresh(projectId: string, image: SystemImageData, selected: string[]): SourceRefreshInput {
@@ -41,7 +45,7 @@ export function prepareSourceRefresh(projectId: string, image: SystemImageData, 
 
 export function sourceRefreshScope(projectId: string, image: SystemImageData): string {
   const ids = refreshableSources(projectId, image).map((source) => source.id).sort()
-  return JSON.stringify([projectId, image.source_manifest!.manifest_id, image.source_manifest!.content_hash, ids])
+  return JSON.stringify([projectId, image.source_manifest?.manifest_id ?? null, image.source_manifest?.content_hash ?? null, ids])
 }
 
 export function requireSourceRefreshCommand(value: ToolInvocation, attempt: SourceRefreshAttempt): ToolInvocation {

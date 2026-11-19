@@ -12,6 +12,9 @@ class ContextPackArtifacts:
     def __init__(self, storage):
         self.storage = storage
 
+    def read_session(self):
+        return self.storage.read_session()
+
     @staticmethod
     def _key(project_id, digest):
         require_digest(digest)

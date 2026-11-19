@@ -28,17 +28,19 @@ def contract_document():
     # the application under test and are not upgraded to human-approved oracles.
     return ("# US-RW-001 RealWorld article update API contract\nDescription: Pinned official specification, not a confirmed iteration requirement.\n"
         + "Source: https://github.com/realworld-apps/realworld at " + SPEC + "\n"
-        + "## Article endpoint specification\n```json\n" + json.dumps(paths, ensure_ascii=False) + "\n```\n"
+        + "## Article endpoint specification\n```json\n" + json.dumps({"servers": api["servers"], "paths": paths}, ensure_ascii=False) + "\n```\n"
         + "## Historical authorization examples\n```\n" + read("specs/api/hurl/errors_authorization.hurl") + "\n```\n").encode()
 
 
 @pytest.mark.skipif(not os.getenv("M2_LIVE_SETTINGS"), reason="Run verify:realworld-m2 to opt into real provider calls")
-def test_realworld_live_review_clarification_independent_confirmation(evidence_api, tmp_path, monkeypatch):
+def test_realworld_live_review_clarification_independent_confirmation(evidence_api, tmp_path, monkeypatch, source_ref=None, after_m1=None):
     v = evidence_api
-    build_m1(v, tmp_path, monkeypatch, "langgraph_postgres", requirement_document=contract_document())
+    build_m1(v, tmp_path, monkeypatch, "langgraph_postgres", requirement_document=contract_document(), source_ref=source_ref)
     conversation_id = v["conversation"].json()["id"]
     current = v["client"].get(f"/v1/conversations/{conversation_id}", headers=v["headers"]).json()
     v["version"] = intake(current)["version_id"]
+    if after_m1 is not None:
+        after_m1(v)
     delivery_url = f"/v1/projects/{v['project_id']}/versions/{v['version']}/delivery"
     initial = v["client"].get(delivery_url, headers=v["headers"]).json()
     model = app.state.container.requirement_reviews.model
@@ -90,6 +92,11 @@ def test_realworld_live_review_clarification_independent_confirmation(evidence_a
         "管理员若非作者也属于其他用户。无效凭据视为未认证，401；测试准备使用有效且未过期的凭据。"
         "本轮拒绝响应只断言状态及数据不变，不限定 errors 的具体文字。显式 null 和空串不在本轮，不为它们生成断言。"
         "这些是我明确确认的需求意图；如发现与固定规格有冲突必须指出，不能以实现行为改变预期。")
+    if after_m1 is not None:
+        answer += ("本轮工作画像已显式采纳人为注入缺陷的提交：移除了文章归属校验。"
+            "这是必须检出的待修复缺陷，绝不能将非作者成功修改视为正确行为，预期仍为 403 且数据不变。"
+            "规格的 servers URL 含 /api，paths 的 /articles/{slug} 与它组合后就是 /api/articles/{slug}；"
+            "只验证组合后的地址，不要求无 /api 前缀的别名。")
     send(v, "回答：" + answer, timeout_seconds=240)
     refreshed = v["client"].get(f"/v1/conversations/{conversation_id}", headers=v["headers"])
     assert refreshed.status_code == 200
@@ -116,11 +123,11 @@ def test_realworld_live_review_clarification_independent_confirmation(evidence_a
         review = response.json()
         clarification_rounds.append(review)
     evidence = {"schema": "nasus.realworld-m2-acceptance.v1", "recorded_at": datetime.now(timezone.utc).isoformat(),
-        "source_commit": "87dd078c883a046f5ff20269df2fb004d8b5f83f", "spec_commit": SPEC,
+        "source_commit": initial["code_revisions"][0]["commit_sha"], "spec_commit": SPEC,
         "project_id": v["project_id"], "version_id": v["version"], "conversation_id": conversation_id,
         "first_review": first_review, "latest_review": review, "clarification_rounds": clarification_rounds, "operator_id": v["owner"]["id"],
         "independent_reviewer_id": v["member"]["id"], "live_model_verified": True, "full_loop_verified": False,
-        "status": "awaiting_independent_confirmation", "scope": "M2 only; no generated or executed tests, defects or release gate."}
+        "status": review["status"], "scope": "M2 only; no generated or executed tests, defects or release gate."}
     report = Path(os.environ["M2_ACCEPTANCE_REPORT"])
     report.write_text(json.dumps(evidence, ensure_ascii=False, indent=2))
     assert review["status"] == "awaiting_confirmation", review

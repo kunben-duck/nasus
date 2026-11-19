@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from typing import Optional
 from typing import Protocol
 
-from ...domain.system_image.document_projection import DOCUMENT_SCHEMA
+from ...domain.system_image.document_projection import (
+    DOCUMENT_SCHEMA, OPENAPI_DOCUMENT_EXTRACTOR, DocumentObservation, validate_document_extractor,
+)
 from ...domain.system_image.document_components import COMPONENT_SCHEMA, validate_component_payload
 from ...domain.system_image.source_snapshots import snapshot_digest
 from ...domain.system_image.evidence import EvidenceIntegrityError, EvidencePageTooLarge
@@ -64,6 +66,13 @@ class DocumentQueryApplicationService:
                 or payload.get("source_manifest_hash") != header["source_manifest_hash"]
                 or payload.get("title") != header["title"] or payload.get("kind") != header["kind"]):
             raise EvidenceIntegrityError("source document scope mismatch")
+        try:
+            if payload["schema"] == DOCUMENT_SCHEMA:
+                DocumentObservation.from_payload(payload)
+            else:
+                validate_document_extractor(payload.get("extractor_version"), legacy_only=True)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EvidenceIntegrityError("source document extractor contract is invalid") from exc
         if payload["schema"] == COMPONENT_SCHEMA:
             try:
                 parent_header, parent_ref, parent_hash, _ = self.repository.get(project_id,
@@ -129,12 +138,32 @@ class DocumentQueryApplicationService:
                 or payload.get("source_manifest_hash") != header["source_manifest_hash"]
                 or payload.get("summary") != header["summary"]):
             raise EvidenceIntegrityError("document extraction scope mismatch")
+        try:
+            validate_document_extractor(payload.get("extractor_version"), legacy_only=True)
+            file_versions = {validate_document_extractor(item["extractor_version"]) for item in payload["files"]
+                             if "extractor_version" in item}
+            if "extractor_versions" in payload:
+                versions = payload["extractor_versions"]
+                if not isinstance(versions, list) or not 1 <= len(versions) <= 3:
+                    raise ValueError("invalid extraction adapter versions")
+                for version in versions:
+                    validate_document_extractor(version)
+                if versions != sorted(set(versions)) or OPENAPI_DOCUMENT_EXTRACTOR not in versions:
+                    raise ValueError("invalid extraction adapter versions")
+                if not file_versions <= set(versions):
+                    raise ValueError("file adapter version is missing from report")
+            elif OPENAPI_DOCUMENT_EXTRACTOR in file_versions:
+                raise ValueError("OpenAPI report must declare its adapter versions")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EvidenceIntegrityError("document extraction adapter versions are invalid") from exc
         files = payload["files"]
         if offset > len(files):
             raise ValueError("extraction offset outside report")
         end = min(offset + limit, len(files))
         result = {"extraction": header, "files": files[offset:end], "total_files": len(files),
                   "next_offset": end if end < len(files) else None, "report_hash": digest}
+        if "extractor_versions" in payload:
+            result["extractor_versions"] = payload["extractor_versions"]
         self._size(result)
         self.authorization.require_current(scope)
         return result

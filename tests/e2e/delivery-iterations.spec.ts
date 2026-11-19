@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { analysisApi, analysisSource, captureAnalysis } from './source-analysis-fixtures'
 import { frozenRevisions } from './image-revision-fixtures'
+import { trackedOrigin } from './tracked-origin-fixtures'
 
 async function publishedFixture(request: APIRequestContext, source: string) {
   const fixture = await captureAnalysis(request, source)
@@ -28,6 +29,65 @@ async function publishedFixture(request: APIRequestContext, source: string) {
   expect(history.ok()).toBeTruthy()
   return { ...fixture, image, head: (await history.json()).head, oldId }
 }
+
+for (const theme of ['light', 'dark']) test(`explicit code image adoption preserves the starting baseline (${theme})`, async ({ page, request }) => {
+  test.setTimeout(240_000)
+  const origin = await trackedOrigin()
+  try {
+    const v = await publishedFixture(request, origin.uri)
+    const creation = await v.invoke('version.create', { name: 'Code adoption sprint', image_binding: {
+      publication_id: v.head.publication_id, image_revision_id: v.image.image_revision_id,
+      image_artifact_hash: v.image.artifact_hash, expected_head_id: v.head.publication_id,
+    } })
+    const version = creation.result.object_refs.find((ref: string) => ref.startsWith('version:')).slice(8)
+    const read = async () => {
+      const response = await request.get(`${analysisApi}/v1/projects/${v.projectId}/versions/${version}/delivery`, { headers: v.owner.headers })
+      expect(response.ok()).toBeTruthy()
+      return response.json()
+    }
+    const original = await read(), sha = origin.advanceMain()
+    expect(original.code_revisions[0].commit_sha).toBe(origin.mainCommit)
+    await v.invoke('system_image.sources.ingest')
+    await v.invoke('system_image.context.materialize')
+    const next = (await frozenRevisions(request, v.projectId, v.owner.headers)).find((item) => item.image_revision_id !== v.image.image_revision_id)!
+    expect(next).toBeTruthy()
+    expect((await read()).iteration_image).toEqual(original.iteration_image)
+    expect((await request.patch(`${analysisApi}/v1/settings`, { headers: v.owner.headers, data: { theme } })).ok()).toBeTruthy()
+    await page.addInitScript((token) => { localStorage.setItem('nasus_api_token', token); localStorage.setItem('nasus.locale', 'en') }, v.owner.token)
+    await page.goto(`/projects/${v.projectId}/versions?version_id=${version}`)
+    const panel = page.getByTestId('iteration-image-adoption')
+    await panel.getByRole('button', { name: 'Adopt a working image', exact: true }).click()
+    const selection = panel.getByRole('combobox', { name: 'Image revision', exact: true })
+    await expect(selection).toHaveValue('')
+    await expect(panel.getByRole('button', { name: 'Confirm image adoption' })).toHaveCount(0)
+    await selection.selectOption(next.image_revision_id)
+    await expect(panel).toContainText(origin.mainCommit)
+    await expect(panel).toContainText(sha)
+    const confirm = panel.getByRole('button', { name: 'Confirm image adoption', exact: true })
+    await expect(confirm).toBeDisabled()
+    const reason = panel.getByRole('textbox', { name: 'Reason', exact: true })
+    const consent = panel.getByRole('checkbox')
+    await reason.fill('Review the explicitly selected changed-code snapshot')
+    await consent.check()
+    await reason.fill('Explicitly adopt this captured SHA, without changing the initial baseline')
+    await expect(confirm).toBeDisabled()
+    await consent.check()
+    await confirm.click()
+    await expect(panel.getByRole('combobox')).toHaveCount(0)
+    const after = await read()
+    expect(after.baseline).toEqual(original.baseline)
+    expect(after.iteration_image.image_revision_id).toBe(next.image_revision_id)
+    expect(after.iteration_image.publication_id).toBeNull()
+    expect(after.iteration_image.adoption_id).toBeTruthy()
+    expect(after.code_revisions[0].commit_sha).toBe(sha)
+    await page.reload()
+    const delivery = page.getByTestId('iteration-delivery')
+    await expect(delivery.getByRole('region', { name: 'Immutable starting baseline' })).toContainText(v.image.image_revision_id)
+    await expect(delivery.getByRole('region', { name: 'Current iteration image' })).toContainText(next.image_revision_id)
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+  } finally { await origin.close() }
+})
 
 for (const theme of ['light', 'dark']) test(`explicit delivery creation, lost-response recovery and isolated image deep link (${theme})`, async ({ page, request }) => {
   test.setTimeout(240_000)

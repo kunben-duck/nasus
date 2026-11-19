@@ -37,6 +37,15 @@ def test_identity_check_cannot_substitute_unverified_context_or_generation():
     basis["generation_pin"]["artifact_hash"] = "other"
     with pytest.raises(ContextPackIntegrityError):
         service.cases("project", basis, "reviewer")
+
+
+def test_every_case_revision_author_requires_another_reviewer():
+    service, _, basis, _ = policy()
+    service.results.read = lambda *args: {"metadata": {"artifact_hash": "generation-hash"},
+        "result": {"actor_id": "last-editor", "author_ids": ["generator", "first-editor", "last-editor"]}}
+    for actor in ("generator", "first-editor", "last-editor", ""):
+        assert not service.cases("project", basis, actor)
+    assert service.cases("project", basis, "independent-reviewer")
     basis["generation_pin"]["context_pin"]["artifact_hash"] = "other"
     with pytest.raises(ContextPackIntegrityError):
         service.cases("project", basis, "reviewer")

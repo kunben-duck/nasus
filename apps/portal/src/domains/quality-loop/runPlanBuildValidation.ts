@@ -54,7 +54,7 @@ export async function expectedBuildBinding(plan: RunPlanArchive, selection: RunP
   const { plan_digest: originalDigest, ...unsigned } = plan.artifact.plan
   requireRunPlan(selection.project_id === plan.metadata.project_id && selection.run_plan_id === plan.metadata.run_plan_id
     && selection.run_plan_artifact_hash === plan.metadata.artifact_hash && await canonicalDigest(plan.artifact) === plan.metadata.artifact_hash
-    && ['nasus.run-plan.v1', 'nasus.run-plan.v2', 'nasus.run-plan.v3'].includes(plan.artifact.plan.schema)
+    && ['nasus.run-plan.v1', 'nasus.run-plan.v2', 'nasus.run-plan.v3', 'nasus.run-plan.v4'].includes(plan.artifact.plan.schema)
     && plan.artifact.plan.schema === plan.artifact.plan.selection.policy_revision
     && plan.artifact.schema === runPlanArtifactSchema(plan.artifact.plan.schema)
     && plan.artifact.plan.status === 'prepared'

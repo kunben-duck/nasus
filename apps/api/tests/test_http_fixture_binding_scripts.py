@@ -35,15 +35,21 @@ def fixture_script_output(prepared):
     return output
 
 
-def fixture_plan_inputs():
+def fixture_plan_inputs(protocol=HTTP_FIXTURE_RECEIPT_SCHEMA):
     _, _, sources, _ = plan_inputs()
     app, original_selection, deps, prepared = script_executor()
     selection = ScriptExecutionSelection.model_validate({**original_selection.model_dump(mode="json"),
-        "http_protocol": HTTP_FIXTURE_RECEIPT_SCHEMA})
+        "http_protocol": protocol})
 
     async def generate(system, content, model, **kwargs):
         assert json.loads(content) == prepared
-        return NativeGenerationReply(json.dumps(fixture_script_output(prepared)), 123, 45, "provider")
+        output = fixture_script_output(prepared)
+        if protocol == "nasus.runner-http-execution.v4":
+            for script in output["scripts"]:
+                for action in script["actions"]:
+                    if action["action"] == "request":
+                        action["phase"] = "exercise"
+        return NativeGenerationReply(json.dumps(output), 123, 45, "provider")
 
     deps["provider"].generate = generate
     request = ScriptExecutionRequest.model_validate(app.preview(selection)["request"])
@@ -57,18 +63,18 @@ def fixture_plan_inputs():
         "script_revision_id": draft["metadata"]["script_revision_id"], "script_artifact_hash": draft["metadata"]["artifact_hash"]},
         "assessment": assess_script_review(proposal, actions, assertions)}
     selection = selection_for(draft, review, sources).model_dump(mode="json")
-    selection["policy_revision"] = "nasus.run-plan.v3"
+    selection["policy_revision"] = "nasus.run-plan." + protocol.rsplit(".", 1)[-1]
     return draft, review, sources, selection
 
 
-def fixture_build_inputs():
+def fixture_build_inputs(protocol=HTTP_FIXTURE_RECEIPT_SCHEMA, *, python_profile=False):
     from apps.api.app.application.quality_loop.run_plan_build_inputs import RunPlanBuildSelection
     from apps.api.tests.test_run_plan_builds import binding_inputs
-    view, selected, builds = binding_inputs()
-    draft, review, sources, selection = fixture_plan_inputs()
+    view, selected, builds = binding_inputs(python_profile=python_profile)
+    draft, review, sources, selection = fixture_plan_inputs(protocol)
     assert view["artifact"]["plan"]["source_pin"] == sources
     selection["target_build"] = deepcopy(view["artifact"]["plan"]["selection"]["target_build"])
-    view["artifact"]["schema"] = "nasus.run-plan-artifact.v3"
+    view["artifact"]["schema"] = run_plan_artifact_schema(selection["policy_revision"])
     view["artifact"]["plan"] = compile_run_plan(draft, review, selection, sources)
     view["metadata"]["artifact_hash"] = acceptance_digest(view["artifact"])
     selected = RunPlanBuildSelection.model_validate({**selected.model_dump(mode="json"),

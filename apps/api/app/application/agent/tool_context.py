@@ -78,9 +78,23 @@ def compact_tool_catalog_json(
             score += 30
         if any(tool.tool_id.startswith(prefix) for prefix in intent_prefixes):
             score += 55
+        if tool.tool_id == "quality.test_design_scope.draft":
+            scope_intent = tool.tool_id in intent_text or any(term in intent_text for term in (
+                "draft scope", "scope draft", "test scope", "testing scope", "test design scope", "测试范围", "范围草案"))
+            score += 220 if scope_intent else -120
+        if tool.tool_id == "quality.test_design.cases.revise":
+            edit_intent = tool.tool_id in intent_text or bool(re.search(
+                r"(?:edit|revise|change)\b.{0,35}(?:case|test)|(?:编辑|修改|修订).{0,12}用例", intent_text))
+            score += 240 if edit_intent else -120
+        if tool.tool_id == "quality.iteration_image.adopt":
+            adopt_intent = tool.tool_id in intent_text or bool(re.search(
+                r"(?:adopt|select)\b.{0,45}(?:image|commit)|(?:采纳|选定).{0,16}(?:画像|提交)", intent_text))
+            score += 240 if adopt_intent else -120
         if tool.tool_id in {"quality.requirement.evaluate", "quality.requirement.confirm", "quality.requirement.revise",
                 "query.quality.requirement_review", "query.quality.requirements"}:
-            requirement_intent = any(word in intent_text for word in ("requirement", "需求", tool.tool_id))
+            requirement_intent = tool.tool_id in intent_text or (
+                any(word in intent_text for word in ("requirement", "需求"))
+                and not any(word in intent_text for word in ("reference", "traceability", "引用", "关联")))
             # Review descriptions mention execution only to deny its authority.
             # They must not crowd actual execution actions out of unrelated turns.
             score += 220 if requirement_intent else -100

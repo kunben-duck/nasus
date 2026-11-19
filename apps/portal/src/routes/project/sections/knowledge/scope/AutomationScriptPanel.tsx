@@ -40,7 +40,8 @@ export function AutomationScriptPanel({ draft, mapping, sessionId, onFailure }: 
           <legend>{t('Native script generation budget')}</legend>
           <label>{t('HTTP script protocol')}<select value={state.protocol} onChange={(event) => state.chooseProtocol(event.target.value)}>
             <option value="v1">{t('v1: fixed request paths')}</option><option value="v2">{t('v2: response resource bindings')}</option>
-            <option value="v3">{t('v3: original fixture resource imports')}</option></select></label>
+            <option value="v3">{t('v3: original fixture resource imports')}</option>
+            <option value="v4">{t('v4: reviewed state comparison and readback')}</option></select></label>
           <p>{t('Response bindings locate resources only. They cannot replace independent expected results or authorize execution.')}</p>
           <label>{t('Tested chat model')}<select value={state.model} onChange={(event) => state.chooseModel(event.target.value)}>
             <option value="">{t('Choose a tested model')}</option>{state.choices.map((choice) => <option key={choice.config_id} value={choice.config_id}>{choice.display_name}</option>)}</select></label>

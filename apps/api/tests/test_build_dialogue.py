@@ -158,7 +158,59 @@ def test_collect_sources_in_separate_turns():
     assert fields == {"code": "https://example.com/orders.git", "code_ref": "main", "optional_decided": True}
     assert BuildIntakeExtractor._literal_fields("跳过可选资料", BuildIntake()) == {"optional_decided": True}
     assert BuildIntakeExtractor._literal_fields("项目叫订单中心", BuildIntake())["project_name"] == "订单中心"
+
+
+@pytest.mark.parametrize("prompt,keys", [
+    ("创建项目\n项目名称：Acceptance 3", {"project_name"}),
+    ("需求文档地址 s3://test/sources/us.zip", {"requirements"}),
+    ("测试资产地址 s3://test/sources/cases.zip", {"tests"}),
+    ("仓库 https://example.test/a 提交 " + "a" * 40 + "\n仓库 https://example.test/b 提交 " + "b" * 40,
+     {"code", "code_ref", "additional_code_sources"}),
+])
+def test_explicit_intake_fields_need_no_model_call(prompt, keys):
+    extractor = BuildIntakeExtractor(llm=None, settings=Mock(side_effect=AssertionError("unexpected model lookup")),
+        secret=None, memory=None)
+    assert keys <= asyncio.run(extractor.extract(None, prompt, BuildIntake())).keys()
+
+
+def test_mixed_natural_language_is_not_a_structured_intake_receipt():
+    text = "需求文档地址 s3://test/sources/us.zip，另有其他资料"
+    assert not BuildIntakeExtractor._explicit_fields_complete(text, BuildIntakeExtractor._literal_fields(text, BuildIntake()))
     assert BuildIntakeExtractor._literal_fields("帮我创建一个新的质量项目", BuildIntake()) == {}
+
+
+def test_multirepo_intake_preserves_each_commit_and_displays_both_before_capture():
+    from apps.api.app.application.agent.build_dialogue_text import prompt_for
+    text = ("后端仓库 https://github.com/c4ffein/realworld-django-ninja，固定提交 " + "a" * 40
+        + "。前端仓库 https://github.com/realworld-apps/vue-realworld-example-app，固定提交 " + "b" * 40
+        + "。跳过可选资料")
+    fields = validate_fields(BuildIntakeExtractor._literal_fields(text, BuildIntake()))
+    state = BuildIntake(stage="review", locale="zh", project_name="Retained", **fields)
+    sources = state.source_specs()
+    assert [(item["source_uri"], item["tracked_ref"]) for item in sources] == [
+        ("https://github.com/c4ffein/realworld-django-ninja", "a" * 40),
+        ("https://github.com/realworld-apps/vue-realworld-example-app", "b" * 40)]
+    assert all(item["source_uri"] in prompt_for(state) and item["tracked_ref"] in prompt_for(state) for item in sources)
+    restored = BuildIntake.model_validate_json(state.model_dump_json())
+    assert restored.source_specs() == sources
+
+
+@pytest.mark.parametrize("text", [
+    "仓库 https://example.com/a，提交 main；仓库 https://example.com/a，提交 other",
+    "仓库 https://example.com/a，提交 main，分支 other；仓库 https://example.com/b，提交 main",
+    "；".join(f"仓库 https://example.com/{i}，提交 main" for i in range(11)),
+])
+def test_ambiguous_repository_pairs_block_capture_instead_of_dropping_inputs(text):
+    state = BuildIntake(**validate_fields(BuildIntakeExtractor._literal_fields(text, BuildIntake())))
+    assert state.source_input_issue
+    with pytest.raises(ValueError, match="Clarify"):
+        state.source_specs()
+
+
+def test_legacy_intake_retains_its_single_repository_shape():
+    state = BuildIntake.model_validate({"code": "https://example.com/a", "code_ref": "main"})
+    assert state.source_specs() == [{"source_type": "code", "source_uri": "https://example.com/a",
+        "label": "Code repository", "tracked_ref": "main"}]
 
 
 @pytest.mark.parametrize("message", ["不要确认", "确认之前告诉我预算", "confirm then publish", "是否继续", "不要跳过确认"])

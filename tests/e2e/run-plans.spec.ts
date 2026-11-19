@@ -17,8 +17,8 @@ import { zhCN } from '../../apps/portal/src/shared/i18n/messages'
 import type { RunPlanSources } from '../../apps/portal/src/domains/quality-loop/types/runPlans'
 
 for (const [theme, language, scriptProtocol] of [['light', 'en', 'v1'], ['dark', 'zh', 'v2'],
-  ['light', 'zh', 'v3'], ['dark', 'en', 'v3']] as const) {
-  const variant = scriptProtocol === 'v3' ? `${theme}-v3` : theme
+  ['light', 'zh', 'v3'], ['dark', 'en', 'v3'], ['light', 'zh', 'v4'], ['dark', 'en', 'v4']] as const) {
+  const variant = scriptProtocol === 'v3' || scriptProtocol === 'v4' ? `${theme}-${scriptProtocol}` : theme
   test(`RunPlan complete declarations, lost acknowledgements and reload stay pinned (${variant})`, async ({ page, request }) => {
     test.setTimeout(360_000)
     const exweb = process.env.EXWEB_FIXTURE_ROOT, source = exweb ? resolve(exweb) : analysisSource()
@@ -38,7 +38,8 @@ for (const [theme, language, scriptProtocol] of [['light', 'en', 'v1'], ['dark',
       const preview = await scriptPreviewFixture({ project_id: v.projectId, mapping_revision_id: head.revision.revision_id,
         mapping_artifact_hash: head.revision.artifact_hash, case_ids: prepared.selected_case_ids, model_config_id: 'ui-tested-model',
         case_approval_revision_id: scripts.admission.revision_id, case_approval_artifact_hash: scripts.admission.artifact_hash,
-        ...(scriptProtocol === 'v3' ? { http_protocol: 'nasus.runner-http-execution.v3' as const }
+        ...(scriptProtocol === 'v4' ? { http_protocol: 'nasus.runner-http-execution.v4' as const }
+          : scriptProtocol === 'v3' ? { http_protocol: 'nasus.runner-http-execution.v3' as const }
           : scriptProtocol === 'v2' ? { http_protocol: 'nasus.runner-http-execution.v2' as const } : {}),
         budget: { currency: 'USD', max_calls: 1, max_reserved_tokens: 65536, max_reserved_cost_nanos: 1000000000,
           max_input_tokens_per_call: 24576, max_output_tokens_per_call: 1024 } }, prepared)
@@ -123,7 +124,7 @@ for (const [theme, language, scriptProtocol] of [['light', 'en', 'v1'], ['dark',
       expect(originalPlan.artifact.plan.selection.environment.kind).toBe('local')
       expect(originalPlan.artifact.plan.selection.environment.base_url).toBe('http://127.0.0.1:8080')
       const locators = await installLocatorProtocol(page, originalPlan)
-      if (scriptProtocol === 'v3') {
+      if (scriptProtocol === 'v3' || scriptProtocol === 'v4') {
         expect(locators.value.report.policy).toBe('nasus.http-locator-static-match.v2')
         expect(locators.value.report.summary.static_match).toBe(locators.value.report.summary.locator_count)
         const uncertain = locators.value.report.inventory.sources.flatMap((source) => source.routes).filter((r) => r.status === 'unresolved')

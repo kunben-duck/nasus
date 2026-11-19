@@ -7,6 +7,7 @@ import json
 from ...domain.quality_loop.runner_observations import RunnerObservationInvalid
 from ...domain.quality_loop.http_runner_oracles import same_http_json, verify_http_assertion_results
 from ...domain.quality_loop.http_bindings import HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA, verify_http_binding_responses
+from ...domain.quality_loop.http_readback import HTTP_READBACK_SCHEMA, verify_snapshot_assertions
 
 
 def _decode(item, media_type, byte_limit):
@@ -67,7 +68,7 @@ def verify_http_response_artifacts(receipt, artifacts, steps):
         metadata = _json(wire)
         original = {key: value for key, value in request.items() if key != 'response_metadata_hash'}
         if (type(metadata) is not dict or set(metadata) != set(original) | {'schema', 'headers'}
-                or metadata['schema'] != ('nasus.http-response.v2' if receipt['schema'] in {HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA} else 'nasus.http-response.v1')
+                or metadata['schema'] != ('nasus.http-response.v2' if receipt['schema'] in {HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA} else 'nasus.http-response.v1')
                 or any(type(metadata[key]) is not type(value) or metadata[key] != value for key, value in original.items())
                 or type(metadata['headers']) is not dict
                 or any(type(key) is not str or key != key.lower() or not key or len(key) > 128
@@ -77,3 +78,5 @@ def verify_http_response_artifacts(receipt, artifacts, steps):
         responses[request['request_id']] = dict(status=request['response_status'], headers=metadata['headers'], body=body)
     verify_http_binding_responses(receipt, steps, responses)
     verify_http_assertion_results(receipt, steps, responses)
+    if receipt['schema'] == HTTP_READBACK_SCHEMA:
+        verify_snapshot_assertions(receipt, steps, responses)

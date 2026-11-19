@@ -91,6 +91,7 @@ class ToolRBAC:
 
     def required_roles(self, tool: ToolAuthorizationSubject) -> tuple[str, ...]:
         if tool.tool_id in {"quality.automation.generate", "query.quality.automation_execution",
+                "quality.test_design_scope.draft", "query.quality.test_design_scope.draft_preview",
                 "quality.http_fixture.authorize", "query.quality.http_fixture_grant",
                 "quality.http_fixture.execute", "query.quality.http_fixture_execution", "quality.http_fixture.cancel",
                 "quality.run_plan.execute_http", "quality.run_plan.cancel_http", "query.quality.run_plan_case_execution",

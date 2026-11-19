@@ -7,6 +7,7 @@ import { HTTP_RECEIPT_SCHEMA, requestHash } from '../src/execution-receipt.mjs'
 import { validateHttpJob } from '../src/http-job.mjs'
 import { pinHttpTarget } from '../src/http-transport.mjs'
 import { jsonPointer, strictJson } from '../src/strict-json.mjs'
+import { HTTP_READBACK_SCHEMA } from '../src/http-readback.mjs'
 
 let target, baseUrl
 const visits = [], sockets = new Set()
@@ -83,6 +84,41 @@ test('a response, including HTTP 500, is not a passed oracle and later requests 
   assert.equal(result.execution_receipt.requests[0].response_status, 500)
   assert.equal(result.execution_receipt.failed_assertion_count, 1)
   assert.deepEqual(visits, ['/failure'])
+})
+
+test('v4 preserves failure while allowing only explicit readback and its assertions', async () => {
+  visits.length = 0
+  const raw = job([{ ...request(), phase: 'exercise' },
+    assertion('capture_snapshot', { pointer: '/message', snapshot_id: 'original' }),
+    assertion('assert_status', { value: '403' }),
+    { ...request('/forbidden', 'mutation'), method: 'PUT', phase: 'exercise' },
+    { ...request('/not-readback', 'ordinary'), phase: 'exercise' },
+    { ...request('/readback', 'readback'), phase: 'readback' },
+    { ...assertion('assert_unchanged', { pointer: '/message', snapshot_id: 'original' }), request_id: 'readback' }],
+    { receipt_protocol: HTTP_READBACK_SCHEMA })
+  const result = await executeJob(raw)
+  assert.equal(result.status, 'failed')
+  assert.deepEqual(visits, ['/', '/readback'])
+  assert.deepEqual(result.execution_receipt.steps.map((step) => step.status),
+    ['passed', 'passed', 'failed', 'not_executed', 'not_executed', 'passed', 'passed'])
+  assert.equal(result.execution_receipt.failed_assertion_count, 1)
+  assert.equal(result.execution_receipt.passed_assertion_count, 1)
+})
+
+test('v4 cancellation during readback retains the failed oracle and interruption separately', async () => {
+  visits.length = 0
+  const controller = new AbortController()
+  const running = executeJob(job([{ ...request(), phase: 'exercise' }, assertion('assert_status', { value: '403' }),
+    { ...request('/slow', 'readback'), phase: 'readback' },
+    { ...assertion('assert_status', { value: '200' }), request_id: 'readback' }],
+    { receipt_protocol: HTTP_READBACK_SCHEMA }), { signal: controller.signal })
+  while (!visits.includes('/slow')) await new Promise((resolve) => setTimeout(resolve, 5))
+  controller.abort()
+  const result = await running
+  assert.equal(result.status, 'error')
+  assert.equal(result.execution_receipt.failed_assertion_count, 1)
+  assert.deepEqual(result.execution_receipt.steps.map((step) => step.status), ['passed', 'failed', 'interrupted', 'not_executed'])
+  assert.deepEqual(visits, ['/', '/slow'])
 })
 
 test('redirects are observed, never followed', async () => {

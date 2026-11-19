@@ -16,7 +16,7 @@ class RunnerObservationInvalid(ValueError):
 
 
 def _verify_runner_observations(value, *, job_id, project_id, us_id, request_hash, step_actions, status,
-                                schema, actions, assertions, fields):
+                                schema, actions, assertions, fields, continuation=None):
     def require(condition):
         if not condition:
             raise RunnerObservationInvalid("runner execution receipt does not match the submitted job")
@@ -41,12 +41,12 @@ def _verify_runner_observations(value, *, job_id, project_id, us_id, request_has
         require(type(step["step_index"]) is int and step["step_index"] == index and step["action"] == action
             and step["kind"] == ("assertion" if assertion else "action")
             and type(step["status"]) is str and step["status"] in {"passed", "failed", "interrupted", "not_executed"})
-        if stopped:
+        if stopped and continuation is None:
             require(step["status"] == "not_executed")
         if step["status"] != "passed":
             stopped = True
         if step["status"] in {"failed", "interrupted"}:
-            require(not failed_or_interrupted)
+            require(continuation is not None or not failed_or_interrupted)
             failed_or_interrupted = True
         if assertion:
             passed += int(step["status"] == "passed")
@@ -56,6 +56,8 @@ def _verify_runner_observations(value, *, job_id, project_id, us_id, request_has
         "passed_assertion_count": passed, "failed_assertion_count": failed, "observed_assertion_count": observed}
     require(all(type(value[key]) is int and value[key] == count for key, count in expected_counts.items()))
     require(status != "passed" or not stopped)
+    if continuation is not None:
+        continuation(tuple(step["status"] for step in value["steps"]), status)
     return deepcopy(value)
 
 

@@ -317,7 +317,7 @@ class AutomationScriptGenerationApplicationService:
             selected_model_name=model.binding.model_name, runtime_mode="live", outcome=outcome,
             reason="native_script_reply_archived" if outcome == "success" else "reserved_script_call_failed_or_unknown_no_resend",
             project_id=request.project_id, tool_invocation_id=invocation_id, prompt_id="nasus.automation-script",
-            prompt_version="v3" if request.http_protocol == "nasus.runner-http-execution.v3" else "v2" if request.http_protocol else "v1",
+            prompt_version=request.selected_http_protocol().rsplit(".", 1)[-1],
             model_calls=1, request_hash=acceptance_digest(request.model_dump(mode="json")),
             response_hash=response_digest(reply.content) if reply else "", input_token_count=reply.input_tokens if usage else 0,
             output_token_count=reply.output_tokens if usage else 0, usage_source="provider" if usage else "none",

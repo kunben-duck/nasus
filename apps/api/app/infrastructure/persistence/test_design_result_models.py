@@ -17,7 +17,7 @@ class TestDesignResultRecord(Base):
         ForeignKeyConstraint(["call_id"], ["llm_calls.id"]),
         ForeignKeyConstraint(["scope_revision_id"], ["quality_test_design_scope_revisions.revision_id"]),
         CheckConstraint("status = 'draft'"),
-        CheckConstraint("(provenance_kind = 'single' AND call_id IS NOT NULL) OR (provenance_kind = 'batch' AND call_id IS NULL)", name="ck_test_design_result_call_kind"),
+        CheckConstraint("(provenance_kind = 'single' AND call_id IS NOT NULL) OR (provenance_kind IN ('batch', 'human_revision') AND call_id IS NULL)", name="ck_test_design_result_call_kind"),
     )
     generation_id: Mapped[str] = mapped_column(primary_key=True)
     project_id: Mapped[str]
@@ -74,3 +74,21 @@ class TestDesignResultBatchCallRecord(Base):
     call_id: Mapped[str]
     payload: Mapped[dict] = mapped_column(JSON)
     content_hash: Mapped[str]
+
+
+class TestDesignCaseEditRecord(Base):
+    __test__ = False
+    __tablename__ = "quality_test_design_case_edits"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "generation_id"], ["quality_test_design_results.project_id", "quality_test_design_results.generation_id"]),
+        ForeignKeyConstraint(["project_id", "parent_generation_id"], ["quality_test_design_results.project_id", "quality_test_design_results.generation_id"]),
+        UniqueConstraint("parent_generation_id"),
+        ForeignKeyConstraint(["invocation_id"], ["tool_invocations.id"]),
+    )
+    generation_id: Mapped[str] = mapped_column(primary_key=True)
+    project_id: Mapped[str]
+    parent_generation_id: Mapped[str]
+    invocation_id: Mapped[str] = mapped_column(unique=True)
+    actor_id: Mapped[str]
+    request_hash: Mapped[str]
+    artifact_hash: Mapped[str]

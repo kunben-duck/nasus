@@ -71,7 +71,7 @@ class RunPlanSelection(RunPlanCommandScope):
     environment: TargetEnvironmentDeclaration
     fixtures: Tuple[CaseFixtureDeclaration, ...] = Field(min_length=1, max_length=512)
     reason: Text
-    policy_revision: Literal["nasus.run-plan.v1", "nasus.run-plan.v2", "nasus.run-plan.v3"] = "nasus.run-plan.v1"
+    policy_revision: Literal["nasus.run-plan.v1", "nasus.run-plan.v2", "nasus.run-plan.v3", "nasus.run-plan.v4"] = "nasus.run-plan.v1"
 
     @model_validator(mode="after")
     def distinct_fixtures(self):

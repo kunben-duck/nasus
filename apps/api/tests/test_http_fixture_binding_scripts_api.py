@@ -1,5 +1,6 @@
-"""Canonical PG/MinIO v3 drafts over fixed exweb; model/oracles are protocol specimens."""
+"""Canonical PG/MinIO v3/v4 drafts over fixed exweb; model/oracles are protocol specimens."""
 from copy import deepcopy
+import pytest
 from sqlalchemy import func, select
 
 from apps.api.app.main import app
@@ -29,14 +30,23 @@ def project_tool_count(v):
             .where(ConversationRecord.space_type == "project", ConversationRecord.space_id == v["project_id"]))
 
 
-def test_fixed_exweb_v3_script_review_plan_preserves_sources_and_original_obligations(native_scripts):
+@pytest.mark.parametrize("protocol_version", ["v3", "v4"])
+def test_fixed_exweb_versioned_script_review_plan_preserves_sources_and_original_obligations(native_scripts, protocol_version):
     v = native_scripts
     old_draft, old_review, reviewer, _ = reviewed_plan_inputs(v)
     old_bytes = deepcopy((old_draft, old_review))
     calls_before = len(v["script_calls"])
-    v["script_transport"].output = fixture_script_output
+    def output(prepared):
+        value = fixture_script_output(prepared)
+        if protocol_version == "v4":
+            for script in value["scripts"]:
+                for action in script["actions"]:
+                    if action["action"] == "request":
+                        action["phase"] = "exercise"
+        return value
+    v["script_transport"].output = output
     selection = ScriptExecutionSelection.model_validate({**v["script_selection"].model_dump(mode="json"),
-        "http_protocol": "nasus.runner-http-execution.v3"})
+        "http_protocol": "nasus.runner-http-execution." + protocol_version})
     old_preview = deepcopy(v["script_preview"])
     with actor_scope(UserProfile.model_validate(v["owner"])):
         v["script_preview"] = v["script_service"].preview(selection)
@@ -48,7 +58,7 @@ def test_fixed_exweb_v3_script_review_plan_preserves_sources_and_original_obliga
     draft = draft_response.json()
     prepared, proposal = draft["result"]["prepared"], draft["result"]["proposal"]
     assert prepared == old_draft["result"]["prepared"]
-    assert proposal["schema"] == "nasus.automation-script-proposal.v3"
+    assert proposal["schema"] == "nasus.automation-script-proposal." + protocol_version
     source_pin, members = verify_fixed_exweb_archive(v, prepared)
     assert source_pin["file_count"] == 126 and members > 0
     assert v["exweb_commit"] == "fe5827f6b76f77ef34918d8b452ee823142332dc"
@@ -71,7 +81,7 @@ def test_fixed_exweb_v3_script_review_plan_preserves_sources_and_original_obliga
         sources = app.state.container.run_plans.sources.run_plan_sources(prepared)
     from apps.api.tests.test_run_plans import selection_for
     selected = selection_for(draft, review, sources).model_dump(mode="json")
-    selected["policy_revision"] = "nasus.run-plan.v3"
+    selected["policy_revision"] = "nasus.run-plan." + protocol_version
     selection = RunPlanSelection.model_validate(selected)
     prepared_response = preview(v, selection)
     assert prepared_response.status_code == 200, prepared_response.text
@@ -81,7 +91,7 @@ def test_fixed_exweb_v3_script_review_plan_preserves_sources_and_original_obliga
     assert saved_response.status_code == 200, saved_response.text
     saved = saved_response.json()
     plan = saved["artifact"]["plan"]
-    assert saved["artifact"]["schema"] == "nasus.run-plan-artifact.v3" and plan["schema"] == "nasus.run-plan.v3"
+    assert saved["artifact"]["schema"] == "nasus.run-plan-artifact." + protocol_version and plan["schema"] == "nasus.run-plan." + protocol_version
     assert plan["prepared"] == prepared and plan["proposal"] == proposal and plan["source_pin"] == sources
     assert plan["automated_count"] == plan["executed_on_target_count"] == plan["passed_count"] == 0
     assert not plan["execution_authorized"]

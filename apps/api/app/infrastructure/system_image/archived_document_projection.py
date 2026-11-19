@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections import Counter
 
-from ...domain.system_image.document_projection import DOCUMENT_EXTRACTOR
+from ...domain.system_image.document_projection import (
+    DOCUMENT_EXTRACTOR, LEGACY_DOCUMENT_EXTRACTORS, validate_document_extractor,
+)
 from ...domain.system_image.document_components import component_payloads
 from ...domain.system_image.source_snapshots import snapshot_digest
 
@@ -23,6 +25,8 @@ class ArchivedDocumentProjection:
         statuses = {item["path"]: item for item in result.files}
         if len(by_path) != len(units) or len(statuses) != len(result.files) or not statuses.keys() <= by_path.keys() <= files.keys():
             raise ValueError("document extraction scope mismatch")
+        versions = {validate_document_extractor(item["extractor_version"]) for item in result.files
+                    if "extractor_version" in item}
         for path, unit in by_path.items():
             if (files[path]["content_hash"] != unit.content_hash or files[path]["byte_count"] != unit.byte_count
                     or (unit.text_is_lossless and snapshot_digest_bytes(unit.text.encode()) != unit.content_hash)):
@@ -32,6 +36,9 @@ class ArchivedDocumentProjection:
             unit = by_path.get(observation.relative_path)
             if unit is None or not unit.text_is_lossless or statuses[unit.relative_path]["status"] != "parsed":
                 raise ValueError("document projection has no exact parsed source")
+            adapter_version = statuses[unit.relative_path].get("extractor_version")
+            if adapter_version is not None and adapter_version != observation.extractor_version:
+                raise ValueError("document projection file adapter version mismatch")
             payload = {**observation.payload(unit.text, unit.content_hash), "project_id": source.project_id,
                        "source_id": source.id, "source_manifest_hash": snapshot_digest(manifest)}
             ref, digest = self.artifacts.put(source.project_id, payload)
@@ -55,6 +62,9 @@ class ArchivedDocumentProjection:
                   "source_id": source.id, "source_manifest_hash": snapshot_digest(manifest),
                   "extractor_version": DOCUMENT_EXTRACTOR, "files": inventory, "summary": summary,
                   "payload_hashes": sorted(item[3] for item in items)}
+        versions.update(payload["extractor_version"] for _, payload, _, _ in items)
+        if versions - LEGACY_DOCUMENT_EXTRACTORS:
+            report["extractor_versions"] = sorted(versions)
         report_ref, report_hash = self.artifacts.put(source.project_id, report)
         return self.repository.record(source, items, manifest_hash=snapshot_digest(manifest),
             report_ref=report_ref, report_hash=report_hash, summary=summary, captured_at=captured_at)

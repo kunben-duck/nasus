@@ -1,11 +1,12 @@
 from ...application.quality_loop.test_design_results import RESULT_SCHEMA, RECOVERED_RESULT_SCHEMA, BATCH_RESULT_SCHEMA, RECOVERED_BATCH_RESULT_SCHEMA
 from .acceptance_artifacts import PinnedRequirementAuthorityArtifacts
+from ...application.quality_loop.case_revisions import CASE_REVISION_SCHEMA
 
 
 class TestDesignResultArtifacts(PinnedRequirementAuthorityArtifacts):
     __test__ = False
     schema = RESULT_SCHEMA
-    schemas = (RESULT_SCHEMA, RECOVERED_RESULT_SCHEMA, BATCH_RESULT_SCHEMA, RECOVERED_BATCH_RESULT_SCHEMA)
+    schemas = (RESULT_SCHEMA, RECOVERED_RESULT_SCHEMA, BATCH_RESULT_SCHEMA, RECOVERED_BATCH_RESULT_SCHEMA, CASE_REVISION_SCHEMA)
     namespace = "test-design-results"
     MAX_BYTES = 160 * 1024 * 1024
 

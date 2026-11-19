@@ -10,13 +10,15 @@ class RequirementRevisionReceiptAccess:
 
     @staticmethod
     def applies(invocation):
-        return invocation.tool_id in {REVISE_REQUIREMENT, READ_REQUIREMENTS, *REVIEW_TOOLS}
+        return invocation.tool_id in {REVISE_REQUIREMENT, READ_REQUIREMENTS, *REVIEW_TOOLS, "quality.iteration_image.adopt"}
 
     def require_access(self, invocation):
         if not self.applies(invocation) or invocation.status != "completed":
             return
         try:
             self.delivery.read(invocation.input_payload["project_id"], invocation.input_payload["version_id"])
+            if invocation.tool_id == "quality.iteration_image.adopt":
+                self.delivery.images.frozen_header(invocation.input_payload["project_id"], invocation.input_payload["image_revision_id"])
             if invocation.tool_id in REVIEW_TOOLS:
                 if self.reviews is None:
                     raise PermissionError("Requirement review authorization is unavailable")

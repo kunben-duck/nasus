@@ -5,6 +5,7 @@ import { useI18n } from '../../../../../shared/i18n/I18nProvider'
 import { ScopeContractEditor } from './ScopeContractEditor'
 import { ScopeText } from './ScopeInputs'
 import { TestDesignGenerationPanel } from './TestDesignGenerationPanel'
+import { ScopeModelDraftPanel } from './ScopeModelDraftPanel'
 import './test-design-scope.css'
 
 export function TestDesignScopePanel({ context, scope }: { context: ContextArchive; scope: ImageReadScope }) {
@@ -20,6 +21,7 @@ export function TestDesignScopePanel({ context, scope }: { context: ContextArchi
       {state.write.isSuccess && <p role="status">{t('Scope decision recorded. Generation remains separately gated.')}<code>{state.write.data}</code></p>}
       {state.write.isError && <p role="alert">{state.stale ? t('Scope inputs or head changed. Reload and confirm a new decision.') : t('Scope decision was not acknowledged. Reload history before retrying; no automatic retry was sent.')}</p>}
       {view && <>
+        <ScopeModelDraftPanel context={context} sessionId={scope.sessionId} onReview={state.beginModelDraft} />
         {!state.mayApprove && <p role="status">{t('Scope approval requires a current published or confirmed iteration context, with every selected AC and business rule approved.')}</p>}
         {!view.head && <p>{t('No reviewed scope for this context.')}</p>}
         {content && <div className="scope-record" aria-label={t('Recorded scope decision')}>

@@ -729,6 +729,11 @@ class RuntimeAssembly:
             ModelExecutionProfileApplicationService(self.settings_repository, self.settings_persistence),
             TestDesignResultRepository(), TestDesignResultArtifacts(self.object_storage),
             batch_replies=GenerationBatchReplyArtifacts(self.object_storage))
+        from .application.quality_loop.case_revisions import CaseRevisionApplicationService
+        from .infrastructure.persistence.case_revision_repository import CaseRevisionRepository
+        self.case_revisions = CaseRevisionApplicationService(self.test_design_results, CaseRevisionRepository(),
+            self.source_access, self.test_design_results.artifacts)
+        self.test_design_results.case_revisions = self.case_revisions
         from .application.quality_loop.test_design_mappings import TestDesignMappingApplicationService
         from .infrastructure.persistence.test_design_mapping_repository import TestDesignMappingRepository
         from .infrastructure.storage.test_design_mapping_artifacts import TestDesignMappingArtifacts
@@ -775,6 +780,13 @@ class RuntimeAssembly:
             self.test_design_results.profiles, ConfiguredGenerationModelPolicies(), self.source_access,
             ImageGenerationSourceInventory(self.image_revisions), HTTPTestDesignModel(),
             GenerationExecutionRepository(), GenerationReplyArtifacts(self.object_storage))
+        from .application.quality_loop.scope_drafts import ScopeDraftApplicationService
+        from .infrastructure.persistence.scope_draft_repository import ScopeDraftRepository
+        from .infrastructure.storage.scope_draft_artifacts import ScopeDraftArtifacts
+        self.test_design_scopes.drafts = ScopeDraftApplicationService(self.test_design_scopes,
+            self.test_design_results.profiles, self.test_design_executor.policies,
+            ImageGenerationSourceInventory(self.image_revisions), HTTPTestDesignModel(),
+            ScopeDraftRepository(), ScopeDraftArtifacts(self.object_storage))
         from .application.quality_loop.automation_script_generation import AutomationScriptGenerationApplicationService
         from .infrastructure.persistence.automation_script_repository import AutomationScriptRepository
         from .infrastructure.storage.automation_script_artifacts import AutomationNativeReplyArtifacts, AutomationScriptResultArtifacts
@@ -1087,6 +1099,10 @@ class RuntimeAssembly:
         from .infrastructure.persistence.version_delivery_repository import VersionDeliveryRepository
         self.version_delivery = VersionDeliveryApplicationService(VersionDeliveryRepository(),
             self.image_publications, self.image_revisions, self.source_access)
+        from .application.quality_loop.iteration_images import IterationImageApplicationService
+        from .infrastructure.persistence.iteration_image_repository import IterationImageRepository
+        self.iteration_images = IterationImageApplicationService(IterationImageRepository(),
+            self.version_delivery, self.image_revisions, self.source_access)
         from .application.quality_loop.requirement_revisions import RequirementRevisionApplicationService
         from .infrastructure.persistence.requirement_revision_repository import RequirementRevisionRepository
         self.requirement_revisions = RequirementRevisionApplicationService(RequirementRevisionRepository(),
@@ -1258,9 +1274,13 @@ class RuntimeAssembly:
         from .application.platform.tool_receipt_access import ToolReceiptAccess
         from .application.platform.version_delivery_receipts import VersionDeliveryReceiptAccess
         from .application.platform.requirement_revision_receipts import RequirementRevisionReceiptAccess
+        from .application.platform.case_revision_receipts import CaseRevisionReceiptAccess
+        from .application.platform.scope_draft_receipts import ScopeDraftReceiptAccess
         self.source_refresh_receipt_access = SourceRefreshReceiptAccess(self.source_access)
         self.tool_receipt_access = ToolReceiptAccess(ConversationHistoryReceiptAccess(self.conversation_memory),
             VersionDeliveryReceiptAccess(self.version_delivery),
+            CaseRevisionReceiptAccess(self.test_design_results),
+            ScopeDraftReceiptAccess(self.test_design_scopes),
             RequirementRevisionReceiptAccess(self.version_delivery, self.requirement_reviews),
             self.source_refresh_receipt_access, RunPlanReceiptAccess(self.run_plans),
             RunPlanBuildReceiptAccess(self.run_plan_builds), RunPlanObservationReceiptAccess(self.run_plan_observation_records),
@@ -1376,6 +1396,12 @@ class RuntimeAssembly:
             self.tool_handler_registry.register(history_tool, ConversationHistoryToolHandler(
                 self.conversation_memory, self.platform_events, self.agent_replies))
         from .application.platform.tool_handlers.requirement_revisions import RequirementRevisionToolHandler
+        from .application.platform.tool_handlers.iteration_images import IterationImageToolHandler
+        from .application.platform.tool_handlers.case_revisions import CaseRevisionToolHandler
+        self.tool_handler_registry.register("quality.test_design.cases.revise", CaseRevisionToolHandler(
+            self.case_revisions, self.platform_events, self.project_access))
+        self.tool_handler_registry.register("quality.iteration_image.adopt", IterationImageToolHandler(
+            self.iteration_images, self.platform_events, self.project_access))
         from .application.platform.tool_handlers.requirement_reviews import RequirementReviewToolHandler
         from .application.quality_loop.requirement_review_models import REVIEW_TOOLS
         for review_tool in REVIEW_TOOLS:

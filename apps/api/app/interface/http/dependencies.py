@@ -323,6 +323,15 @@ def get_version_delivery_application(request: Request) -> VersionDeliveryApplica
 
 VersionDeliveryApp = Annotated[VersionDeliveryApplicationService, Depends(get_version_delivery_application)]
 
+from ...application.quality_loop.iteration_images import IterationImageApplicationService
+
+
+def get_iteration_images_application(request: Request) -> IterationImageApplicationService:
+    return request.app.state.container.iteration_images
+
+
+IterationImageApp = Annotated[IterationImageApplicationService, Depends(get_iteration_images_application)]
+
 
 def get_requirement_revisions_application(request: Request) -> RequirementRevisionApplicationService:
     return request.app.state.container.requirement_revisions

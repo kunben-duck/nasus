@@ -3,6 +3,9 @@
 
 def prompt_for(state):
     zh = state.locale == "zh"
+    if state.source_input_issue:
+        return ("代码仓库与提交的对应关系还不明确，暂不采集。请每行填写一个不同的仓库及其分支或提交 SHA，最多 10 个；同一仓库不要同时填写多个引用。"
+                if zh else "Repository/revision pairs are ambiguous; nothing will be captured. Provide one distinct repository and its branch or commit per line, up to 10. Do not assign multiple refs to one repository.")
     if state.stage == "name":
         return ("可以，我会引导你接入资料，再构建系统画像。\n\n**先给项目起个名字。** 确认名称后，我会创建项目。\n\n接下来需要代码仓库地址或已授权的服务端目录；需求文档和历史测试用例可选，没有也可以先构建。"
                 if zh else "I can guide you from source inputs to a system image.\n\n**What project name would you like to use?** I will create it with that name, then ask for a Git repository or approved server path. Requirements and historical tests are optional.")
@@ -18,6 +21,9 @@ def prompt_for(state):
                 f"- {'分支 / 提交' if zh else 'Ref / commit'}: {state.code_ref or ('仓库默认引用' if zh else 'repository default')}",
                 f"- {'需求文档' if zh else 'Requirements'}: {state.requirements or ('未提供' if zh else 'not provided')}",
                 f"- {'历史测试' if zh else 'Historical tests'}: {state.tests or ('未提供' if zh else 'not provided')}"]
+        for index, source in enumerate(state.additional_code_sources):
+            rows.append(f"- {'代码' if zh else 'Code'} {index + 2}: `{source.code}` · "
+                + (source.code_ref or ('仓库默认引用' if zh else 'repository default')))
         return (("请核对本次接入范围：\n\n" if zh else "Review the source inputs:\n\n") + "\n".join(rows)
                 + ("\n\n回复 **确认接入并构建** 后，我会采集这些资料、固定代码版本并准备画像构建。结构构建的授权会在采集后展示；不会运行你的项目、执行测试或自动发布正式基线。也可以直接告诉我要修改哪项。"
                    if zh else "\n\nReply **confirm and build** to capture these sources, pin the code revision and prepare the image build. Structural execution consent follows capture. This does not run your application or tests, or publish an official baseline. You can also correct any input."))

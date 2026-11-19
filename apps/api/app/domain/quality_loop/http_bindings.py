@@ -10,6 +10,7 @@ from .runner_observations import RunnerObservationInvalid
 
 HTTP_BINDING_RECEIPT_SCHEMA = "nasus.runner-http-execution.v2"
 HTTP_FIXTURE_RECEIPT_SCHEMA = "nasus.runner-http-execution.v3"
+HTTP_READBACK_RECEIPT_SCHEMA = "nasus.runner-http-execution.v4"
 _BINDING = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}")
 _RESOURCE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _FIELDS = {
@@ -130,7 +131,7 @@ def validate_http_binding_steps(steps, *, fixture_bindings=()):
 
 def verify_http_binding_responses(receipt, steps, responses):
     """Re-extract every successful binding from complete original response bytes."""
-    if receipt["schema"] not in {HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA}:
+    if receipt["schema"] not in {HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_RECEIPT_SCHEMA}:
         return
     observed = iter(receipt["bindings"])
     for step, state in zip(steps, receipt["steps"]):

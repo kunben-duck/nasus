@@ -6,6 +6,7 @@ export function verifyGenerationMetadata(value: GenerationArchive['metadata']): 
   const count = (v: unknown) => Number.isSafeInteger(v) && Number(v) >= 0
   if (!value || ![value.project_id, value.generation_id, value.scope_revision_id, value.invocation_id].every(id)
     || value.status !== 'draft' || !generationDigest(value.artifact_hash) || !count(value.case_count) || !count(value.gap_count)) return false
+  if (value.schema === 'nasus.test-design-case-revision.v1') return Object.keys(value).length === 10 && value.call_id === null
   if (value.schema === 'nasus.test-design-result.v3' || value.schema === 'nasus.test-design-result.v4') {
     const recovered = value.schema === 'nasus.test-design-result.v4'
     return Object.keys(value).length === (recovered ? 14 : 13) && value.call_id === null

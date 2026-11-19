@@ -2,8 +2,10 @@ import crypto from 'node:crypto'
 import http from 'node:http'
 
 import { executeJob, runnerBrowserAvailable } from './executor.mjs'
+import { executeBrowserJob } from './browser-executor.mjs'
 import { strictJson } from './strict-json.mjs'
 import { HTTP_FIXTURE_RECEIPT_SCHEMA } from './execution-receipt.mjs'
+import { HTTP_READBACK_SCHEMA } from './http-readback.mjs'
 
 const port = Number.parseInt(process.env.NASUS_RUNNER_PORT ?? '8090', 10)
 const host = process.env.NASUS_RUNNER_HOST ?? '0.0.0.0'
@@ -113,7 +115,7 @@ function tokenMatches(authorization) {
   )
 }
 
-async function readJson(request) {
+async function readJson(request, formalBrowser = false) {
   const chunks = []
   let total = 0
   for await (const chunk of request) {
@@ -131,7 +133,7 @@ async function readJson(request) {
   } catch {
     throw new Error('Runner request must contain valid UTF-8 JSON.')
   }
-  return { job: job?.execution_kind === 'http' ? strictJson(text) : job, body }
+  return { job: formalBrowser || job?.execution_kind === 'http' ? strictJson(text) : job, body }
 }
 
 const server = http.createServer(async (request, response) => {
@@ -167,7 +169,8 @@ const server = http.createServer(async (request, response) => {
     response.end(body)
     return
   }
-  if (request.method !== 'POST' || request.url !== '/v1/jobs') {
+  const formalBrowser = request.url === '/v1/browser/jobs'
+  if (request.method !== 'POST' || request.url !== '/v1/jobs' && !formalBrowser) {
     sendJson(response, 404, { error: 'not_found' })
     return
   }
@@ -189,9 +192,11 @@ const server = http.createServer(async (request, response) => {
   request.on('aborted', () => disconnected.abort())
   response.on('close', () => { if (!response.writableEnded) disconnected.abort() })
   try {
-    const { job, body } = await readJson(request)
+    const { job, body } = await readJson(request, formalBrowser)
     if (job?.receipt_protocol === HTTP_FIXTURE_RECEIPT_SCHEMA) throw new Error('Fixture imports require the private owned-target worker.')
-    const result = await executeJob(job, { wireBody: body, signal: disconnected.signal })
+    if (job?.receipt_protocol === HTTP_READBACK_SCHEMA) throw new Error('Readback requires the private owned-target worker.')
+    // No public caller can supply the private registered-environment dispatcher.
+    const result = await (formalBrowser ? executeBrowserJob : executeJob)(job, { wireBody: body, signal: disconnected.signal })
     increment(jobCounts, String(result.status ?? 'error'))
     logEvent('runner.job.completed', {
       request_id: correlationId,
@@ -209,7 +214,7 @@ const server = http.createServer(async (request, response) => {
     })
     sendJson(response, 400, {
       error: 'invalid_request',
-      message: String(error?.message ?? error).slice(0, 500),
+      message: formalBrowser ? 'Invalid formal browser request.' : String(error?.message ?? error).slice(0, 500),
     })
   } finally {
     observeDuration((performance.now() - startedAt) / 1000)

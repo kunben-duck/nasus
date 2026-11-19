@@ -2,8 +2,14 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from uuid import uuid4
+
+try:
+    from .test_clock_preflight import require_s3_clock
+except ImportError:
+    from test_clock_preflight import require_s3_clock
 
 
 def _client(settings):
@@ -52,8 +58,17 @@ def isolated_test_storage(environment, *, client_factory=None):
     client = (client_factory or _client)(settings)
     created = False
     try:
-        client.create_bucket(Bucket=bucket, ACL="private")
+        started = datetime.now(timezone.utc)
+        try:
+            response = client.create_bucket(Bucket=bucket, ACL="private")
+        except Exception as exc:
+            response = getattr(exc, "response", {})
+            if isinstance(response, dict) and response.get("Error", {}).get("Code") == "RequestTimeTooSkewed":
+                raise RuntimeError("MinIO rejected the signed clock preflight (RequestTimeTooSkewed); "
+                    "synchronize the local container VM clock; signature validity was not extended") from None
+            raise
         created = True
+        require_s3_clock(response, started=started)
         yield {"NASUS_S3_ENDPOINT": settings["endpoint"], "NASUS_S3_BUCKET": bucket,
             "NASUS_S3_ACCESS_KEY": settings["access_key"], "NASUS_S3_SECRET_KEY": settings["secret_key"],
             "NASUS_S3_REGION": "us-east-1", "NASUS_TEST_OBJECT_STORAGE_MODE": "minio"}

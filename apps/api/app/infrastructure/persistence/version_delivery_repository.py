@@ -18,7 +18,7 @@ from .image_publication_repository import ImagePublicationRepository
 from .project_repository import ProjectRepository
 from .source_snapshot_models import SourceBindingRecord, SourceRevisionRecord
 from .unit_of_work import session_scope
-from .version_delivery_models import ProjectDeliveryRecord, VersionCreationRecord, VersionImageBindingRecord
+from .version_delivery_models import ProjectDeliveryRecord, VersionCreationRecord, VersionImageBindingRecord, VersionImageAdoptionRecord
 
 
 class VersionDeliveryRepository:
@@ -52,15 +52,37 @@ class VersionDeliveryRepository:
             RequirementReviewEventRecord.version_id == version_id,
             RequirementReviewEventRecord.kind == "confirmed").order_by(
                 RequirementReviewEventRecord.recorded_at, RequirementReviewEventRecord.event_id)).all()
+        transitions = []
         for event in events:
             if snapshot_digest(event.payload) != event.content_hash:
                 raise VersionDeliveryIntegrityError("Iteration requirement confirmation is corrupt")
-            projection = event.payload["projection"]
-            if projection["parent_image_revision_id"] != result["iteration_image"]["image_revision_id"]:
-                raise VersionDeliveryIntegrityError("Iteration working image chain is broken")
-            result["iteration_image"] = {**result["iteration_image"],
+            transitions.append((event.payload["projection"], "review_event_id", event.event_id))
+        for adoption in session.scalars(select(VersionImageAdoptionRecord).where(
+                VersionImageAdoptionRecord.project_id == project_id, VersionImageAdoptionRecord.version_id == version_id)):
+            if (snapshot_digest(adoption.payload) != adoption.content_hash
+                    or adoption.payload["image_revision_id"] != adoption.image_revision_id
+                    or adoption.payload["parent_image_revision_id"] != adoption.parent_image_revision_id):
+                raise VersionDeliveryIntegrityError("Iteration image adoption is corrupt")
+            transitions.append((adoption.payload, "adoption_id", adoption.adoption_id))
+        # Parent identity, not wall-clock sorting, determines the single chain.
+        seen = {result["iteration_image"]["image_revision_id"]}
+        while transitions:
+            next_items = [item for item in transitions if item[0]["parent_image_revision_id"] == result["iteration_image"]["image_revision_id"]]
+            if len(next_items) != 1:
+                raise VersionDeliveryIntegrityError("Iteration working image chain is broken or forked")
+            projection, kind, identity = next_items[0]
+            if projection["image_revision_id"] in seen:
+                raise VersionDeliveryIntegrityError("Iteration working image chain contains a cycle")
+            if kind == "adoption_id" and projection["parent_image_artifact_hash"] != result["iteration_image"]["image_artifact_hash"]:
+                raise VersionDeliveryIntegrityError("Iteration adoption parent hash mismatch")
+            result["iteration_image"] = {
+                **{key: value for key, value in result["iteration_image"].items() if key not in {"review_event_id", "adoption_id"}},
                 **{key: projection[key] for key in ("image_revision_id", "image_artifact_hash", "manifest_id", "manifest_hash", "baseline_id")},
-                "publication_id": None, "review_event_id": event.event_id}
+                "publication_id": None, kind: identity}
+            if kind == "adoption_id":
+                result["code_revisions"] = deepcopy(projection["code_revisions"])
+            seen.add(projection["image_revision_id"])
+            transitions.remove(next_items[0])
         return result
 
     def requirement_progress(self, project_id, version_id):
@@ -68,6 +90,7 @@ class VersionDeliveryRepository:
         from .requirement_review_models import RequirementReviewEventRecord
         from .acceptance_specification_models import AcceptanceRevisionRecord
         with session_scope() as session:
+            binding = self._binding(session, project_id, version_id)
             revisions = session.scalars(select(RequirementRevisionRecord).where(
                 RequirementRevisionRecord.project_id == project_id, RequirementRevisionRecord.version_id == version_id)
                 .order_by(RequirementRevisionRecord.sequence.desc())).all()
@@ -83,7 +106,7 @@ class VersionDeliveryRepository:
                     raise VersionDeliveryIntegrityError("Requirement progress integrity failed")
                 status = "requirement_review_required"
                 if events and events[-1].kind == "confirmed":
-                    valid = True
+                    valid = bool(binding and events[-1].payload["projection"]["image_revision_id"] == binding["iteration_image"]["image_revision_id"])
                     for revision_id in events[-1].payload["approvals"].values():
                         approved = session.get(AcceptanceRevisionRecord, revision_id)
                         head = session.scalar(select(AcceptanceRevisionRecord).where(

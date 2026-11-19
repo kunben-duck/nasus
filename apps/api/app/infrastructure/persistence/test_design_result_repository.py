@@ -138,7 +138,8 @@ class TestDesignResultRepository:
             raise TestDesignResultIntegrityError("generation result metadata mismatch")
         if (row.provenance_kind == "batch" and (row.call_id is not None or value.get("schema") not in {BATCH_RESULT_SCHEMA, RECOVERED_BATCH_RESULT_SCHEMA})
                 or row.provenance_kind == "single" and (row.call_id is None or "call_ids" in value)
-                or row.provenance_kind not in {"single", "batch"}):
+                or row.provenance_kind == "human_revision" and (row.call_id is not None or value.get("schema") != "nasus.test-design-case-revision.v1")
+                or row.provenance_kind not in {"single", "batch", "human_revision"}):
             raise TestDesignResultIntegrityError("generation result has the wrong native provenance kind")
         if row.provenance_kind == "batch":
             recovered = value.get("schema") == RECOVERED_BATCH_RESULT_SCHEMA

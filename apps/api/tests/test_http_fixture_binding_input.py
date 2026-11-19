@@ -81,6 +81,28 @@ def test_original_setup_capsule_is_consumed_by_node_and_physically_reverified_by
     assert asdict(command) == original and "fixture_input=" not in repr(command)
 
 
+def test_v4_imports_use_original_setup_and_preserve_readback_after_failure(bound_command):
+    command, capsule = bound_command
+    imported, original, _ = command.steps
+    before = {**original, "request_id": "before", "phase": "exercise"}
+    actions = (imported, before,
+        dict(action="capture_snapshot", request_id="before", pointer="/status", snapshot_id="state", source_step_indices=[0]),
+        {**original, "method": "PUT", "phase": "exercise"},
+        dict(action="assert_status", request_id="business", value="403", source_step_indices=[0]),
+        {**original, "request_id": "after", "phase": "readback"},
+        dict(action="assert_unchanged", request_id="after", pointer="/status", snapshot_id="state", source_step_indices=[0]))
+    command = replace(command, http_protocol="nasus.runner-http-execution.v4", steps=actions)
+    wire = runner_request_body(command)
+    native = probe(wire)
+    assert native["accepted"] is True and native["result"]["status"] == "failed"
+    assert [item["method"] for item in native["visits"]] == ["GET", "PUT", "GET"]
+    result = HttpAutomationRunner._result_from_payload(command, native["result"], request_hash=byte_digest(wire))
+    receipt = HTTPRunnerObservationVerifier().verify(command, result)
+    assert receipt["schema"] == command.http_protocol and receipt["fixture_capture_digest"] == capsule.digest
+    assert receipt["failed_assertion_count"] == 1 and receipt["passed_assertion_count"] == 1
+    assert receipt["steps"][-1]["status"] == "passed" and result.status == "failed"
+
+
 @pytest.mark.parametrize("fault", ["wrong_case", "wrong_plan", "extra_flag", "missing_source", "capture_value",
     "capture_pointer", "source_bytes", "wrong_origin", "unknown_import", "partial_path", "query", "forward", "duplicate", "oracle_operand"])
 def test_python_and_node_reject_rebinding_before_any_business_transport(bound_command, fault):

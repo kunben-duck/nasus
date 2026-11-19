@@ -14,11 +14,11 @@ export function planSelection(request: RunPlanRequest): RunPlanSelection {
 }
 export function runPlanPolicy(draft: ScriptArchive): RunPlanSelection['policy_revision'] {
   const protocol = scriptProtocol(draft.result.proposal)
-  return protocol === 'nasus.runner-http-execution.v3' ? 'nasus.run-plan.v3' : protocol === 'nasus.runner-http-execution.v2' ? 'nasus.run-plan.v2' : 'nasus.run-plan.v1'
+  return protocol === 'nasus.runner-http-execution.v4' ? 'nasus.run-plan.v4' : protocol === 'nasus.runner-http-execution.v3' ? 'nasus.run-plan.v3' : protocol === 'nasus.runner-http-execution.v2' ? 'nasus.run-plan.v2' : 'nasus.run-plan.v1'
 }
 export function runPlanArtifactSchema(policy: RunPlanSelection['policy_revision']): RunPlanArchive['artifact']['schema'] {
-  requireRunPlan(['nasus.run-plan.v1', 'nasus.run-plan.v2', 'nasus.run-plan.v3'].includes(policy))
-  return policy === 'nasus.run-plan.v3' ? 'nasus.run-plan-artifact.v3' : policy === 'nasus.run-plan.v2' ? 'nasus.run-plan-artifact.v2' : 'nasus.run-plan-artifact.v1'
+  requireRunPlan(['nasus.run-plan.v1', 'nasus.run-plan.v2', 'nasus.run-plan.v3', 'nasus.run-plan.v4'].includes(policy))
+  return policy === 'nasus.run-plan.v4' ? 'nasus.run-plan-artifact.v4' : policy === 'nasus.run-plan.v3' ? 'nasus.run-plan-artifact.v3' : policy === 'nasus.run-plan.v2' ? 'nasus.run-plan-artifact.v2' : 'nasus.run-plan-artifact.v1'
 }
 export async function expectedRunPlan(selection: RunPlanSelection, draft: ScriptArchive, review: ScriptReviewArchive, sources: RunPlanSources): Promise<RunPlanValue> {
   requireRunPlan(selection.project_id === draft.metadata.project_id && selection.script_revision_id === draft.metadata.script_revision_id

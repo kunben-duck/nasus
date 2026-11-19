@@ -47,7 +47,8 @@ export async function installRunPlanProtocol(page: Page, draft: ScriptArchive, r
     const input = Object.fromEntries(Object.entries(command.input_payload).filter(([key]) => key !== 'idempotency_key')) as unknown as RunPlanRequest
     const selection = Object.fromEntries(Object.entries(input).filter(([key]) => !['plan_digest', 'source_scope_digest'].includes(key))) as unknown as RunPlanSelection
     const plan = compile(selection, draft, review, sources)
-    const artifact: RunPlanArchive['artifact'] = { schema: selection.policy_revision === 'nasus.run-plan.v3' ? 'nasus.run-plan-artifact.v3'
+    const artifact: RunPlanArchive['artifact'] = { schema: selection.policy_revision === 'nasus.run-plan.v4' ? 'nasus.run-plan-artifact.v4'
+      : selection.policy_revision === 'nasus.run-plan.v3' ? 'nasus.run-plan-artifact.v3'
       : selection.policy_revision === 'nasus.run-plan.v2' ? 'nasus.run-plan-artifact.v2' : 'nasus.run-plan-artifact.v1', project_id: input.project_id, run_plan_id: crypto.randomUUID(),
       invocation_id: id, actor_id: 'explicit-ui-plan-reviewer', recorded_at: new Date().toISOString(), request: input, plan }
     const metadata: RunPlanArchive['metadata'] = { project_id: input.project_id, run_plan_id: artifact.run_plan_id, invocation_id: id,

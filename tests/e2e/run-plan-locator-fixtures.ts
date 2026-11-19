@@ -21,8 +21,9 @@ java=b'''import org.springframework.web.bind.annotation.*;
 @PostMapping("/fixture-only") String fixture() { return "ok"; }
 @PostMapping("/sessions") String create() { return "ok"; }
 @PostMapping("/sessions/{sessionId}") String session() { return "ok"; }
+@GetMapping("/sessions/{sessionId}") String readSession() { return "ok"; }
 }'''
-if plan['schema']=='nasus.run-plan.v3':
+if plan['schema'] in ('nasus.run-plan.v3','nasus.run-plan.v4'):
     java=java.replace(b'\\n}',b'\\n@PostMapping(path="/unrelated-condition",headers="X-Mode=x") String conditional() { return "ok"; }\\n}')
 for index,pin in enumerate(plan['selection']['target_build']['code_sources']):
     single={**plan,'selection':{**plan['selection'],'target_build':{**plan['selection']['target_build'],'code_sources':[pin]}}}

@@ -36,10 +36,24 @@ export async function scriptArchiveFixture(prepared: AutomationInputPreview, pre
       { action: 'capture_json', request_id: 'create', pointer: '/sessionId', binding_id: 'session', source_step_indices: [0] })
     for (const assertion of script.assertions) assertion.action_index += 2
   }
-  if (preview.request.http_protocol === 'nasus.runner-http-execution.v3') for (const script of scripts) {
+  if (['nasus.runner-http-execution.v3', 'nasus.runner-http-execution.v4'].includes(preview.request.http_protocol ?? '')) for (const script of scripts) {
     script.actions[0].path = '/sessions/{{session}}'
     script.actions.unshift({ action: 'use_fixture_binding', binding_id: 'session', source_step_indices: [0] })
     for (const assertion of script.assertions) assertion.action_index++
+  }
+  if (preview.request.http_protocol === 'nasus.runner-http-execution.v4') for (const script of scripts) {
+    const original = script.actions[1]
+    original.phase = 'exercise'
+    script.actions.splice(1, 0, { ...original, method: 'GET', request_id: 'before', body_json: 'null' },
+      { action: 'capture_snapshot', request_id: 'before', pointer: '/status', snapshot_id: 'state', source_step_indices: [0] })
+    for (const assertion of script.assertions) assertion.action_index += 2
+    const afterIndex = script.actions.length
+    script.actions.push({ ...original, method: 'GET', request_id: 'after', body_json: 'null', phase: 'readback' })
+    const first = script.assertions[0]
+    script.actions.splice(first.action_index, 1)
+    for (const assertion of script.assertions.slice(1)) assertion.action_index--
+    script.actions.push({ action: 'assert_unchanged', request_id: 'after', pointer: '/status', snapshot_id: 'state', source_step_indices: [first.source_step_index] })
+    first.action_index = afterIndex
   }
   const raw_output = JSON.stringify({ input_digest: prepared.input_digest, scripts, gaps: [] })
   const response_hash = 'sha256:' + createHash('sha256').update(raw_output).digest('hex')
@@ -47,7 +61,8 @@ export async function scriptArchiveFixture(prepared: AutomationInputPreview, pre
     script_revision_id: 'ui-script-' + randomUUID(), invocation_id: invocation, actor_id: 'explicit-ui-author', call_id: 'ui-call-' + randomUUID(),
     response_hash, request: preview.request, model_binding: { config_id: preview.request.model_config_id,
       config_digest: preview.request.model_config_digest, provider: preview.provider, model_name: preview.model_name, base_url: preview.destination },
-    prepared, raw_output, proposal: { schema: preview.request.http_protocol === 'nasus.runner-http-execution.v3' ? 'nasus.automation-script-proposal.v3'
+    prepared, raw_output, proposal: { schema: preview.request.http_protocol === 'nasus.runner-http-execution.v4' ? 'nasus.automation-script-proposal.v4'
+      : preview.request.http_protocol === 'nasus.runner-http-execution.v3' ? 'nasus.automation-script-proposal.v3'
       : preview.request.http_protocol ? 'nasus.automation-script-proposal.v2' : 'nasus.automation-script-proposal.v1',
       ...(preview.request.http_protocol ? { http_protocol: preview.request.http_protocol } : {}), input_digest: prepared.input_digest, scripts, gaps: [],
       case_count: scripts.length, script_count: scripts.length, gap_count: 0, status: 'draft', review_status: 'pending_independent_review',

@@ -5,6 +5,7 @@ from typing import Literal
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
+from .confirmation_clock import confirmation_time
 from .db_models import (
     AuditEventRecord,
     AgentGoalRecord,
@@ -561,7 +562,7 @@ class ConversationRepository:
             if row.status == "waiting_confirmation" and (input_updates or {}).get("confirmed_by_user") is True:
                 # Freshness checks and preparation journals use this same PG clock.
                 # Only an explicit confirmation claim records a new confirmation time.
-                payload["confirmed_at"] = session.scalar(select(func.clock_timestamp())).isoformat()
+                payload["confirmed_at"] = confirmation_time(session).isoformat()
             row.input_payload = payload
             row.status = "running"
             row.revision = int(row.revision or 0) + 1

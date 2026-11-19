@@ -7,6 +7,8 @@ from ....domain.quality_loop.test_design_generation import TestDesignGenerationI
 from ....application.quality_loop.test_design_generation import GenerationSelection
 from ....application.quality_loop.test_design_results import TestDesignResultIntegrityError
 from ....application.quality_loop.generation_job_ports import GenerationHistoryRequest
+from ....application.quality_loop.generation_budget import GenerationBudgetInvalid
+from ....application.quality_loop.scope_draft_inputs import ScopeDraftSelection
 from ..dependencies import TestDesignScopeApp, TestDesignGenerationApp, TestDesignResultApp, GenerationJobApp
 from ..errors import error_response
 from ..evidence_errors import evidence_read_errors
@@ -32,6 +34,32 @@ def scope_errors():
         raise error_response("test_design_result_integrity_failed", "Generation result could not be verified.", 502) from exc
     except PermissionError as exc:
         raise error_response("test_design_job_access_denied", "Current project administrator access is required.", 403) from exc
+    except GenerationBudgetInvalid as exc:
+        raise error_response("scope_draft_budget_invalid", "Check the tested model, policy and approved budget.", 409) from exc
+
+
+@router.post("/v1/projects/{project_id}/quality/scope-drafts/preview")
+def preview_scope_draft(project_id: str, selection: ScopeDraftSelection, application: TestDesignScopeApp, response: Response):
+    response.headers["Cache-Control"] = "private, no-store"
+    if selection.project_id != project_id:
+        raise error_response("scope_draft_project_mismatch", "Project scope mismatch.", 400)
+    with revision_errors(), evidence_read_errors(), acceptance_errors(), context_errors(), scope_errors():
+        return application.drafts.preview(selection)
+
+
+@router.get("/v1/projects/{project_id}/quality/scope-drafts")
+def list_scope_drafts(project_id: str, application: TestDesignScopeApp, response: Response,
+                      context_id: str = Query(..., min_length=1, max_length=128)):
+    response.headers["Cache-Control"] = "private, no-store"
+    with revision_errors(), evidence_read_errors(), acceptance_errors(), context_errors(), scope_errors():
+        return application.drafts.history(project_id, context_id)
+
+
+@router.get("/v1/projects/{project_id}/quality/scope-drafts/{invocation_id}")
+def read_scope_draft(project_id: str, invocation_id: str, application: TestDesignScopeApp, response: Response):
+    response.headers["Cache-Control"] = "private, no-store"
+    with revision_errors(), evidence_read_errors(), acceptance_errors(), context_errors(), scope_errors():
+        return application.drafts.read(project_id, invocation_id)
 
 
 @router.get("/v1/projects/{project_id}/quality/test-design-scopes")

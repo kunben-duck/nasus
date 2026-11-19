@@ -10,8 +10,8 @@ import { canonicalDigest } from '../../apps/portal/src/shared/utils/canonicalDig
 import { zhCN } from '../../apps/portal/src/shared/i18n/messages'
 
 for (const [theme, language, scriptProtocol] of [['light', 'en', 'v1'], ['dark', 'zh', 'v2'],
-  ['light', 'zh', 'v3'], ['dark', 'en', 'v3']] as const) {
-  const variant = scriptProtocol === 'v3' ? `${theme}-v3` : theme
+  ['light', 'zh', 'v3'], ['dark', 'en', 'v3'], ['light', 'zh', 'v4'], ['dark', 'en', 'v4']] as const) {
+  const variant = ['v3', 'v4'].includes(scriptProtocol) ? `${theme}-${scriptProtocol}` : theme
   test(`script budget, lost acknowledgements and independent review preserve original pins (${variant})`, async ({ page, request }) => {
     test.setTimeout(360_000)
     const exweb = process.env.EXWEB_FIXTURE_ROOT, source = exweb ? resolve(exweb) : analysisSource()
@@ -96,11 +96,15 @@ for (const [theme, language, scriptProtocol] of [['light', 'en', 'v1'], ['dark',
       expect(draft.result.request.case_approval_artifact_hash).toBe(scripts.admission.artifact_hash)
       expect(draft.result.proposal.schema).toBe('nasus.automation-script-proposal.' + scriptProtocol)
       expect(draft.result.request.http_protocol).toBe(scriptProtocol === 'v1' ? undefined : 'nasus.runner-http-execution.' + scriptProtocol)
-      if (scriptProtocol === 'v3') for (const script of draft.result.proposal.scripts) {
+      if (scriptProtocol === 'v3' || scriptProtocol === 'v4') for (const script of draft.result.proposal.scripts) {
         expect(script.actions[0]).toEqual({ action: 'use_fixture_binding', binding_id: 'session', source_step_indices: [0] })
         expect(script.actions.filter((action) => action.action === 'capture_json')).toHaveLength(0)
         expect(script.actions.find((action) => action.action === 'request')!.path).toBe('/sessions/{{session}}')
         expect(script.assertions.map((a) => a.oracle)).toEqual(prepared.cases.find((item) => item.case_id === script.case_id)!.assertions.map((a) => a.oracle))
+        if (scriptProtocol === 'v4') {
+          expect(script.actions.find((action) => action.action === 'capture_snapshot')?.snapshot_id).toBe('state')
+          expect(script.actions.at(-1)?.action).toBe('assert_unchanged')
+        }
       }
       const review = panel.getByRole('region', { name: label('Independent script review'), exact: true })
       expect(scripts.reviewReads).toBe(0)

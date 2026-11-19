@@ -7,9 +7,13 @@ import re
 from pathlib import PurePosixPath
 
 from ...application.system_image.document_projections import DocumentExtraction
-from ...domain.system_image.document_projection import DocumentField, DocumentObservation, disambiguate_documents
+from ...domain.system_image.document_projection import (
+    OPENAPI_DOCUMENT_EXTRACTOR, DocumentField, DocumentObservation, disambiguate_documents,
+)
 from ...domain.system_image.document_components import component_identifier, requirement_components
 from ...domain.system_image.evidence import source_lines
+from .openapi_document_extractor import extract_openapi
+from .openapi_document_parser import OpenAPIGap
 
 
 IDENTIFIER = r"(?:US|REQ|TC|TEST)-[A-Za-z0-9][A-Za-z0-9_.-]*"
@@ -37,26 +41,36 @@ class ExplicitDocumentExtractor:
         observations, files, entity_count = [], [], 0
         for unit in units:
             suffix = PurePosixPath(unit.relative_path).suffix.lower()
-            supported = suffix in {".md", ".markdown", ".txt", ".csv"} or (source_type == "test_asset" and suffix == ".py")
+            openapi = suffix in {".json", ".yaml", ".yml"}
+            supported = openapi or suffix in {".md", ".markdown", ".txt", ".csv"} or (source_type == "test_asset" and suffix == ".py")
             if not supported or not unit.text_is_lossless:
                 files.append({"path": unit.relative_path, "status": "unsupported",
                               "reason": "exact_source_locator_adapter_required"})
                 continue
-            if len(unit.text.encode("utf-8")) > 2 * 1024 * 1024:
+            adapter = {"extractor_version": OPENAPI_DOCUMENT_EXTRACTOR} if openapi else {}
+            if not openapi and len(unit.text.encode("utf-8")) > 2 * 1024 * 1024:
                 raise ValueError("document extraction exceeds 2 MiB per file")
             try:
-                rows = (self._python_tests(unit) if suffix == ".py" else self._csv(source_type, unit)
-                        if suffix == ".csv" else self._markdown(source_type, unit))
+                gaps = ()
+                if openapi:
+                    rows, gaps = extract_openapi(source_type, unit, json_document=suffix == ".json")
+                else:
+                    rows = (self._python_tests(unit) if suffix == ".py" else self._csv(source_type, unit)
+                            if suffix == ".csv" else self._markdown(source_type, unit))
                 row_count = len(rows) + sum(len(requirement_components(row)) for row in rows)
+            except OpenAPIGap as exc:
+                files.append({"path": unit.relative_path, "status": "failed", "reason": str(exc), **adapter})
+                continue
             except (csv.Error, ValueError, SyntaxError, RecursionError):
                 # A malformed optional source remains an explicit gap, never a successful parse.
-                files.append({"path": unit.relative_path, "status": "failed", "reason": "invalid_document_structure"})
+                files.append({"path": unit.relative_path, "status": "failed", "reason": "invalid_document_structure", **adapter})
                 continue
             if row_count > 1000 or entity_count + row_count > 10000:
                 raise ValueError("document extraction exceeds entity limit")
             entity_count += row_count
             observations.extend(rows)
-            files.append({"path": unit.relative_path, "status": "parsed", "entity_count": row_count})
+            files.append({"path": unit.relative_path, "status": "parsed", "entity_count": row_count,
+                          **({"gaps": list(gaps)} if openapi else {}), **adapter})
         return DocumentExtraction(disambiguate_documents(tuple(observations)), tuple(files))
 
     @staticmethod

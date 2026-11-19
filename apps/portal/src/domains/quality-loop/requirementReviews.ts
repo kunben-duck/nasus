@@ -1,6 +1,7 @@
 import { request } from '../../shared/api/client'
 import { platformApi } from '../platform/api'
 import type { ContextRequest } from '../system-image/types/contextPack'
+import { generationEqual } from './testDesignGenerationValidation'
 
 export type ReviewSelection = { project_id: string; version_id: string; revision_id: string }
 export type Oracle = { preconditions: string; action: string; observation: string; expected_result: string }
@@ -56,10 +57,16 @@ export const requirementReviewsApi = {
     const key = sessionStorage.getItem(storageKey) || crypto.randomUUID()
     sessionStorage.setItem(storageKey, key)
     let result = await platformApi.invokeTool({ tool_id: toolId, input, idempotency_key: key })
-    if (result.tool_id !== toolId || Object.entries(input).some(([field, value]) => JSON.stringify(result.input_payload[field]) !== JSON.stringify(value))) {
+    const originalId = result.id
+    const matches = () => result.id === originalId && result.tool_id === toolId && !!result.input_payload
+      && Object.entries(input).every(([field, value]) => generationEqual(result.input_payload[field], value))
+    if (!matches()) {
       throw new Error('The original review command input does not match the displayed request')
     }
     if (result.status === 'waiting_confirmation') result = await platformApi.confirmToolInvocation(result.id)
+    if (!matches() || (result.status === 'completed' && (result.result?.invocation_id !== originalId || result.result.status !== 'completed'))) {
+      throw new Error('The confirmed review command does not match the original request')
+    }
     if (result.status === 'completed' || result.status === 'failed' || result.status === 'cancelled') sessionStorage.removeItem(storageKey)
     if (result.status !== 'completed') throw new Error(result.summary || 'The original review command has not completed')
     return result

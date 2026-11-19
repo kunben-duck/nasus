@@ -77,9 +77,12 @@ export interface PlannedCoverageRow {
 export interface GenerationArchive {
   metadata: { project_id: string; generation_id: string; scope_revision_id: string; invocation_id: string; call_id: string | null
     status: 'draft'; artifact_hash: string; case_count: number; gap_count: number; recovery_invocation_id?: string
-    schema?: 'nasus.test-design-result.v3' | 'nasus.test-design-result.v4'; call_ids?: string[]; batch_count?: number; plan_digest?: string }
-  result: { schema: 'nasus.test-design-result.v1' | 'nasus.test-design-result.v2' | 'nasus.test-design-result.v3' | 'nasus.test-design-result.v4'; project_id: string; generation_id: string
-    invocation_id: string; recovery_invocation_id?: string; request: GenerationRequest; status: 'draft'
+    schema?: 'nasus.test-design-result.v3' | 'nasus.test-design-result.v4' | 'nasus.test-design-case-revision.v1'; call_ids?: string[]; batch_count?: number; plan_digest?: string }
+  result: { schema: 'nasus.test-design-result.v1' | 'nasus.test-design-result.v2' | 'nasus.test-design-result.v3' | 'nasus.test-design-result.v4' | 'nasus.test-design-case-revision.v1'; project_id: string; generation_id: string
+    parent?: { generation_id: string; artifact_hash: string }; original_generation_id?: string; edit_sequence?: number; author_ids?: string[]
+    edit_request?: { project_id: string; generation_id: string; generation_artifact_hash: string; cases: PlannedCase[]; reason: string }
+    changes?: { case_id: string; before: PlannedCase; after: PlannedCase }[]
+    invocation_id: string; actor_id?: string; recovery_invocation_id?: string; request: GenerationRequest; status: 'draft'
     context_pin: { context_id: string; artifact_hash: string; input_digest: string; image_revision_id: string; image_artifact_hash: string }
     scope_pin: { revision_id: string; artifact_hash: string; request_hash: string }
     mapping_status: 'pending_independent_review'; execution_authorized: false

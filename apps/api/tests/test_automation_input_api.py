@@ -42,7 +42,7 @@ def evidence_api(base_evidence_api, request, tmp_path):
             "test_fixed_exweb_native_script_review_keeps_original_oracles_and_zero_execution",
             "test_fixed_exweb_script_case_admission_consumes_original_pins",
             "test_fixed_exweb_run_plan_preserves_all_native_source_pins_and_declares_unverified_target",
-            "test_fixed_exweb_v3_script_review_plan_preserves_sources_and_original_obligations",
+            "test_fixed_exweb_versioned_script_review_plan_preserves_sources_and_original_obligations",
             "test_fixed_exweb_fixture_operation_consent_preserves_all_source_pins",
             "test_fixed_exweb_fixture_dispatch_consent_atomicity_and_unknown_result",
             "test_fixed_exweb_recipe_verifies_archive_once_and_rolls_back_late_failure",

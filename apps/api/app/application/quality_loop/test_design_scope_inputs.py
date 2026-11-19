@@ -1,6 +1,6 @@
 from typing import Annotated, Literal, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_serializer, model_validator
 
 from .acceptance_specifications import OracleInput
 from ...domain.quality_loop.test_design_scope import SCOPE_POLICY
@@ -137,6 +137,11 @@ class ScopeReceipt(ScopeQueryInput):
     generation_authorized: Literal[False] = False
 
 
+class ScopeDraftReference(ScopeValue):
+    invocation_id: Id
+    artifact_hash: Digest
+
+
 class ScopeReviewInput(ScopeQueryInput):
     context_artifact_hash: Digest
     expected_previous_revision_id: Optional[Id]
@@ -144,6 +149,14 @@ class ScopeReviewInput(ScopeQueryInput):
     contract: Optional[TestDesignContract]
     reason: Text
     policy_revision: Literal["nasus.test-design-scope.v1"] = SCOPE_POLICY
+    draft_ref: Optional[ScopeDraftReference] = None
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_payload(self, handler):
+        value = handler(self)
+        if self.draft_ref is None:
+            value.pop("draft_ref", None)
+        return value
 
     @model_validator(mode="after")
     def match_decision(self):

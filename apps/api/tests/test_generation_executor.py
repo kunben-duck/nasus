@@ -110,6 +110,19 @@ def test_preview_does_not_egress_or_persist_and_never_returns_source_text():
     assert json.loads(generation_messages(prepared)[1]) == prepared
 
 
+def test_single_call_prompt_distinguishes_design_gaps_without_claiming_execution():
+    from apps.api.app.application.quality_loop.generation_execution_inputs import GENERATION_PROMPT_VERSION
+    app, selection, deps, prepared = executor()
+    system, content = generation_messages(prepared)
+    assert "absence of execution by itself is\nnot a design gap" in system
+    assert "Preserve all actual gaps and conflicting evidence" in system
+    assert "untrusted evidence" in system and "independent mapping review" in system
+    assert json.loads(content) == prepared and not app.preview(selection)["execution_authorized"]
+    request = GenerationResultRequest.model_validate(app.preview(selection)["request"])
+    asyncio.run(app.execute(request, invocation_id="draft-boundary"))
+    assert deps["repository"].calls[0].prompt_version == GENERATION_PROMPT_VERSION == "v2"
+
+
 def test_native_reply_and_usage_are_saved_before_result_commit_and_recovery_never_resends():
     app, selection, deps, _ = executor()
     request = GenerationResultRequest.model_validate(app.preview(selection)["request"])

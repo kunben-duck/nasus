@@ -9,6 +9,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 
 from .database import Base
+from .scope_draft_models import ScopeDraftEventRecord  # noqa: F401
+from .execution_environment_models import (  # noqa: F401
+    ExecutionEnvironmentRecord, ExecutionEnvironmentLeaseRecord,
+    ExecutionEnvironmentSnapshotRecord, ExecutionEnvironmentSnapshotRestoreRecord,
+)
+from .http_role_fixture_models import (  # noqa: F401
+    HttpRoleCredentialEnvelopeRecord, HttpRoleFixtureClaimRecord, HttpRoleFixtureResultRecord,
+)
 from .version_delivery_models import ProjectDeliveryRecord, VersionCreationRecord, VersionImageBindingRecord  # noqa: F401
 from .agent_resume_models import AgentResumeConsumptionRecord  # noqa: F401
 from .agent_start_models import AgentGoalStartReceiptRecord  # noqa: F401

@@ -78,7 +78,7 @@ export function BuildConversation({ conversation, sendPrompt, busy }: {
             <label className="build-upload-button" key={kind}>
               {t(kind === 'us_doc' ? 'Upload requirements' : 'Upload test assets')}
               <input type="file" multiple disabled={busy || uploading} data-testid={`build-upload-${kind}`}
-                accept={kind === 'us_doc' ? '.md,.txt,.pdf,.docx' : '.csv,.json,.md,.txt,.py,.js,.ts,.yaml,.yml'}
+                accept={kind === 'us_doc' ? '.md,.txt,.pdf,.docx,.yaml,.yml,.json' : '.csv,.json,.md,.txt,.py,.js,.ts,.yaml,.yml,.hurl'}
                 onChange={(event) => { void upload(kind, Array.from(event.target.files ?? [])); event.target.value = '' }} />
             </label>
           )) : null}

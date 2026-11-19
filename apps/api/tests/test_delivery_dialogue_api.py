@@ -98,7 +98,7 @@ def independent_publication(v):
 
 
 @pytest.mark.parametrize("graph_kind", ["local", "langgraph_postgres"])
-def test_chat_project_to_reviewed_image_and_explicit_iteration(evidence_api, tmp_path, monkeypatch, graph_kind, requirement_document=None):
+def test_chat_project_to_reviewed_image_and_explicit_iteration(evidence_api, tmp_path, monkeypatch, graph_kind, requirement_document=None, source_ref=None):
     v = evidence_api
     replace_graph(monkeypatch, graph_kind)
     repository = tmp_path / "source.git"
@@ -115,8 +115,9 @@ def test_chat_project_to_reviewed_image_and_explicit_iteration(evidence_api, tmp
     created = send(v, "项目叫 M1 对话闭环")
     v["project_id"] = created["project_id"]
     assert v["project_id"] and draft(created)["stage"] == "sources"
-    source = send(v, f"代码仓库 {repository.as_uri()} 提交 {commit}")
-    assert draft(source)["code_ref"] == commit
+    selector = f"分支 {source_ref}" if source_ref else f"提交 {commit}"
+    source = send(v, f"代码仓库 {repository.as_uri()} {selector}")
+    assert draft(source)["code_ref"] == (source_ref or commit)
     assert draft(source)["code"] == repository.as_uri(), draft(source)
     if requirement_document is not None:
         uploaded = v["client"].post(f"/v1/projects/{v['project_id']}/source-files", headers=v["headers"],

@@ -11,7 +11,7 @@ export interface RunPlanSelection {
     build_definition_hash: string; runtime: string; runtime_version: string; build_tool: string; build_tool_version: string }
   environment: { environment_id: string; kind: 'local' | 'test' | 'staging'; base_url: string; inventory_hash: string; isolation: string }
   fixtures: { case_id: string; preconditions_digest: string; data_manifest_hash: string; setup: string[]; cleanup: string[] }[]
-  reason: string; policy_revision: 'nasus.run-plan.v1' | 'nasus.run-plan.v2' | 'nasus.run-plan.v3'
+  reason: string; policy_revision: 'nasus.run-plan.v1' | 'nasus.run-plan.v2' | 'nasus.run-plan.v3' | 'nasus.run-plan.v4'
 }
 export interface RunPlanRequest extends RunPlanSelection { plan_digest: string; source_scope_digest: string }
 export interface RunPlanPreview {
@@ -19,7 +19,7 @@ export interface RunPlanPreview {
   target_verification: 'declared_not_native_verified'; execution_authorized: false; remaining_gates: string[]
 }
 export interface RunPlanValue {
-  schema: 'nasus.run-plan.v1' | 'nasus.run-plan.v2' | 'nasus.run-plan.v3'; project_id: string; selection: RunPlanSelection; source_pin: RunPlanSources
+  schema: 'nasus.run-plan.v1' | 'nasus.run-plan.v2' | 'nasus.run-plan.v3' | 'nasus.run-plan.v4'; project_id: string; selection: RunPlanSelection; source_pin: RunPlanSources
   script_pin: { script_revision_id: string; artifact_hash: string; proposal_hash: string; input_digest: string }
   review_pin: { revision_id: string; artifact_hash: string; request_hash: string; authority_actor: string }
   prepared: AutomationInputPreview; proposal: ScriptProposal; status: 'prepared'; plan_digest: string
@@ -30,7 +30,7 @@ export interface RunPlanArchive {
   metadata: { project_id: string; run_plan_id: string; invocation_id: string; artifact_hash: string; request_hash: string
     plan_digest: string; status: 'prepared'; actor_id: string; recorded_at: string; context_id: string; image_revision_id: string
     manifest_id: string; script_revision_id: string; review_revision_id: string; execution_authorized: false; [key: string]: unknown }
-  artifact: { schema: 'nasus.run-plan-artifact.v1' | 'nasus.run-plan-artifact.v2' | 'nasus.run-plan-artifact.v3'; project_id: string; run_plan_id: string; invocation_id: string
+  artifact: { schema: 'nasus.run-plan-artifact.v1' | 'nasus.run-plan-artifact.v2' | 'nasus.run-plan-artifact.v3' | 'nasus.run-plan-artifact.v4'; project_id: string; run_plan_id: string; invocation_id: string
     actor_id: string; recorded_at: string; request: RunPlanRequest; plan: RunPlanValue }
   historical_not_live: true; current_use: { inputs_current: boolean; target_verified: false; execution_authorized: false }
 }

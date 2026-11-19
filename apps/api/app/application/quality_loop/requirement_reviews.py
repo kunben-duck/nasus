@@ -117,7 +117,10 @@ class RequirementReviewApplicationService:
                     and item["current"]["revision_id"] == expected.get(item["input"]["object_id"]) for item in requests) else "approval_invalidated"
         elif last_attempt:
             status = "review_failed" if last_attempt["kind"] == "failed" else "review_pending"
-        if status != "confirmed" and delivery.iteration_image.image_revision_id != revision.image_revision_id:
+        reviewed_image = confirmation["payload"]["projection"] if confirmation and evaluation and confirmation["payload"]["evaluation_id"] == evaluation["event_id"] else {
+            "image_revision_id": revision.image_revision_id, "image_artifact_hash": revision.image_artifact_hash}
+        if (delivery.iteration_image.image_revision_id != reviewed_image["image_revision_id"]
+                or delivery.iteration_image.image_artifact_hash != reviewed_image["image_artifact_hash"]):
             status = "image_changed"
         if not current:
             status = "superseded"

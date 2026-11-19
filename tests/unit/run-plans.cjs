@@ -30,8 +30,10 @@ const nativeBindings = JSON.parse(execFileSync(path.join(repo, '.venv/bin/python
   'import json; from apps.api.tests.test_http_binding_scripts import binding_plan_inputs; from apps.api.app.domain.quality_loop.run_plan import compile_run_plan; d,r,s,v=binding_plan_inputs(); print(json.dumps(dict(draft=d,review=r,sources=s,selection=v,plan=compile_run_plan(d,r,v,s)),ensure_ascii=False))'], { cwd: repo, encoding: 'utf8' }))
 const nativeFixtures = JSON.parse(execFileSync(path.join(repo, '.venv/bin/python'), ['-c',
   'import json; from apps.api.tests.test_http_fixture_binding_scripts import fixture_plan_inputs; from apps.api.app.domain.quality_loop.run_plan import compile_run_plan; d,r,s,v=fixture_plan_inputs(); print(json.dumps(dict(draft=d,review=r,sources=s,selection=v,plan=compile_run_plan(d,r,v,s)),ensure_ascii=False))'], { cwd: repo, encoding: 'utf8' }))
+const nativeReadback = JSON.parse(execFileSync(path.join(repo, '.venv/bin/python'), ['-c',
+  'import json; from apps.api.tests.test_http_fixture_binding_scripts import fixture_plan_inputs; from apps.api.app.domain.quality_loop.run_plan import compile_run_plan; d,r,s,v=fixture_plan_inputs("nasus.runner-http-execution.v4"); print(json.dumps(dict(draft=d,review=r,sources=s,selection=v,plan=compile_run_plan(d,r,v,s)),ensure_ascii=False))'], { cwd: repo, encoding: 'utf8' }))
 function fixture(protocol = 'v1') {
-  const v = structuredClone(protocol === 'v3' ? nativeFixtures : protocol === 'v2' ? nativeBindings : native), b = v.selection.target_build, e = v.selection.environment
+  const v = structuredClone(protocol === 'v4' ? nativeReadback : protocol === 'v3' ? nativeFixtures : protocol === 'v2' ? nativeBindings : native), b = v.selection.target_build, e = v.selection.environment
   v.fields = { artifactName: b.artifact_name, artifactHash: b.artifact_hash, definitionHash: b.build_definition_hash,
     runtime: b.runtime, runtimeVersion: b.runtime_version, buildTool: b.build_tool, buildToolVersion: b.build_tool_version,
     environmentId: e.environment_id, kind: e.kind, origin: e.base_url, inventoryHash: e.inventory_hash, isolation: e.isolation,
@@ -132,7 +134,15 @@ test('explicit v3 RunPlan matches the independent Python compiler and preserves 
     bad.artifact.schema = validation.runPlanArtifactSchema(policy); bad.metadata.artifact_hash = await digest(bad.artifact)
     await assert.rejects(validation.verifyRunPlanArchive(bad, v.request, 'command', v.draft, v.review, v.sources))
   }
-  assert.throws(() => validation.runPlanArtifactSchema('nasus.run-plan.v4'))
+  assert.throws(() => validation.runPlanArtifactSchema('nasus.run-plan.v5'))
+})
+test('v4 RunPlan matches Python and cannot be downgraded to a stop-on-first-failure policy', async () => {
+  const v = fixture('v4'), a = await archive(v)
+  assert.deepEqual(plain(await validation.expectedRunPlan(v.selection, v.draft, v.review, v.sources)), v.plan)
+  assert.deepEqual(plain(await drafts.runPlanSelection(v.fields, v.draft, v.review, v.sources)), v.selection)
+  assert.equal(a.artifact.schema, 'nasus.run-plan-artifact.v4')
+  assert.equal(await validation.verifyRunPlanArchive(a, v.request, 'command', v.draft, v.review, v.sources), a)
+  await assert.rejects(validation.expectedRunPlan({ ...v.selection, policy_revision: 'nasus.run-plan.v3' }, v.draft, v.review, v.sources))
 })
 test('recovery stores only actor-scoped IDs and request digest, never target declarations or original text', async () => {
   const v = fixture(), values = new Map(), storage = { getItem: (k) => values.get(k) ?? null, setItem: (k, val) => values.set(k, val), removeItem: (k) => values.delete(k) }

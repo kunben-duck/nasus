@@ -119,7 +119,7 @@ export function verifyGenerationArchive(value: unknown, scope: ScopeArchive,
     && r.request.scope_artifact_hash === scope.revision.artifact_hash && generationDigest(r.request.input_digest)
     && generationEqual(r.context_pin, scope.context_pin) && r.scope_pin.revision_id === scope.revision.revision_id
     && r.scope_pin.artifact_hash === scope.revision.artifact_hash && r.scope_pin.request_hash === scope.revision.request_hash
-    && ['nasus.test-design-result.v1', 'nasus.test-design-result.v2', 'nasus.test-design-result.v3', 'nasus.test-design-result.v4'].includes(r.schema)
+    && ['nasus.test-design-result.v1', 'nasus.test-design-result.v2', 'nasus.test-design-result.v3', 'nasus.test-design-result.v4', 'nasus.test-design-case-revision.v1'].includes(r.schema)
     && (['nasus.test-design-result.v2', 'nasus.test-design-result.v4'].includes(r.schema)
       ? identity(m.recovery_invocation_id) && m.recovery_invocation_id === r.recovery_invocation_id && m.recovery_invocation_id !== m.invocation_id
       : !m.recovery_invocation_id && !r.recovery_invocation_id)
@@ -135,6 +135,17 @@ export function verifyGenerationArchive(value: unknown, scope: ScopeArchive,
     && uniqueIds(c.rows.map((row) => row.row_id)) && uniqueIds(r.proposal.cases.map((item) => item.case_id))
     && uniqueIds(r.proposal.gaps.map((item) => item.gap_id)))
   const cases = new Map(r.proposal.cases.map((item) => [item.case_id, item]))
+  if (r.schema === 'nasus.test-design-case-revision.v1') {
+    requireValue(m.schema === r.schema && m.call_id === null && r.parent && identity(r.parent.generation_id)
+      && r.parent.generation_id !== m.generation_id && generationDigest(r.parent.artifact_hash)
+      && identity(r.original_generation_id) && integer(r.edit_sequence, 1, 64)
+      && Array.isArray(r.author_ids) && uniqueIds(r.author_ids) && r.author_ids.length > 0
+      && r.edit_request?.project_id === m.project_id && r.edit_request.generation_id === r.parent.generation_id
+      && r.edit_request.generation_artifact_hash === r.parent.artifact_hash && !!r.edit_request.reason.trim()
+      && Array.isArray(r.changes) && r.changes.length > 0
+      && r.changes.every((change) => change.case_id === change.before.case_id && change.case_id === change.after.case_id
+        && generationEqual(change.after, cases.get(change.case_id))))
+  }
   const gaps = new Map(r.proposal.gaps.map((item) => [item.gap_id, item]))
   const rows = new Map(c.rows.map((row) => [row.row_id, row]))
   const constraintIds = new Set(constraints)

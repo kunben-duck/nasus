@@ -11,6 +11,7 @@ from .acceptance_specifications import OracleInput
 from ...domain.quality_loop.automation_scripts import validate_script_proposal, verify_script_input
 from ...domain.quality_loop.http_bindings import HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA
 from ...domain.quality_loop.http_runner_observations import HTTP_RUNNER_RECEIPT_SCHEMA
+from ...domain.quality_loop.http_readback import HTTP_READBACK_SCHEMA
 
 
 SCRIPT_TOOL = "quality.automation.generate"
@@ -32,7 +33,7 @@ class ScriptHistoryQuery(GenerationValue):
 class ScriptExecutionSelection(AutomationInputSelection):
     model_config_id: Id
     budget: GenerationBudgetLimits
-    http_protocol: Optional[Literal["nasus.runner-http-execution.v2", "nasus.runner-http-execution.v3"]] = None
+    http_protocol: Optional[Literal["nasus.runner-http-execution.v2", "nasus.runner-http-execution.v3", "nasus.runner-http-execution.v4"]] = None
     case_approval_revision_id: Optional[Id] = None
     case_approval_artifact_hash: Optional[Digest] = None
 
@@ -130,7 +131,7 @@ requires independent review; draft scripts are never permission to run a target.
 
 def script_messages(prepared, *, http_protocol=HTTP_RUNNER_RECEIPT_SCHEMA):
     verify_script_input(prepared)
-    if http_protocol not in {HTTP_RUNNER_RECEIPT_SCHEMA, HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA}:
+    if http_protocol not in {HTTP_RUNNER_RECEIPT_SCHEMA, HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA}:
         raise ValueError("unsupported script HTTP protocol")
     extension = "" if http_protocol == HTTP_RUNNER_RECEIPT_SCHEMA else """
 Explicit HTTP protocol: nasus.runner-http-execution.v2 (at most 100 actions per HTTP case).
@@ -143,8 +144,8 @@ Captured values must be resource ID strings matching [A-Za-z0-9_-]{1,128}.
 Preserve every original step and independent oracle; report a gap rather than inventing
 an extraction pointer, resource flow or expected result. GET/HEAD bodies must be null.
 """
-    if http_protocol == HTTP_FIXTURE_RECEIPT_SCHEMA:
-        extension = extension.replace(HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA) + """
+    if http_protocol in {HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA}:
+        extension = extension.replace(HTTP_BINDING_RECEIPT_SCHEMA, http_protocol) + """
 use_fixture_binding(binding_id) explicitly declares an import from this case's separately
 executed fixture setup. It has source_step_indices but no request_id, value or assertion.
 At most 16 distinct fixture imports; use an import before its complete path segment.
@@ -153,6 +154,19 @@ The declaration is not proof of an available fixture: execution must bind the or
 successful setup wire bytes, capture evidence and target epoch independently.
 Declare only resource flows grounded in the selected original steps and preconditions;
 otherwise report a gap. Preserve every original oracle; imports are not assertion actions.
+"""
+    if http_protocol == HTTP_READBACK_SCHEMA:
+        extension += """
+Every HTTP request additionally declares phase=exercise|readback. Readback is only GET/HEAD
+and may continue after an assertion fails; no later mutation may run after failure.
+capture_snapshot(request_id,pointer,snapshot_id) records an observed JSON value from a
+successful GET before any mutation; snapshots are bounded single assignments, not oracles.
+assert_unchanged(request_id,pointer,snapshot_id) compares a subsequent GET with that snapshot.
+Snapshot IDs match [A-Za-z0-9_]{1,64}; at most 32 per case. Do not use snapshots as resource
+or credential bindings. Every unchanged assertion requires its own approved oracle row:
+comparison fields must come from that oracle, never from implementation behavior.
+A failed denial assertion stays failed even if the later readback passes. Readback must
+remain in the reviewed script and cannot be supplied dynamically by the target.
 """
     return (SCRIPT_INSTRUCTIONS + extension + "\nJSON Schema:\n" + json.dumps(ScriptModelOutput.model_json_schema(),
         sort_keys=True, separators=(",", ":"), ensure_ascii=False),

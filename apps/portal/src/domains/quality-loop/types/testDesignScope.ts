@@ -23,6 +23,7 @@ export interface ScopeSelection { project_id: string; context_id: string; contex
 export interface ScopeReview extends ScopeSelection {
   expected_previous_revision_id: string | null; decision: 'approve' | 'withdraw'; contract: TestDesignContract | null
   reason: string; policy_revision: 'nasus.test-design-scope.v1'
+  draft_ref?: { invocation_id: string; artifact_hash: string }
 }
 export interface ScopeRevision extends ScopeSelection {
   revision_id: string; scope_id: string; previous_revision_id: string | null; sequence: number

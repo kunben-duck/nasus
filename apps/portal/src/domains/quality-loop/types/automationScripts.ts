@@ -17,7 +17,7 @@ export interface ScriptSelection {
   project_id: string; mapping_revision_id: string; mapping_artifact_hash: string; case_ids: string[]
   model_config_id: string; budget: GenerationBudget
   case_approval_revision_id: string; case_approval_artifact_hash: string
-  http_protocol?: 'nasus.runner-http-execution.v2' | 'nasus.runner-http-execution.v3'
+  http_protocol?: 'nasus.runner-http-execution.v2' | 'nasus.runner-http-execution.v3' | 'nasus.runner-http-execution.v4'
 }
 export interface ScriptRequest extends Omit<ScriptSelection, 'case_approval_revision_id' | 'case_approval_artifact_hash'> {
   case_approval_revision_id?: string; case_approval_artifact_hash?: string
@@ -32,8 +32,8 @@ export interface DraftScript {
     source_step_index: number; action_index: number }[]
 }
 export interface ScriptProposal {
-  schema: 'nasus.automation-script-proposal.v1' | 'nasus.automation-script-proposal.v2' | 'nasus.automation-script-proposal.v3'
-  http_protocol?: 'nasus.runner-http-execution.v2' | 'nasus.runner-http-execution.v3'; input_digest: string; scripts: DraftScript[]
+  schema: 'nasus.automation-script-proposal.v1' | 'nasus.automation-script-proposal.v2' | 'nasus.automation-script-proposal.v3' | 'nasus.automation-script-proposal.v4'
+  http_protocol?: 'nasus.runner-http-execution.v2' | 'nasus.runner-http-execution.v3' | 'nasus.runner-http-execution.v4'; input_digest: string; scripts: DraftScript[]
   gaps: { case_id: string; case_digest: string; description: string }[]; case_count: number; script_count: number; gap_count: number
   status: 'draft'; review_status: 'pending_independent_review'; execution_authorized: false
   automated_count: 0; executed_on_target_count: 0; passed_count: 0; remaining_gates: string[]

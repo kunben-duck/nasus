@@ -316,6 +316,10 @@ def build_tool_handler_registry(dependencies: ToolHandlerDependencies) -> ToolIn
             dependencies.tool_invocations, dependencies.evidence_access))
     for tool_id in (SCOPE_TOOL, SCOPE_QUERY_TOOL):
         registry.register(tool_id, TestDesignScopeToolHandler(dependencies.test_design_scopes, dependencies.tool_invocations, dependencies.evidence_access))
+    from .scope_drafts import ScopeDraftToolHandler
+    for tool_id in ("quality.test_design_scope.draft", "query.quality.test_design_scope.draft_preview"):
+        registry.register(tool_id, ScopeDraftToolHandler(dependencies.test_design_scopes,
+            dependencies.tool_invocations, dependencies.evidence_access))
     registry.register(GENERATION_QUERY_TOOL, TestDesignGenerationQueryHandler(
         dependencies.test_design_generation, dependencies.tool_invocations, dependencies.evidence_access))
     for tool_id in (GENERATION_EXECUTION_PREVIEW_TOOL, GENERATION_BATCH_PREVIEW_TOOL, GENERATION_TOOL, GENERATION_RECOVER_TOOL, GENERATION_CANCEL_TOOL, GENERATION_JOB_QUERY_TOOL, GENERATION_HISTORY_QUERY_TOOL):

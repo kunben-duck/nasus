@@ -32,7 +32,7 @@ export async function verifyScriptPreview(value: unknown, selection: ScriptSelec
   requireScript(r && Object.entries(selection).every(([key, item]) => generationEqual(item, r[key as keyof typeof r]))
     && scriptId(r.case_approval_revision_id) && generationDigest(r.case_approval_artifact_hash)
     && r.http_protocol === selection.http_protocol
-    && (r.http_protocol === undefined || ['nasus.runner-http-execution.v2', 'nasus.runner-http-execution.v3'].includes(r.http_protocol))
+    && (r.http_protocol === undefined || ['nasus.runner-http-execution.v2', 'nasus.runner-http-execution.v3', 'nasus.runner-http-execution.v4'].includes(r.http_protocol))
     && r.input_digest === prepared.input_digest && r.execution?.purpose === 'draft_automation_source_egress'
     && generationEqual(r.case_ids, prepared.selected_case_ids) && r.mapping_revision_id === prepared.mapping_pin.revision_id
     && r.mapping_artifact_hash === prepared.mapping_pin.artifact_hash && r.project_id === prepared.project_id
@@ -47,22 +47,29 @@ export async function verifyScriptPreview(value: unknown, selection: ScriptSelec
   requireScript(v.call_count === 1 && !('batching' in v) && !('batch_planning' in v))
   return v
 }
-const assertActions = new Set(['assert_text', 'assert_visible', 'assert_url', 'assert_status', 'assert_json', 'assert_header', 'assert_body'])
+const assertActions = new Set(['assert_text', 'assert_visible', 'assert_url', 'assert_status', 'assert_json', 'assert_header', 'assert_body', 'assert_unchanged'])
 export function scriptProtocol(proposal: ScriptArchive['result']['proposal']) {
   if (proposal.schema === 'nasus.automation-script-proposal.v1' && !('http_protocol' in proposal)) return 'nasus.runner-http-execution.v1'
   requireScript(proposal.schema === 'nasus.automation-script-proposal.v2' && proposal.http_protocol === 'nasus.runner-http-execution.v2'
-    || proposal.schema === 'nasus.automation-script-proposal.v3' && proposal.http_protocol === 'nasus.runner-http-execution.v3')
+    || proposal.schema === 'nasus.automation-script-proposal.v3' && proposal.http_protocol === 'nasus.runner-http-execution.v3'
+    || proposal.schema === 'nasus.automation-script-proposal.v4' && proposal.http_protocol === 'nasus.runner-http-execution.v4')
   return proposal.http_protocol
 }
 const hasControlCharacter = (value: string) => [...value].some((char) => char.codePointAt(0)! < 32 || char.codePointAt(0) === 127)
 const bindingJson = (value: string) => strictJson(value, { maxContainerDepth: 64, maxNumberLength: 256, safeIntegerNumbers: true })
-export function verifyHttpBindingActions(actions: { action: string; [field: string]: unknown }[], requireSourceIndices = true, allowFixtureImports = false) {
+export function verifyHttpBindingActions(actions: { action: string; [field: string]: unknown }[], requireSourceIndices = true, allowFixtureImports = false, readback = false) {
   const requests = new Set<string>(), bindings = new Set<string>()
+  const requestKinds = new Map<string, { method: unknown; phase: unknown }>(), snapshots = new Map<string, string>()
+  let mutationSeen = false
   let fixtureImports = 0
   const fields: Record<string, string[]> = { request: ['request_id', 'method', 'path', 'headers_json', 'body_json'],
     capture_json: ['request_id', 'pointer', 'binding_id'], assert_status: ['request_id', 'value'],
     assert_json: ['request_id', 'pointer', 'value_json'], assert_header: ['request_id', 'name', 'value'], assert_body: ['request_id', 'value'] }
   if (allowFixtureImports) fields.use_fixture_binding = ['binding_id']
+  if (readback) {
+    fields.request = [...fields.request, 'phase']
+    fields.capture_snapshot = fields.assert_unchanged = ['request_id', 'pointer', 'snapshot_id']
+  }
   requireScript(Array.isArray(actions) && actions.length > 0 && actions.length <= 100)
   for (const action of actions) {
     requireScript(Object.hasOwn(fields, action.action))
@@ -95,10 +102,22 @@ export function verifyHttpBindingActions(actions: { action: string; [field: stri
           && !!value.trim() && value.length <= 256 && !hasControlCharacter(value))
         && (!['GET', 'HEAD'].includes(action.method as string) || body === null))
       requests.add(request)
+      requestKinds.set(request, { method: action.method, phase: action.phase })
+      if (readback) requireScript(['exercise', 'readback'].includes(action.phase as string)
+        && (action.phase !== 'readback' || ['GET', 'HEAD'].includes(action.method as string)))
+      mutationSeen ||= !['GET', 'HEAD', 'OPTIONS'].includes(action.method as string)
     } else {
       requireScript(requests.has(request))
-      if (action.action === 'capture_json' || action.action === 'assert_json') requireScript(action.pointer === ''
+      if (['capture_json', 'assert_json', 'capture_snapshot', 'assert_unchanged'].includes(action.action)) requireScript(action.pointer === ''
         || typeof action.pointer === 'string' && action.pointer.startsWith('/') && !/~(?![01])/u.test(action.pointer))
+      if (action.action === 'capture_snapshot' || action.action === 'assert_unchanged') {
+        const ident = action.snapshot_id as string, kind = requestKinds.get(request)
+        requireScript(/^[A-Za-z0-9_]{1,64}$/u.test(ident) && kind?.method === 'GET')
+        if (action.action === 'capture_snapshot') {
+          requireScript(!mutationSeen && !snapshots.has(ident) && snapshots.size < 32)
+          snapshots.set(ident, request)
+        } else requireScript(kind.phase === 'readback' && snapshots.has(ident) && snapshots.get(ident) !== request)
+      }
       if (action.action === 'capture_json') {
         const binding = action.binding_id as string
         requireScript(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(binding) && !bindings.has(binding) && bindings.size < 32)
@@ -109,8 +128,8 @@ export function verifyHttpBindingActions(actions: { action: string; [field: stri
     }
   }
 }
-function verifyBindingActions(script: ScriptArchive['result']['proposal']['scripts'][number], allowFixtureImports: boolean) {
-  verifyHttpBindingActions(script.actions, true, allowFixtureImports)
+function verifyBindingActions(script: ScriptArchive['result']['proposal']['scripts'][number], protocol: string) {
+  verifyHttpBindingActions(script.actions, true, ['nasus.runner-http-execution.v3', 'nasus.runner-http-execution.v4'].includes(protocol), protocol === 'nasus.runner-http-execution.v4')
 }
 export async function verifyScriptArchive(value: unknown, draft: GenerationArchive, mapping: RecordedMappingArchive, item: ScriptHistoryItem): Promise<ScriptArchive> {
   const v = value as ScriptArchive, m = v?.metadata, r = v?.result, p = r?.proposal
@@ -154,8 +173,8 @@ export async function verifyScriptArchive(value: unknown, draft: GenerationArchi
     if (!('actions' in script)) { requireScript(typeof script.description === 'string' && !!script.description.trim()); continue }
     requireScript(['http', 'browser'].includes(script.kind) && Array.isArray(script.actions) && script.actions.length > 0 && script.actions.length <= 256
       && Array.isArray(script.assertions) && script.assertions.length === original.assertions.length)
-    if (script.kind === 'http' && r.request.http_protocol) verifyBindingActions(script, r.request.http_protocol === 'nasus.runner-http-execution.v3')
-    else requireScript(script.actions.every((action) => !['capture_json', 'use_fixture_binding'].includes(action.action)))
+    if (script.kind === 'http' && r.request.http_protocol) verifyBindingActions(script, r.request.http_protocol)
+    else requireScript(script.actions.every((action) => !['capture_json', 'use_fixture_binding', 'capture_snapshot', 'assert_unchanged'].includes(action.action)))
     const steps = new Set<number>(), rows = new Set<string>(), actionIndices = new Set<number>()
     for (const action of script.actions) {
       requireScript(Array.isArray(action.source_step_indices) && !!action.source_step_indices.length && new Set(action.source_step_indices).size === action.source_step_indices.length

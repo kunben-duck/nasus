@@ -14,7 +14,7 @@ const sensitive = { gcTime: 0, staleTime: 0, retry: false, refetchOnWindowFocus:
 export function useAutomationScripts(draft: GenerationArchive, mapping: RecordedMappingArchive, sessionId: string, onFailure: () => void) {
   const [open, setOpen] = useState(false), [model, setModel] = useState(''), [selected, setSelected] = useState('')
   const [commandId, setCommandId] = useState(''), [consent, setConsent] = useState(''), submitted = useRef(false)
-  const [protocol, setProtocol] = useState<'v1' | 'v2' | 'v3'>('v1')
+  const [protocol, setProtocol] = useState<'v1' | 'v2' | 'v3' | 'v4'>('v1')
   const [fields, setFields] = useState<Record<BudgetField, string>>({ currency: 'USD', calls: '1', input: '', output: '', tokens: '', cost: '' })
   const m = mapping.revision, prefix = ['automation-script-revisions', m.project_id, sessionId, m.revision_id, m.artifact_hash]
   const current = draft.current_use.scope_current && mapping.current_use.scope_current && mapping.current_use.mapping_current && mapping.current_use.mapping_complete
@@ -45,7 +45,8 @@ export function useAutomationScripts(draft: GenerationArchive, mapping: Recorded
   const selection: ScriptSelection | null = chosen && budget && inputValue && admitted && head ? { project_id: m.project_id,
     mapping_revision_id: m.revision_id, mapping_artifact_hash: m.artifact_hash, case_ids: inputValue.selected_case_ids, model_config_id: model, budget,
     case_approval_revision_id: head.revision_id, case_approval_artifact_hash: head.artifact_hash,
-    ...(protocol === 'v3' ? { http_protocol: 'nasus.runner-http-execution.v3' as const }
+    ...(protocol === 'v4' ? { http_protocol: 'nasus.runner-http-execution.v4' as const }
+      : protocol === 'v3' ? { http_protocol: 'nasus.runner-http-execution.v3' as const }
       : protocol === 'v2' ? { http_protocol: 'nasus.runner-http-execution.v2' as const } : {}) } : null
   const key = JSON.stringify([selection, chosen, inputValue?.input_digest])
   const preview = useMutation({ retry: false, mutationFn: async ({ selection, key }: { selection: ScriptSelection; key: string }) =>
@@ -71,7 +72,7 @@ export function useAutomationScripts(draft: GenerationArchive, mapping: Recorded
     loadMore: () => { if (!busy && history.hasNextPage) void history.fetchNextPage() },
     choose: (id: string) => { if (!busy) { setSelected(id); setConsent('') } },
     chooseModel: (id: string) => { if (!busy) { reset(); setModel(id) } },
-    chooseProtocol: (value: string) => { if (!busy && (value === 'v1' || value === 'v2' || value === 'v3')) { reset(); setProtocol(value) } },
+    chooseProtocol: (value: string) => { if (!busy && (value === 'v1' || value === 'v2' || value === 'v3' || value === 'v4')) { reset(); setProtocol(value) } },
     editBudget: (field: BudgetField, value: string) => { if (!busy) { reset(); setFields({ ...fields, [field]: value }) } },
     prepare: () => { if (mayPreview && selection) { reset(); preview.mutate({ selection, key }) } },
     confirm: (checked: boolean) => setConsent(checked ? confirmationKey : ''),

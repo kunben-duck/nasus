@@ -61,6 +61,8 @@ async function saveDraftAndOpenPhase(page: Page, value: Awaited<ReturnType<typeo
 
 for (const theme of ['light', 'dark']) {
   test(`revised phase preserves history and requires a separate execution gate in ${theme}`, async ({ page, request }) => {
+    // Two builds, two reloads and separate approvals share the overall test deadline.
+    test.slow()
     const source = analysisSource(), documents = mkdtempSync(join(tmpdir(), 'nasus-phase-documents-'))
     try {
       const value = await enrichedGoal(request, source, documents)

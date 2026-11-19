@@ -5,6 +5,7 @@ import { useI18n } from '../../../../shared/i18n/I18nProvider'
 import './delivery.css'
 import { ImageRevisionInspector } from '../knowledge/revisions/ImageRevisionInspector'
 import { RequirementIntakePanel } from './RequirementIntakePanel'
+import { IterationImageAdoptionPanel } from './IterationImageAdoptionPanel'
 
 export function DeliveryDetails({ projectId, versionId }: { projectId: string; versionId: string }) {
   const { t, tx } = useI18n(), { query, view } = useVersionDelivery(projectId, versionId)
@@ -59,6 +60,7 @@ export function DeliveryDetails({ projectId, versionId }: { projectId: string; v
       {view.available_actions.length > 0 && <><h3>{t('Available delivery actions')}</h3>
         <ul>{view.available_actions.map((action) => <li key={action}>{t('View the pinned image')}</li>)}</ul></>}
       <Link to={`/projects/${encodeURIComponent(projectId)}/knowledge`}>{t('Review image publication independently')}</Link>
+      {view.enabled && <IterationImageAdoptionPanel view={view} />}
       {view.enabled && view.iteration_image && <RequirementIntakePanel projectId={projectId} versionId={versionId} image={view.iteration_image} />}
       {inspecting && !inspected && <p role="alert">{t('The selected image pin does not match this iteration. No other image was selected.')}</p>}
       {inspected && <ImageRevisionInspector projectId={projectId} close={closeImage} baselines={[{ id: inspected.baseline_id, project_id: projectId }]}
@@ -71,7 +73,7 @@ export function DeliveryDetails({ projectId, versionId }: { projectId: string; v
 function DeliveryPin({ title, pin, href }: { title: string; pin: DeliveryImagePin; href: string }) {
   const { t } = useI18n()
   return <section className="delivery-pin" aria-label={title}><h3>{title}</h3><dl>
-    <dt>{t(pin.publication_id ? 'Publication ID' : 'Requirement confirmation')}</dt><dd>{pin.publication_id ?? pin.review_event_id}</dd>
+    <dt>{t(pin.publication_id ? 'Publication ID' : pin.adoption_id ? 'Image adoption' : 'Requirement confirmation')}</dt><dd>{pin.publication_id ?? pin.adoption_id ?? pin.review_event_id}</dd>
     <dt>{t('Baseline ID')}</dt><dd>{pin.baseline_id}</dd>
     <dt>{t('Image revision')}</dt><dd>{pin.image_revision_id}</dd>
     <dt>{t('Artifact hash')}</dt><dd>{pin.image_artifact_hash}</dd>

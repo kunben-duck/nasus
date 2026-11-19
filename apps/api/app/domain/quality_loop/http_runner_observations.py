@@ -8,6 +8,7 @@ from .http_bindings import (HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SC
     http_path_bindings, resolve_http_path, validate_http_binding_steps)
 from .http_fixture_binding_input import fixture_input_parts
 from .acceptance_specification import acceptance_digest
+from .http_readback import HTTP_READBACK_SCHEMA, SNAPSHOT_ACTIONS, validate_readback_steps, verify_readback_states
 
 
 HTTP_RUNNER_RECEIPT_SCHEMA = "nasus.runner-http-execution.v1"
@@ -29,24 +30,27 @@ def verify_http_runner_observations(value, *, job_id, project_id, us_id, request
                                     protocol=HTTP_RUNNER_RECEIPT_SCHEMA, fixture_input=None, base_url=None, metadata=None):
     if type(steps) is not tuple or any(type(step) is not dict for step in steps):
         raise RunnerObservationInvalid("HTTP original steps cannot be verified")
-    if type(protocol) is not str or protocol not in {HTTP_RUNNER_RECEIPT_SCHEMA, HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA}:
+    if type(protocol) is not str or protocol not in {HTTP_RUNNER_RECEIPT_SCHEMA, HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA}:
         raise RunnerObservationInvalid("Unsupported HTTP observation protocol")
-    with_fixture = protocol == HTTP_FIXTURE_RECEIPT_SCHEMA
+    with_readback = protocol == HTTP_READBACK_SCHEMA
+    with_fixture = protocol == HTTP_FIXTURE_RECEIPT_SCHEMA or with_readback and fixture_input is not None
     if not with_fixture and fixture_input is not None:
-        raise RunnerObservationInvalid("HTTP fixture imports require the explicit v3 protocol")
+        raise RunnerObservationInvalid("HTTP fixture imports require the explicit v3 or v4 protocol")
     capsule = fixture_input_parts(fixture_input, project_id=project_id, case_id=us_id,
         base_url=base_url, metadata=metadata)[0] if with_fixture else None
     fixture_values = {item.binding_id: item.value for item in capsule.captures} if capsule is not None else {}
-    with_bindings = with_fixture or protocol == HTTP_BINDING_RECEIPT_SCHEMA
+    with_bindings = with_readback or with_fixture or protocol == HTTP_BINDING_RECEIPT_SCHEMA
     if with_bindings:
-        validate_http_binding_steps(steps, fixture_bindings=tuple(fixture_values))
+        (validate_readback_steps if with_readback else validate_http_binding_steps)(steps, fixture_bindings=tuple(fixture_values))
     result = _verify_runner_observations(value, job_id=job_id, project_id=project_id, us_id=us_id,
         request_hash=request_hash, step_actions=tuple(step.get("action") for step in steps), status=status,
-        schema=protocol, actions=HTTP_ACTIONS | ({"capture_json"} if with_bindings else set()) | ({"use_fixture_binding"} if with_fixture else set()), assertions=HTTP_ASSERTIONS,
+        schema=protocol, actions=HTTP_ACTIONS | ({"capture_json"} if with_bindings else set()) | ({"use_fixture_binding"} if with_fixture else set()) | (SNAPSHOT_ACTIONS if with_readback else set()),
+        assertions=HTTP_ASSERTIONS | ({"assert_unchanged"} if with_readback else set()),
         fields=_RECEIPT_FIELDS | {"requests"} | ({"bindings"} if with_bindings else set())
-            | ({"fixture_input_hash", "fixture_capture_digest", "fixture_bindings"} if with_fixture else set()))
+            | ({"fixture_input_hash", "fixture_capture_digest", "fixture_bindings"} if with_fixture else set()),
+        continuation=(lambda states, status: verify_readback_states(steps, states, status)) if with_readback else None)
     states = [step["status"] for step in result["steps"]]
-    if (status == "failed" and result["failed_assertion_count"] != 1
+    if not with_readback and (status == "failed" and result["failed_assertion_count"] != 1
             or status in {"error", "timed_out"} and ("failed" in states or all(state == "passed" for state in states))):
         raise RunnerObservationInvalid("HTTP outcome differs from the original step observations")
     expected = [(index, step) for index, step in enumerate(steps)
@@ -81,6 +85,8 @@ def verify_http_runner_observations(value, *, job_id, project_id, us_id, request
         bindings_by_index = {i: item for (i, _), item in zip(captures, result["bindings"])}
         for index, step in enumerate(steps):
             if states[index] != "passed":
+                if with_readback:
+                    continue
                 break
             if step["action"] == "request":
                 paths[index] = resolve_http_path(step["path"], bound_values)

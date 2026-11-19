@@ -1,4 +1,6 @@
 from uuid import uuid4
+from datetime import datetime, timezone
+from email.utils import format_datetime
 
 import pytest
 
@@ -21,6 +23,7 @@ class FakeS3:
         self.calls.append(("create", kwargs))
         if self.create_error:
             raise RuntimeError("bucket already exists")
+        return {"ResponseMetadata": {"HTTPHeaders": {"date": format_datetime(datetime.now(timezone.utc))}}}
 
     def list_objects_v2(self, **kwargs):
         self.calls.append(("list", kwargs))
@@ -71,6 +74,23 @@ def test_failed_bucket_creation_never_deletes_an_unowned_bucket():
     with pytest.raises(RuntimeError, match="already exists"):
         with isolated_test_storage(SETTINGS, client_factory=lambda settings: client):
             pytest.fail("must not enter test")
+    assert [name for name, _ in client.calls] == ["create", "close"]
+
+
+def test_signed_clock_rejection_reports_preflight_failure_without_cleanup_or_retry():
+    class ClockRejected(RuntimeError):
+        response = {"Error": {"Code": "RequestTimeTooSkewed"}}
+
+    class SkewedS3(FakeS3):
+        def create_bucket(self, **kwargs):
+            self.calls.append(("create", kwargs))
+            raise ClockRejected("signed request includes credentials")
+
+    client = SkewedS3()
+    with pytest.raises(RuntimeError, match="synchronize the local container VM clock") as caught:
+        with isolated_test_storage(SETTINGS, client_factory=lambda settings: client):
+            pytest.fail("clock rejection must stop before tests")
+    assert "credentials" not in str(caught.value)
     assert [name for name, _ in client.calls] == ["create", "close"]
 
 

@@ -64,6 +64,7 @@ class ToolResult(BaseModel):
     acceptance_authority: Optional[AcceptanceAuthorityReceipt] = None
     business_rule_authority: Optional[BusinessRuleAuthorityReceipt] = None
     test_design_scope: Optional[ScopeReceipt] = None
+    scope_draft_preview: Optional[Dict[str, Any]] = None
     test_design_mapping: Optional[Union[MappingReceipt, PartitionedMappingReceipt]] = None
     test_design_review_drafts: Optional[ReviewDraftListReceipt] = None
     test_design_generation: Optional[GenerationInputReceipt] = None

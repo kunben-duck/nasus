@@ -7,13 +7,19 @@ import asyncio
 from typing import Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ...domain.platform.llm_call import LLMCallContext
 from .build_dialogue_routing import is_intake_question
 
 
 STATE_KEY = "system_image_intake"
+
+
+class AdditionalCodeSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(min_length=1, max_length=2048)
+    code_ref: str = Field(default="", max_length=2048)
 
 
 class BuildIntake(BaseModel):
@@ -25,6 +31,8 @@ class BuildIntake(BaseModel):
     goal_id: Optional[str] = None
     code: str = ""
     code_ref: str = ""
+    additional_code_sources: list[AdditionalCodeSource] = Field(default_factory=list, max_length=9)
+    source_input_issue: Literal["", "ambiguous_code_sources"] = ""
     requirements: str = ""
     tests: str = ""
     optional_decided: bool = False
@@ -32,6 +40,8 @@ class BuildIntake(BaseModel):
     revision: int = 0
 
     def source_specs(self):
+        if self.source_input_issue:
+            raise ValueError("Clarify repository and revision pairs before capture")
         return [
             {"source_type": kind, "source_uri": uri, "label": label,
              **({"tracked_ref": self.code_ref} if kind == "code" and self.code_ref else {})}
@@ -40,7 +50,9 @@ class BuildIntake(BaseModel):
                 ("us_doc", self.requirements, "Historical requirements"),
                 ("test_asset", self.tests, "Historical test assets"),
             ) if uri
-        ]
+        ] + [{"source_type": "code", "source_uri": source.code, "label": f"Code repository {index + 2}",
+              **({"tracked_ref": source.code_ref} if source.code_ref else {})}
+             for index, source in enumerate(self.additional_code_sources)]
 
 
 def read_intake(conversation):
@@ -94,6 +106,8 @@ class BuildIntakeExtractor:
         if is_intake_question(text):
             return {}
         values = self._literal_fields(text, state)
+        if self._explicit_fields_complete(text, values):
+            return values
         settings = self.settings()
         if settings.runtime_mode != "live":
             return values
@@ -124,6 +138,10 @@ class BuildIntakeExtractor:
             if not isinstance(extracted, dict):
                 return values
             for key in ("project_name", "code", "code_ref", "requirements", "tests"):
+                # Explicit multi-repository pairs must not be reordered or have
+                # a SHA reassigned by the model's legacy single-source output.
+                if key in {"code", "code_ref"} and ("additional_code_sources" in values or values.get("source_input_issue")):
+                    continue
                 value = extracted.get(key)
                 if isinstance(value, str) and value.strip() and value in text and len(value) <= 2048:
                     values[key] = value.strip()
@@ -132,6 +150,23 @@ class BuildIntakeExtractor:
         except (ValueError, TypeError, AttributeError, TimeoutError, asyncio.TimeoutError):
             pass
         return values
+
+    @staticmethod
+    def _explicit_fields_complete(text, values):
+        # The Portal submits upload receipts as labelled chat messages. Neither
+        # these nor unambiguous project/repository fields need model egress.
+        text = text.strip()
+        name = values.get("project_name")
+        if name and re.fullmatch(r"(?:创建项目\n项目名称：|Create project\nProject name: )" + re.escape(name), text, re.I):
+            return True
+        for key, label in (("requirements", "需求文档地址"), ("tests", "测试资产地址")):
+            uri = values.get(key)
+            if uri and text == f"{label} {uri}" and uri.startswith(("upload://", "s3://", "minio://", "local-object://")):
+                return True
+        pairs = [{"code": values.get("code"), "code_ref": values.get("code_ref")}, *values.get("additional_code_sources", [])]
+        return (not values.get("source_input_issue") and all(pair["code"] and re.fullmatch(
+            r"[0-9a-f]{40}", pair["code_ref"] or "") for pair in pairs)
+            and text == "\n".join(f"仓库 {p['code']} 提交 {p['code_ref']}" for p in pairs))
 
     @staticmethod
     def _literal_fields(text, state):
@@ -149,6 +184,24 @@ class BuildIntakeExtractor:
             match = re.search(pattern, text, re.I)
             if match:
                 values[key] = match[1].strip()
+        codes = list(re.finditer(patterns["code"], text, re.I))
+        if len(codes) > 10:
+            values["source_input_issue"] = "ambiguous_code_sources"
+        if 2 <= len(codes) <= 10:
+            pairs = []
+            ambiguous = False
+            for index, match in enumerate(codes):
+                end = codes[index + 1].start() if index + 1 < len(codes) else len(text)
+                # A ref belongs only to the preceding repository clause. Never
+                # borrow the next repository's commit or a global last SHA.
+                clause = re.split(r"[。\n；;]", text[match.end():end], maxsplit=1)[0]
+                refs = list(re.finditer(patterns["code_ref"], clause, re.I))
+                ambiguous = ambiguous or len(refs) > 1
+                pairs.append({"code": match[1].strip(), "code_ref": refs[0][1].strip() if len(refs) == 1 else ""})
+            if not ambiguous and len({pair["code"] for pair in pairs}) == len(pairs):
+                values.update(pairs[0], additional_code_sources=pairs[1:], source_input_issue="")
+            else:
+                values["source_input_issue"] = "ambiguous_code_sources"
         if not state.code and re.fullmatch(r"(?:https?://|git@|/|file://)[^\s]+", text.strip()):
             values["code"] = text.strip()
         if (state.stage == "name" and not values and not is_build_request(text) and len(text.strip()) <= 80
@@ -170,4 +223,14 @@ def validate_fields(values):
             result.pop(key)
     if "project_name" in result:
         result["project_name"] = result["project_name"][:120]
+    if "additional_code_sources" in result:
+        sources = result["additional_code_sources"]
+        if (not isinstance(sources, list) or len(sources) > 9
+                or any(not isinstance(item, dict) or set(item) != {"code", "code_ref"}
+                    or not isinstance(item["code"], str) or not isinstance(item["code_ref"], str)
+                    or validate_fields({"code": item["code"]}).get("code") != item["code"]
+                    or len(item["code"]) > 2048 or len(item["code_ref"]) > 2048
+                    or re.search(r"[\x00-\x1f]", item["code_ref"]) for item in sources)
+                or len({item["code"] for item in sources} | {result.get("code", "")}) != len(sources) + 1):
+            result.pop("additional_code_sources")
     return result

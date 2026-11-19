@@ -68,6 +68,7 @@ class TestDesignResultApplicationService:
         self.generation, self.authorization, self.profiles = generation, authorization, profiles
         self.repository, self.artifacts = repository, artifacts
         self.batch_replies = batch_replies
+        self.case_revisions = None
 
     def _binding(self, request):
         binding = self.profiles.resolve(request.model_config_id, route="chat").binding
@@ -177,10 +178,20 @@ class TestDesignResultApplicationService:
         return result
 
     def read(self, project_id, generation_id):
+        value = self._read_archive(project_id, generation_id)
+        if self.case_revisions is not None and not self.case_revisions.repository.is_current(project_id, generation_id):
+            value["current_use"].update(scope_current=False, revision_current=False)
+        return value
+
+    def _read_archive(self, project_id, generation_id, *, depth=0):
         access = self.authorization.scope(project_id)
         stored = self.repository.get(project_id, generation_id)
         metadata = stored["metadata"]
         payload = self.artifacts.read(project_id, stored["artifact_ref"], metadata["artifact_hash"])
+        if payload.get("schema") == "nasus.test-design-case-revision.v1":
+            if self.case_revisions is None:
+                raise TestDesignResultIntegrityError("Case revision reader is unavailable")
+            return self.case_revisions.read_archive(access, stored, payload, project_id, generation_id, depth)
         if payload.get("schema") in {BATCH_RESULT_SCHEMA, RECOVERED_BATCH_RESULT_SCHEMA}:
             from .generation_batch_results import read_batch_result
             return read_batch_result(self, access, stored, payload, project_id, generation_id)

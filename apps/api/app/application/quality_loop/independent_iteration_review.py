@@ -21,7 +21,8 @@ class IndependentIterationReview:
         if context["context"].get("policy_version") != "nasus.test-design-context.v6":
             return True
         author_id = author()
-        return bool(reviewer_id and author_id and reviewer_id != author_id)
+        authors = author_id if isinstance(author_id, (list, tuple)) else [author_id]
+        return bool(reviewer_id and authors and all(authors) and reviewer_id not in authors)
 
     def cases(self, project_id, basis, reviewer_id):
         def author():
@@ -29,7 +30,7 @@ class IndependentIterationReview:
             result = self.results.read(project_id, pin["generation_id"])
             if result["metadata"]["artifact_hash"] != pin["artifact_hash"]:
                 raise ContextPackIntegrityError("Independent review generation pin mismatch")
-            return result["result"]["actor_id"]
+            return result["result"].get("author_ids", [result["result"]["actor_id"]])
         return self._allows(project_id, basis["generation_pin"]["context_pin"], reviewer_id, author)
 
     def script(self, project_id, draft, reviewer_id):

@@ -64,6 +64,18 @@ def test_tool_catalog_context_keeps_all_ids_but_bounds_detailed_contracts() -> N
     assert len(serialized.encode("utf-8")) < 7_000
 
 
+@pytest.mark.parametrize("intent", ["请起草测试范围", "Draft the test scope"])
+def test_scope_draft_discovery_preserves_its_confirmation_contract(intent):
+    conversation = _workspace_conversation()
+    conversation.messages[-1].blocks[0].text = intent
+    tools = core_tool_definitions() + system_image_tool_definitions()
+    payload = json.loads(compact_tool_catalog_json(tools, conversation))
+    original = next(tool for tool in tools if tool.tool_id == "quality.test_design_scope.draft")
+    selected = next(tool for tool in payload["relevant_tools"] if tool["tool_id"] == original.tool_id)
+    assert selected["confirmation_mode"] == original.confirmation_mode
+    assert selected["required_context"] == original.required_context
+
+
 @pytest.mark.parametrize("intent", ["评审当前迭代需求", "Review the current iteration requirement"])
 def test_requirement_review_discovery_preserves_original_governance_contract(intent):
     conversation = _workspace_conversation()
@@ -79,6 +91,27 @@ def test_requirement_review_discovery_preserves_original_governance_contract(int
                 "query.quality.requirement_review", "query.quality.requirements"}:
             for field in ("risk_level", "confirmation_mode", "required_context"):
                 assert selected[original.tool_id][field] == getattr(original, field)
+
+
+@pytest.mark.parametrize("intent,tool_id", [
+    ("编辑当前已生成的用例", "quality.test_design.cases.revise"),
+    ("Edit the generated test cases", "quality.test_design.cases.revise"),
+    ("采纳缺陷提交的工作画像", "quality.iteration_image.adopt"),
+    ("Adopt the defect commit image", "quality.iteration_image.adopt"),
+])
+def test_m3_specific_writes_keep_confirmation_and_complete_inputs(intent, tool_id):
+    conversation = _workspace_conversation()
+    conversation.messages[-1].blocks[0].text = intent
+    tools = core_tool_definitions() + system_image_tool_definitions()
+    encoded = compact_tool_catalog_json(tools, conversation)
+    payload = json.loads(encoded)
+    assert len(encoded.encode()) < 7000 and len(payload["relevant_tools"]) == 12
+    assert planner_catalog_tool_ids(payload) == [tool.tool_id for tool in tools]
+    selected = next(row for row in payload["relevant_tools"] if row["tool_id"] == tool_id)
+    original = next(tool for tool in tools if tool.tool_id == tool_id)
+    assert selected["confirmation_mode"] == "user_confirm"
+    assert selected["risk_level"] == "high"
+    assert selected["required_context"] == original.required_context
 
 
 @pytest.mark.parametrize("intent", ["Inspect HTTP fixture consent and cancel the original fixture operation",

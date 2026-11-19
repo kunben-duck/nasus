@@ -19,7 +19,7 @@ export async function verifyCaseHistory(value: unknown, command: ToolInvocation,
   const h = v.history, p = plan.artifact.plan
   exactKeys(h, ['state', 'observations', 'historical_not_live'])
   requireRunPlan(h && h.historical_not_live === true && Array.isArray(h.observations))
-  const s = h.state, bound = p.schema === 'nasus.run-plan.v3'
+  const s = h.state, bound = ['nasus.run-plan.v3', 'nasus.run-plan.v4'].includes(p.schema)
   exactKeys(s, ['schema', 'project_id', 'run_id', 'invocation_id', 'scope_digest', 'cases', 'state', 'cancelled', 'case_count',
     'observed_case_count', 'outcome_unknown_case_count', 'not_dispatched_case_count', 'business_coverage_verified', 'canonical_execution_committed',
     'automated_count', 'executed_on_target_count', 'passed_count', ...(bound ? ['fixture_scope_digest', 'fixture_input_pins'] : [])])
@@ -74,10 +74,16 @@ export async function verifyCaseHistory(value: unknown, command: ToolInvocation,
       && o.execution_authorized === false && o.business_coverage_verified === false && o.target_build_verified === false
       && o.automated_count === 0 && o.executed_on_target_count === 0 && o.passed_count === 0
       && o.fixture_digest === await canonicalDigest(p.selection.fixtures[row.ordinal]) && caseId(o.case_id))
+    const receipt = o.runner_receipt as Record<string, unknown>
+    const nativeSteps = receipt?.steps as { step_index: number; action: string; kind: string; status: string }[]
+    requireRunPlan(receipt && receipt.schema === job.receipt_protocol && receipt.runner_job_id === job.job_id
+      && receipt.project_id === input.project_id && receipt.us_id === row.case_id && receipt.execution_status === o.status
+      && generationDigest(receipt.request_hash) && receipt.target_build_verified === false && receipt.business_coverage_verified === false
+      && receipt.step_count === job.steps.length && Array.isArray(nativeSteps) && nativeSteps.length === job.steps.length)
     if (bound) {
-      const pin = s.fixture_input_pins![row.ordinal], receipt = o.runner_receipt as Record<string, unknown>
+      const pin = s.fixture_input_pins![row.ordinal]
       requireRunPlan(o.fixture_input_digest === pin.fixture_input_digest && o.fixture_capture_digest === pin.capture_set_digest
-        && receipt && receipt.schema === 'nasus.runner-http-execution.v3'
+        && receipt && receipt.schema === p.proposal.http_protocol
         && receipt.fixture_input_hash === pin.fixture_input_digest && receipt.fixture_capture_digest === pin.capture_set_digest)
     }
     for (const key of ['context_pin', 'scope_pin', 'generation_pin', 'mapping_pin'] as const) requireRunPlan(generationEqual(o[key], p.prepared[key]))
@@ -87,9 +93,18 @@ export async function verifyCaseHistory(value: unknown, command: ToolInvocation,
     requireRunPlan(Array.isArray(actions) && actions.length === job.steps.length && Array.isArray(oracles) && oracles.length === script.assertions.length)
     for (let n = 0; n < actions.length; n++) {
       exactKeys(actions[n], ['action_index', 'action_digest', 'source_step_indices', 'status'])
+      exactKeys(nativeSteps[n], ['step_index', 'action', 'kind', 'status'])
       requireRunPlan(actions[n].action_index === n && actions[n].action_digest === await canonicalDigest(job.steps[n])
-        && generationEqual(actions[n].source_step_indices, job.steps[n].source_step_indices) && ['passed', 'failed', 'error', 'skipped'].includes(actions[n].status))
+        && generationEqual(actions[n].source_step_indices, job.steps[n].source_step_indices) && ['passed', 'failed', 'interrupted', 'not_executed'].includes(actions[n].status)
+        && nativeSteps[n].step_index === n && nativeSteps[n].action === job.steps[n].action
+        && nativeSteps[n].kind === (job.steps[n].action.startsWith('assert_') ? 'assertion' : 'action')
+        && nativeSteps[n].status === actions[n].status)
     }
+    const nativeAssertions = nativeSteps.filter((step) => step.kind === 'assertion')
+    requireRunPlan(receipt.assertion_count === nativeAssertions.length
+      && receipt.observed_assertion_count === nativeAssertions.filter((step) => ['passed', 'failed'].includes(step.status)).length
+      && receipt.passed_assertion_count === nativeAssertions.filter((step) => step.status === 'passed').length
+      && receipt.failed_assertion_count === nativeAssertions.filter((step) => step.status === 'failed').length)
     for (let n = 0; n < oracles.length; n++) {
       exactKeys(oracles[n], ['row_id', 'action_index', 'source_step_index', 'oracle_digest', 'status'])
       const { status, ...assertion } = oracles[n]

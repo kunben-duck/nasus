@@ -15,6 +15,7 @@ from .runner_port import AutomationRunnerCommand, FixtureBoundHttpCommand, Autom
 from .worker_threads import run_worker_thread
 from ...domain.quality_loop.acceptance_specification import acceptance_digest
 from ...domain.quality_loop.http_bindings import HTTP_FIXTURE_RECEIPT_SCHEMA
+from ...domain.quality_loop.http_readback import HTTP_READBACK_SCHEMA
 from ...domain.quality_loop.http_fixture_binding_input import fixture_input_parts
 from ...domain.quality_loop.run_plan_case_execution import (
     RunPlanCaseExecutionInvalid, RunPlanCaseWorkLost, RunPlanCaseAlreadyClaimed,
@@ -62,7 +63,7 @@ class RunPlanCaseExecutionApplicationService:
     def _commands(plan, scope, fixture_inputs=None):
         jobs = case_execution_jobs(plan, scope)
         bound = isinstance(scope, FixtureBoundRunPlanCaseScope)
-        if not bound and any(item["receipt_protocol"] == HTTP_FIXTURE_RECEIPT_SCHEMA for item in jobs):
+        if not bound and any(item["receipt_protocol"] in {HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA} for item in jobs):
             raise RunPlanCaseExecutionInvalid("fixture-bound case execution requires original setup handoff before claim")
         if (bound and (type(fixture_inputs) is not tuple or len(fixture_inputs) != len(jobs))
                 or not bound and fixture_inputs is not None):

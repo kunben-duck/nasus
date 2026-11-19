@@ -4,6 +4,7 @@ from typing import Protocol
 
 from .runner_port import AutomationRunnerCommand
 from ...domain.quality_loop.http_bindings import HTTP_FIXTURE_RECEIPT_SCHEMA
+from ...domain.quality_loop.http_readback import HTTP_READBACK_SCHEMA
 from ...domain.quality_loop.run_plan_observations import (
     RunPlanObservationInvalid, compile_case_jobs, map_case_observation, map_unverified_case_attempt,
 )
@@ -24,7 +25,7 @@ class RunPlanObservationApplicationService:
 
     @staticmethod
     def _command(job):
-        if job["receipt_protocol"] == HTTP_FIXTURE_RECEIPT_SCHEMA:
+        if job["receipt_protocol"] in {HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA}:
             raise RunPlanObservationInvalid("fixture-bound jobs require original setup handoff, not a template command")
         return AutomationRunnerCommand(job_id=job["job_id"], project_id=job["project_id"], us_id=job["us_id"],
             base_url=job["base_url"], steps=tuple(job["steps"]), timeout_ms=job["timeout_ms"], metadata=job["metadata"],

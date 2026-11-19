@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import func, select
 
@@ -6,6 +6,7 @@ from ...application.platform.tool_handlers.query_input import query_payload
 from ...application.system_image.structure_builds import StructureBuildBinding
 from ...application.system_image.structure_cancel_inputs import STRUCTURE_CANCEL_TOOL, StructureCancelInput, StructureCancelReceipt
 from ...domain.system_image.build_plan import BuildPlanIntegrityError
+from .confirmation_clock import confirmation_time
 from .db_models import ToolInvocationRecord, UserIdentityRecord
 from .source_snapshot_repository import SourceSnapshotRepository
 from .structure_build_repository import StructureBuildRepository
@@ -61,9 +62,7 @@ class StructureCancellationRepository:
             now = session.scalar(select(func.clock_timestamp()))
             try:
                 confirmed = datetime.fromisoformat(command.input_payload["confirmed_at"])
-                # Canonical confirmation is stamped by this API process, not PG.
-                # PG remains the sole clock for worker ownership and intent time.
-                if confirmed.tzinfo is None or not 0 <= (datetime.now(timezone.utc) - confirmed).total_seconds() <= 900:
+                if confirmed.tzinfo is None or not 0 <= (confirmation_time(session) - confirmed).total_seconds() <= 900:
                     raise ValueError("expired")
             except (KeyError, TypeError, ValueError):
                 raise BuildPlanIntegrityError("Structural cancellation confirmation expired.")

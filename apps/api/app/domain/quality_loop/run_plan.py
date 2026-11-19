@@ -5,6 +5,7 @@ import json
 from .acceptance_specification import acceptance_digest
 from .automation_scripts import script_http_protocol, validate_script_proposal, verify_script_input
 from .http_bindings import HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA
+from .http_readback import HTTP_READBACK_SCHEMA
 
 
 RUN_PLAN_SCHEMA = "nasus.run-plan.v1"
@@ -13,6 +14,8 @@ RUN_PLAN_BINDING_SCHEMA = "nasus.run-plan.v2"
 RUN_PLAN_BINDING_ARTIFACT_SCHEMA = "nasus.run-plan-artifact.v2"
 RUN_PLAN_FIXTURE_SCHEMA = "nasus.run-plan.v3"
 RUN_PLAN_FIXTURE_ARTIFACT_SCHEMA = "nasus.run-plan-artifact.v3"
+RUN_PLAN_READBACK_SCHEMA = "nasus.run-plan.v4"
+RUN_PLAN_READBACK_ARTIFACT_SCHEMA = "nasus.run-plan-artifact.v4"
 RUN_PLAN_TOOL = "quality.run_plan.prepare"
 RUN_PLAN_PREVIEW_TOOL = "query.quality.run_plan_preview"
 MAX_RUN_PLAN_BYTES = 16 * 1024 * 1024
@@ -37,6 +40,8 @@ def run_plan_artifact_schema(policy):
         return RUN_PLAN_BINDING_ARTIFACT_SCHEMA
     if policy == RUN_PLAN_FIXTURE_SCHEMA:
         return RUN_PLAN_FIXTURE_ARTIFACT_SCHEMA
+    if policy == RUN_PLAN_READBACK_SCHEMA:
+        return RUN_PLAN_READBACK_ARTIFACT_SCHEMA
     raise RunPlanInvalid("unsupported explicit RunPlan policy")
 
 
@@ -44,7 +49,7 @@ def compile_run_plan(draft, review, selection, sources):
     prepared, proposal = draft["result"]["prepared"], draft["result"]["proposal"]
     verify_script_input(prepared)
     protocol = script_http_protocol(proposal)
-    policy = RUN_PLAN_FIXTURE_SCHEMA if protocol == HTTP_FIXTURE_RECEIPT_SCHEMA else RUN_PLAN_BINDING_SCHEMA if protocol == HTTP_BINDING_RECEIPT_SCHEMA else RUN_PLAN_SCHEMA
+    policy = RUN_PLAN_READBACK_SCHEMA if protocol == HTTP_READBACK_SCHEMA else RUN_PLAN_FIXTURE_SCHEMA if protocol == HTTP_FIXTURE_RECEIPT_SCHEMA else RUN_PLAN_BINDING_SCHEMA if protocol == HTTP_BINDING_RECEIPT_SCHEMA else RUN_PLAN_SCHEMA
     if selection["policy_revision"] != policy:
         raise RunPlanInvalid("RunPlan policy must preserve the explicitly reviewed script protocol")
     validated = validate_script_proposal(prepared, {key: proposal[key] for key in ("input_digest", "scripts", "gaps")}, http_protocol=protocol)

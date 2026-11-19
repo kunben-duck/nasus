@@ -5,24 +5,26 @@ import json
 from ...domain.quality_loop.runner_observations import RUNNER_RECEIPT_SCHEMA
 from ...domain.quality_loop.http_runner_observations import HTTP_RUNNER_RECEIPT_SCHEMA
 from ...domain.quality_loop.http_bindings import HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA, validate_http_binding_steps
+from ...domain.quality_loop.http_readback import HTTP_READBACK_SCHEMA, validate_readback_steps
 
 
 def runner_request_body(command):
     if command.kind not in {"browser", "http"}:
         raise ValueError("unsupported runner execution kind")
-    if type(command.http_protocol) is not str or command.http_protocol not in {HTTP_RUNNER_RECEIPT_SCHEMA, HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA} or (
+    if type(command.http_protocol) is not str or command.http_protocol not in {HTTP_RUNNER_RECEIPT_SCHEMA, HTTP_BINDING_RECEIPT_SCHEMA, HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA} or (
             command.kind == "browser" and command.http_protocol != HTTP_RUNNER_RECEIPT_SCHEMA):
         raise ValueError("unsupported runner HTTP protocol")
-    if command.http_protocol != HTTP_FIXTURE_RECEIPT_SCHEMA and getattr(command, "fixture_input", None) is not None:
-        raise ValueError("fixture resource imports require the explicit v3 protocol")
+    if command.http_protocol not in {HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA} and getattr(command, "fixture_input", None) is not None:
+        raise ValueError("fixture resource imports require the explicit v3 or v4 protocol")
     payload = {"job_id": command.job_id, "project_id": command.project_id, "us_id": command.us_id,
         "base_url": command.base_url, "steps": list(command.steps), "timeout_ms": command.timeout_ms,
         "metadata": command.metadata, "receipt_protocol": RUNNER_RECEIPT_SCHEMA}
     if command.kind == "http":
-        if command.http_protocol == HTTP_FIXTURE_RECEIPT_SCHEMA:
+        if command.http_protocol in {HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA}:
             from .http_fixture_input_verifier import verify_http_fixture_input
             capsule = verify_http_fixture_input(command)
-            validate_http_binding_steps(command.steps, fixture_bindings=tuple(item.binding_id for item in capsule.captures))
+            validator = validate_readback_steps if command.http_protocol == HTTP_READBACK_SCHEMA else validate_http_binding_steps
+            validator(command.steps, fixture_bindings=tuple(item.binding_id for item in capsule.captures))
             payload["fixture_input"] = command.fixture_input
         elif command.http_protocol == HTTP_BINDING_RECEIPT_SCHEMA:
             validate_http_binding_steps(command.steps)

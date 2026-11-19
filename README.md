@@ -23,7 +23,7 @@
 - `business_loop_verified` 始终为 `false`：M0 使用人工编写的诊断用例，不声称已经完成模型需求评审、独立人工审批、正式 RunPlan 逐例派发或缺陷关单。Hurl 仅作为规格来源归档，不作为脚本执行器。
 - M1 复用现有 Version：对话收集项目名、代码仓库与固定提交，可跳过需求文档及历史测试；采集、结构候选、人工审核和正式发布分别展示。创建迭代必须明确选择发布记录并确认，原始基线不随项目后续发布变化。聊天和按钮均走 `version.create`，支持刷新、原命令重试和按迭代查看绑定。
 - M2 使用 live chat 模型进行需求评审、保存澄清修订，由独立审核者确认来源支持的验收条件；可运行 `npm run verify:realworld-m2`，详见 [需求评审说明](docs/design/quality-loop/requirement-review.md)。
-- M3 已接入已确认迭代需求的 Context、对话与迭代页入口、Django Ninja 冻结源码路由证据、独立人员审核检查和注册环境选择。不可变用例编辑、缺陷提交工作画像采纳及 live 模型到真实逐例失败证据的验收仍待完成。详见 [M3 当前边界](docs/design/quality-loop/version-delivery.md#m3-integration-progress-2026-11-16)。
+- M3 仍在开发，未通过完整验收。已接入迭代 Context、Django Ninja 路由证据、不可变用例编辑、独立审核及 HTTP v4 只读回查；新增固定预算的模型测试范围草案、独立范围审核和原命令恢复。受控角色凭据、环境租约/加密快照、正式浏览器 RunPlan 及接口＋UI 真实验收仍未完成。`--phase design` 是隔离环境中的设计链验证；`--mode retained --phase full --acceptance-id <已有验收ID>` 只观察运行中 Nasus 的保留项目和刷新恢复，不清理数据、不自动确认，也不会因此返回完整验收成功。详见 [M3 保留验收与当前边界](docs/design/quality-loop/version-delivery.md#retained-acceptance-and-model-scope-drafts-2026-11-18)。
 - M4 缺陷生命周期、M5 版本门禁与完成事务尚待实现。默认 `--phase full` 明确返回未实现，不以 M0 诊断回放或浏览器协议夹具替代最终验收。
 
 ### 复现 M1

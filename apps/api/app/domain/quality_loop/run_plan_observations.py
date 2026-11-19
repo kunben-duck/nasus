@@ -7,8 +7,9 @@ from .acceptance_specification import acceptance_digest
 from .automation_scripts import script_http_protocol, validate_script_proposal, verify_script_input
 from .http_runner_observations import HTTP_RUNNER_RECEIPT_SCHEMA, verify_http_runner_observations
 from .http_bindings import HTTP_FIXTURE_RECEIPT_SCHEMA
+from .http_readback import HTTP_READBACK_SCHEMA
 from .http_runner_oracles import strict_http_json
-from .run_plan import RUN_PLAN_SCHEMA, RUN_PLAN_BINDING_SCHEMA, RUN_PLAN_FIXTURE_SCHEMA, compile_run_plan
+from .run_plan import RUN_PLAN_SCHEMA, RUN_PLAN_BINDING_SCHEMA, RUN_PLAN_FIXTURE_SCHEMA, RUN_PLAN_READBACK_SCHEMA, compile_run_plan
 
 
 OBSERVATION_SCHEMA = "nasus.run-plan-case-observation.v1"
@@ -28,7 +29,7 @@ def _require(condition):
 
 def verify_plan(plan):
     try:
-        _require(type(plan) is dict and plan["schema"] in {RUN_PLAN_SCHEMA, RUN_PLAN_BINDING_SCHEMA, RUN_PLAN_FIXTURE_SCHEMA}
+        _require(type(plan) is dict and plan["schema"] in {RUN_PLAN_SCHEMA, RUN_PLAN_BINDING_SCHEMA, RUN_PLAN_FIXTURE_SCHEMA, RUN_PLAN_READBACK_SCHEMA}
             and plan["execution_authorized"] is False
             and all(type(plan[key]) is int and plan[key] == 0 for key in
                 ("automated_count", "executed_on_target_count", "passed_count")))
@@ -106,7 +107,7 @@ def map_case_observation(plan, job, receipt, *, fixture_input=None):
     case = next(item for item in plan["prepared"]["cases"] if item["case_id"] == case_id)
     script = next(item for item in plan["proposal"]["scripts"] if item["case_id"] == case_id)
     fixture = next(item for item in plan["selection"]["fixtures"] if item["case_id"] == case_id)
-    bound = job["receipt_protocol"] == HTTP_FIXTURE_RECEIPT_SCHEMA
+    bound = job["receipt_protocol"] in {HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA}
     _require(bound or fixture_input is None)
     wire_job = {**job, "fixture_input": fixture_input} if bound else job
     checked = verify_http_runner_observations(receipt, job_id=job["job_id"], project_id=job["project_id"], us_id=job["us_id"],

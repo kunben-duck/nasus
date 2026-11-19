@@ -46,3 +46,24 @@ class ProjectDeliveryRecord(Base):
     project_id: Mapped[str] = mapped_column(primary_key=True)
     enabled_by_version_id: Mapped[str]
     enabled_at: Mapped[str]
+
+
+class VersionImageAdoptionRecord(Base):
+    __tablename__ = "version_image_adoptions"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "version_id"], ["version_creations.project_id", "version_creations.version_id"]),
+        ForeignKeyConstraint(["project_id", "image_revision_id"], ["image_revisions.project_id", "image_revisions.image_revision_id"]),
+        ForeignKeyConstraint(["invocation_id"], ["tool_invocations.id"]),
+        UniqueConstraint("project_id", "version_id", "parent_image_revision_id"),
+    )
+    adoption_id: Mapped[str] = mapped_column(primary_key=True)
+    invocation_id: Mapped[str] = mapped_column(unique=True)
+    project_id: Mapped[str]
+    version_id: Mapped[str]
+    image_revision_id: Mapped[str]
+    parent_image_revision_id: Mapped[str]
+    actor_id: Mapped[str]
+    recorded_at: Mapped[str]
+    request_hash: Mapped[str]
+    content_hash: Mapped[str]
+    payload: Mapped[dict] = mapped_column(JSON)

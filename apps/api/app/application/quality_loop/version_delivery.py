@@ -69,7 +69,7 @@ class VersionDeliveryApplicationService:
         with self.images.verified_read_session(reuse=True):
             for key in ("baseline", "iteration_image"):
                 stored = binding[key]
-                if key == "iteration_image" and stored.get("review_event_id"):
+                if key == "iteration_image" and (stored.get("review_event_id") or stored.get("adoption_id")):
                     header = self.images.frozen_header(project_id, stored["image_revision_id"])
                     if (header.artifact_hash, header.manifest_id, header.manifest_hash, header.baseline_id) != (
                             stored["image_artifact_hash"], stored["manifest_id"], stored["manifest_hash"], stored["baseline_id"]):

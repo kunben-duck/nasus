@@ -1,5 +1,6 @@
 """Real PG command/time fences with explicit source and target protocol specimens."""
 from copy import deepcopy
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -17,7 +18,9 @@ from apps.api.tests.test_run_plan_case_inputs import case_inputs, spec
 from apps.api.tests.test_run_plan_fixture_handoff import fixture_inputs
 
 
-def original_pg_command(v, *, age=0):
+def original_pg_command(v, monkeypatch, *, age=0):
+    import apps.api.app.infrastructure.persistence.conversation_repository as claims
+    clock = claims.confirmation_time
     ident = "pg-case-fence-" + uuid4().hex
     v.selection = v.selection.model_copy(update={"run_id": "pg-case-fence-run-" + uuid4().hex})
     request = v.selection.model_dump(mode="json")
@@ -25,17 +28,19 @@ def original_pg_command(v, *, age=0):
         assert session.get_bind().dialect.name == "postgresql"
         assert session.scalar(text("SELECT current_database()")).startswith("nasus_test_")
         now = session.scalar(select(func.clock_timestamp())).isoformat()
-        confirmed = session.scalar(text("SELECT clock_timestamp() - (:age * interval '1 second')"),
-            {"age": age}).isoformat()
         if session.get(UserIdentityRecord, "admin") is None:
             session.add(UserIdentityRecord(user_id="admin", email="pg-case-fence-admin@example.invalid",
                 display_name="Isolated case fence actor", role="platform_admin", status="active",
                 password_hash="unusable-test-password", created_at=now, updated_at=now))
         session.add(ToolInvocationRecord(id=ident, tool_id=CASE_EXECUTE_TOOL, status="waiting_confirmation",
             summary="Original command fence protocol specimen", input_payload=deepcopy(request), revision=0))
-    command = ConversationRepository(tool_claim_journal=ToolClaimJournal()).claim_tool_invocation_for_execution(
-        ident, expected_statuses=("waiting_confirmation",), input_updates={"confirmed_by_user": True,
-            "confirmed_actor_id": "admin", "confirmed_at": confirmed})
+    # Backdate the canonical claim, including its immutable journal, not a
+    # caller-supplied timestamp that the claim intentionally overwrites.
+    with monkeypatch.context() as patch:
+        patch.setattr(claims, "confirmation_time", lambda session: clock(session) - timedelta(seconds=age))
+        command = ConversationRepository(tool_claim_journal=ToolClaimJournal()).claim_tool_invocation_for_execution(
+            ident, expected_statuses=("waiting_confirmation",), input_updates={"confirmed_by_user": True,
+                "confirmed_actor_id": "admin"})
     assert command is not None and command.status == "running"
     v.service.commands = PostgresRunPlanCaseExecutionRepository()
     return ident
@@ -45,7 +50,7 @@ def original_pg_command(v, *, age=0):
 @pytest.mark.parametrize("fault", ["unchanged", "expired", "cancelled", "actor_revoked"])
 def test_original_pg_command_is_rechecked_after_complete_input_verification(request, monkeypatch, fixture, fault):
     v = request.getfixturevalue(fixture)
-    ident = original_pg_command(v, age=895 if fault == "expired" else 0)
+    ident = original_pg_command(v, monkeypatch, age=895 if fault == "expired" else 0)
     original_health = v.service.health.probe_pinned_inventory
 
     def health(*args, **kwargs):

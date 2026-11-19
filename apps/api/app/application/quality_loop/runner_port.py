@@ -19,14 +19,14 @@ class AutomationRunnerCommand:
     timeout_ms: int
     metadata: dict[str, Any] = field(default_factory=dict)
     kind: Literal["browser", "http"] = "browser"
-    http_protocol: Literal["nasus.runner-http-execution.v1", "nasus.runner-http-execution.v2", "nasus.runner-http-execution.v3"] = "nasus.runner-http-execution.v1"
+    http_protocol: Literal["nasus.runner-http-execution.v1", "nasus.runner-http-execution.v2", "nasus.runner-http-execution.v3", "nasus.runner-http-execution.v4"] = "nasus.runner-http-execution.v1"
 
 
 @dataclass(frozen=True)
 class FixtureBoundHttpCommand(AutomationRunnerCommand):
     """Explicit new command shape; legacy command archives and hashes stay unchanged."""
 
-    http_protocol: Literal["nasus.runner-http-execution.v3"] = "nasus.runner-http-execution.v3"
+    http_protocol: Literal["nasus.runner-http-execution.v3", "nasus.runner-http-execution.v4"] = "nasus.runner-http-execution.v3"
     kind: Literal["http"] = "http"
     fixture_input: dict[str, Any] = field(default_factory=dict, repr=False)
 

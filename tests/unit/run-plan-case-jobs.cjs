@@ -27,6 +27,9 @@ const specimen = JSON.parse(execFileSync(path.join(repo, '.venv/bin/python'), ['
   NASUS_DATABASE_URL: 'postgresql+psycopg://contract@127.0.0.1:1/nasus_case_contract', NASUS_AUTO_CREATE_TABLES: 'false' } }))
 const fixtureSpecimen = JSON.parse(execFileSync(path.join(repo, '.venv/bin/python'), ['-m', 'apps.api.tests.test_run_plan_fixture_handoff'], { cwd: repo, encoding: 'utf8', env: { ...process.env,
   NASUS_DATABASE_URL: 'postgresql+psycopg://contract@127.0.0.1:1/nasus_case_contract', NASUS_AUTO_CREATE_TABLES: 'false' } }))
+const readbackSpecimen = JSON.parse(execFileSync(path.join(repo, '.venv/bin/python'), ['-c',
+  'import json; from apps.api.tests.test_run_plan_fixture_handoff import portal_specimen; print(json.dumps(portal_specimen(protocol="nasus.runner-http-execution.v4")))'], { cwd: repo, encoding: 'utf8', env: { ...process.env,
+  NASUS_DATABASE_URL: 'postgresql+psycopg://contract@127.0.0.1:1/nasus_case_contract', NASUS_AUTO_CREATE_TABLES: 'false' } }))
 function fixture() {
   const v = structuredClone(specimen)
   v.fields = { runId: v.input.run_id, environmentCommandId: 'original-environment-command', locatorCommandId: 'original-locator-command',
@@ -52,6 +55,53 @@ test('v3 original setup pins and complete Node observations match Python without
   assert.equal(v.view.history.state.passed_count, 0)
   assert.ok(v.view.history.observations.every((o) => o.status === 'failed'))
 })
+test('v4 full original setup handoff and native observations remain readable without a v3 downgrade', async () => {
+  const v = structuredClone(readbackSpecimen)
+  assert.equal(v.plan.artifact.plan.schema, 'nasus.run-plan.v4')
+  assert.equal(await historyValidation.verifyCaseHistory(v.view, v.command, v.input, v.plan), v.view)
+  assert.ok(v.view.history.observations.every((o) => o.runner_receipt.schema === 'nasus.runner-http-execution.v4'))
+  const o = v.view.history.observations[0]
+  o.runner_receipt.schema = 'nasus.runner-http-execution.v3'
+  const { observation_digest, ...payload } = o
+  o.observation_digest = v.view.history.state.cases[0].observation_digest = await digest(payload)
+  await assert.rejects(historyValidation.verifyCaseHistory(v.view, v.command, v.input, v.plan))
+})
+for (const status of ['not_executed', 'interrupted']) {
+  test(`partial native observations retain ${status} without treating them as passed`, async () => {
+    const v = fixture(), o = v.view.history.observations[0], row = v.view.history.state.cases[0]
+    o.status = row.status = 'error'
+    const actionIndex = o.actions.length - 1
+    o.actions[actionIndex].status = status
+    for (const oracle of o.oracles) if (oracle.action_index === actionIndex) oracle.status = status
+    o.runner_receipt.execution_status = 'error'
+    o.runner_receipt.steps[actionIndex].status = status
+    const assertions = o.runner_receipt.steps.filter((step) => step.kind === 'assertion')
+    o.runner_receipt.observed_assertion_count = assertions.filter((step) => ['passed', 'failed'].includes(step.status)).length
+    o.runner_receipt.passed_assertion_count = assertions.filter((step) => step.status === 'passed').length
+    o.runner_receipt.failed_assertion_count = assertions.filter((step) => step.status === 'failed').length
+    const { observation_digest, ...payload } = o
+    o.observation_digest = row.observation_digest = await digest(payload)
+    assert.equal(await historyValidation.verifyCaseHistory(v.view, v.command, v.input, v.plan), v.view)
+    assert.equal(summarizeCaseObservations(v.plan.artifact.plan, v.view.history).counts.error, 1)
+  })
+}
+for (const fault of ['status', 'job', 'case', 'step', 'counter', 'action_status']) {
+  test(`case display cannot contradict original native receipt: ${fault}`, async () => {
+    const v = structuredClone(readbackSpecimen), o = v.view.history.observations[0]
+    if (fault === 'status') o.runner_receipt.execution_status = 'passed'
+    if (fault === 'job') o.runner_receipt.runner_job_id = 'another-job'
+    if (fault === 'case') o.runner_receipt.us_id = 'another-case'
+    if (fault === 'step') o.runner_receipt.steps[0].action = 'request'
+    if (fault === 'counter') o.runner_receipt.failed_assertion_count = 0
+    if (fault === 'action_status') {
+      o.actions[0].status = 'not_executed'
+      for (const oracle of o.oracles) if (oracle.action_index === 0) oracle.status = 'not_executed'
+    }
+    const { observation_digest, ...payload } = o
+    o.observation_digest = v.view.history.state.cases[0].observation_digest = await digest(payload)
+    await assert.rejects(historyValidation.verifyCaseHistory(v.view, v.command, v.input, v.plan))
+  })
+}
 test('execution summary shows each original expected result and associated HTTP status, not formal coverage', async () => {
   const v = structuredClone(fixtureSpecimen), before = structuredClone(v)
   const { history } = await historyValidation.verifyCaseHistory(v.view, v.command, v.input, v.plan)

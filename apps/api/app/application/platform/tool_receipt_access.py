@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .errors import PlatformApplicationError
 from .conversation_history_access import HISTORY_TOOLS
+from .scope_draft_receipts import SCOPE_DRAFT_RECEIPT_TOOLS
 from .run_plan_receipts import RUN_PLAN_RECEIPT_TOOLS
 from .run_plan_build_receipts import RUN_PLAN_BUILD_RECEIPT_TOOLS
 from .native_build_receipts import NATIVE_BUILD_RECEIPT_TOOLS
@@ -17,12 +18,13 @@ from ...domain.quality_loop.http_fixture_grant import GRANT_TOOLS
 from ...domain.quality_loop.http_fixture_command import FIXTURE_JOB_TOOLS
 
 
-RESOURCE_RECEIPT_TOOLS = RUN_PLAN_RECEIPT_TOOLS | RUN_PLAN_BUILD_RECEIPT_TOOLS | NATIVE_BUILD_RECEIPT_TOOLS | OBSERVATION_RECORD_TOOLS | ENVIRONMENT_RECORD_TOOLS | HEALTH_RECORD_TOOLS | LOCATOR_RECORD_TOOLS | RECIPE_TOOLS | GRANT_TOOLS | FIXTURE_JOB_TOOLS | {"system_image.sources.ingest", RUN_PLAN_ENVIRONMENT_QUERY_TOOL, RUN_PLAN_LOCATOR_QUERY_TOOL}
+RESOURCE_RECEIPT_TOOLS = RUN_PLAN_RECEIPT_TOOLS | RUN_PLAN_BUILD_RECEIPT_TOOLS | NATIVE_BUILD_RECEIPT_TOOLS | SCOPE_DRAFT_RECEIPT_TOOLS | OBSERVATION_RECORD_TOOLS | ENVIRONMENT_RECORD_TOOLS | HEALTH_RECORD_TOOLS | LOCATOR_RECORD_TOOLS | RECIPE_TOOLS | GRANT_TOOLS | FIXTURE_JOB_TOOLS | {"system_image.sources.ingest", RUN_PLAN_ENVIRONMENT_QUERY_TOOL, RUN_PLAN_LOCATOR_QUERY_TOOL}
 
 
 def require_receipt_access(resources, invocation):
     required = (invocation.tool_id in RESOURCE_RECEIPT_TOOLS or invocation.tool_id in HISTORY_TOOLS
-        or invocation.tool_id in {"quality.requirement.revise", "query.quality.requirements",
+        or invocation.tool_id in SCOPE_DRAFT_RECEIPT_TOOLS
+        or invocation.tool_id in {"quality.test_design.cases.revise", "quality.iteration_image.adopt", "quality.requirement.revise", "query.quality.requirements",
             "quality.requirement.evaluate", "quality.requirement.confirm", "query.quality.requirement_review"}
         or invocation.tool_id == "version.create" and bool(invocation.input_payload.get("image_binding")))
     applies = getattr(resources, "applies", None)

@@ -11,7 +11,7 @@ from .generation_batch_planning import GenerationBatchPlanningApplicationService
 from .generation_batch_ledger import batch_execution_request, batch_execution_preview
 from .generation_execution_inputs import (
     GENERATION_REPLY_SCHEMA, GENERATION_TIMEOUT_SECONDS, GenerationExecutionConsent,
-    GenerationExecutionSelection, generation_messages, generation_plan_digest,
+    GenerationExecutionSelection, generation_messages, generation_plan_digest, GENERATION_PROMPT_VERSION,
 )
 from .test_design_results import GENERATION_TOOL, GenerationResultRequest, TestDesignResultIntegrityError, response_digest
 from .generation_job_ports import GenerationRecoveryRequest
@@ -223,7 +223,7 @@ class GenerationExecutorApplicationService:
             provider=model.binding.provider, model_name=model.binding.model_name, selected_provider=model.binding.provider,
             selected_model_name=model.binding.model_name, runtime_mode="live", outcome=outcome,
             reason="native_reply_archived" if outcome == "success" else "reserved_call_failed_or_unknown_no_resend",
-            project_id=request.project_id, tool_invocation_id=invocation_id, prompt_id="nasus.test-design-generation", prompt_version="v1",
+            project_id=request.project_id, tool_invocation_id=invocation_id, prompt_id="nasus.test-design-generation", prompt_version=GENERATION_PROMPT_VERSION,
             model_calls=1, request_hash=acceptance_digest(request.model_dump(mode="json")), response_hash=response_digest(reply.content) if reply else "",
             input_token_count=reply.input_tokens if valid_usage else 0, output_token_count=reply.output_tokens if valid_usage else 0,
             usage_source="provider" if valid_usage else "none", latency_ms=int((time.monotonic() - started) * 1000))

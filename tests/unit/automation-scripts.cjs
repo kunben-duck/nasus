@@ -100,6 +100,44 @@ async function fixtureImport() {
   await refreshArchive(v)
   return v
 }
+async function readbackFixture() {
+  const v = await fixtureImport(), p = v.archive.result.proposal, script = p.scripts[0]
+  v.selection.http_protocol = v.preview.request.http_protocol = 'nasus.runner-http-execution.v4'
+  p.schema = 'nasus.automation-script-proposal.v4'; p.http_protocol = 'nasus.runner-http-execution.v4'
+  const action = script.actions[1]
+  action.phase = 'exercise'
+  const before = { ...action, request_id: 'before', method: 'GET', body_json: 'null' }
+  script.actions.splice(1, 0, before, { action: 'capture_snapshot', request_id: 'before', pointer: '/status', snapshot_id: 'state', source_step_indices: [0] })
+  const after = { ...before, request_id: 'after', phase: 'readback' }
+  script.actions.splice(4, 0, after)
+  script.actions[5] = { action: 'assert_unchanged', request_id: 'after', pointer: '/status', snapshot_id: 'state', source_step_indices: [0] }
+  script.assertions[0].action_index = 5
+  await refreshArchive(v)
+  return v
+}
+test('v4 archive preserves readback actions and requires independent review of snapshots and oracles', async () => {
+  const v = await readbackFixture()
+  assert.equal(await validation.verifyScriptPreview(v.preview, v.selection, v.prepared), v.preview)
+  assert.equal(await validation.verifyScriptArchive(v.archive, v.draft, v.mapping, v.item), v.archive)
+  const entries = await review.newScriptDecisions(v.archive)
+  assert.equal(entries.actions.length, 6); assert.equal(entries.assertions.length, 1)
+  assert.equal(entries.actions[2].decision, 'defer')
+})
+for (const fault of ['legacy', 'phase', 'write_readback', 'late_snapshot', 'same_request', 'missing_snapshot', 'snapshot_oracle', 'unreviewed_assertion']) {
+  test(`v4 rejects altered state comparisons: ${fault}`, async () => {
+    const v = await readbackFixture(), script = v.archive.result.proposal.scripts[0]
+    if (fault === 'legacy') v.archive.result.proposal.schema = 'nasus.automation-script-proposal.v3'
+    if (fault === 'phase') delete script.actions[3].phase
+    if (fault === 'write_readback') script.actions[4].method = 'DELETE'
+    if (fault === 'late_snapshot') script.actions[1].method = 'POST'
+    if (fault === 'same_request') script.actions[5].request_id = 'before'
+    if (fault === 'missing_snapshot') script.actions[5].snapshot_id = 'unknown'
+    if (fault === 'snapshot_oracle') script.assertions[0].action_index = 2
+    if (fault === 'unreviewed_assertion') script.actions.push({ ...script.actions[5] })
+    await refreshArchive(v)
+    await assert.rejects(validation.verifyScriptArchive(v.archive, v.draft, v.mapping, v.item))
+  })
+}
 test('v3 fixture imports are explicit draft actions and require independent review without changing the oracle', async () => {
   const v = await fixtureImport()
   assert.equal(await validation.verifyScriptPreview(v.preview, v.selection, v.prepared), v.preview)

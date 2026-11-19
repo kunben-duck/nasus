@@ -40,7 +40,7 @@ run_backend_gate() (
   export NASUS_TEST_S3_ENDPOINT="${NASUS_TEST_S3_ENDPOINT:-$NASUS_S3_ENDPOINT}"
   export NASUS_TEST_S3_ACCESS_KEY="${NASUS_TEST_S3_ACCESS_KEY:-$NASUS_S3_ACCESS_KEY}"
   export NASUS_TEST_S3_SECRET_KEY="${NASUS_TEST_S3_SECRET_KEY:-$NASUS_S3_SECRET_KEY}"
-  local -a suites=(apps/api/tests tests/test_docker_stack_contract.py tests/test_ddd_boundaries.py tests/test_isolated_test_storage.py tests/test_release_gate_environment.py)
+  local -a suites=(apps/api/tests tests/test_docker_stack_contract.py tests/test_ddd_boundaries.py tests/test_isolated_test_storage.py tests/test_clock_preflight.py tests/test_realworld_m3_preflight.py tests/test_release_gate_environment.py)
   local workers="${NASUS_RELEASE_BACKEND_WORKERS:-1}"
   case "$workers" in
     1) "$ROOT_DIR/.venv/bin/python" "$ROOT_DIR/scripts/test-api-postgres.py" --minio "${suites[@]}" -q ;;

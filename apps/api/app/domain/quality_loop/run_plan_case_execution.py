@@ -6,6 +6,7 @@ import re
 
 from .acceptance_specification import acceptance_digest
 from .http_bindings import HTTP_FIXTURE_RECEIPT_SCHEMA
+from .http_readback import HTTP_READBACK_SCHEMA
 from .run_plan_observations import compile_case_jobs
 
 
@@ -204,8 +205,8 @@ def case_execution_jobs(plan, scope):
     if [item["case_id"] for item in scope.selection["fixture_setups"]] != [item["metadata"]["case_id"] for item in jobs]:
         raise RunPlanCaseExecutionInvalid("case execution cannot omit or reorder original fixture setup pins")
     if isinstance(scope, FixtureBoundRunPlanCaseScope):
-        if any(job["receipt_protocol"] != HTTP_FIXTURE_RECEIPT_SCHEMA for job in jobs):
-            raise RunPlanCaseExecutionInvalid("fixture pins require the explicit v3 business protocol")
+        if any(job["receipt_protocol"] not in {HTTP_FIXTURE_RECEIPT_SCHEMA, HTTP_READBACK_SCHEMA} for job in jobs):
+            raise RunPlanCaseExecutionInvalid("fixture pins require the explicit v3 or v4 business protocol")
         for job, pin in zip(jobs, scope.fixture_input_pins):
             job["metadata"].update(fixture_capture_digest=pin["capture_set_digest"],
                 fixture_scope_digest=scope.base_scope.digest)
