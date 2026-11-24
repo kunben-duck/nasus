@@ -1,5 +1,5 @@
 // Usage: node scripts/realworld-retained-publication.mjs m3-YYYYMMDD-HHMM [--grant-reviewer]
-// This entry point stops BEFORE the independent human review. No tool POSTs.
+// Read-only decision handoff; neither review nor publication is submitted here.
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open, realpath, writeFile } from 'node:fs/promises'
@@ -243,7 +243,7 @@ export async function preparePublication({ run, proofs, operator, reviewer, gran
   const previewPath = base + '/publications/preview?' + new URLSearchParams({ image_revision_id: pins.image_revision_id,
     image_artifact_hash: pins.image_artifact_hash, target_baseline_id: pins.target_baseline_id })
   const before = await operator.get(previewPath)
-  need(before.head === null && before.review === null && before.can_review === true && hash(before.preview_digest)
+  need(before.head === null && (before.review === null || record(before.review)) && before.can_review === true && hash(before.preview_digest)
     && before.target?.project_id === p && before.target.image_revision_id === pins.image_revision_id
     && before.target.image_artifact_hash === pins.image_artifact_hash && before.target.target_baseline_id === pins.target_baseline_id
     && before.target.expected_head_id === null && before.target.policy_revision === 'nasus.image-publication.v1'
@@ -255,6 +255,7 @@ export async function preparePublication({ run, proofs, operator, reviewer, gran
   need(membership(members, operator, p) === 'project_admin', 'operator_project_admin_required')
   const role = membership(members, reviewer, p)
   if (role !== 'project_admin') {
+    need(before.review === null, 'reviewer_project_admin_required')
     if (role === null) {
       const found = await operator.get(project + '/member-candidates?' + new URLSearchParams({ q: reviewer.email }))
       one(found, m => m?.id === reviewer.id && m.email === reviewer.email, 'registered_reviewer_not_a_grant_candidate')
@@ -269,6 +270,27 @@ export async function preparePublication({ run, proofs, operator, reviewer, gran
 
   const session = { schema: 'nasus.realworld-retained-session.v1', acceptance_id: run, project_id: p,
     conversation_id: scope.conversation_id, source_commits: repos.map(r => r[1]) }
+  if (before.review !== null) {
+    const review = before.review
+    need(review.actor_id === reviewer.id && id(review.invocation_id), 'approval_not_by_independent_reviewer')
+    need(review.decision === 'approve', 'approval_not_approved')
+    const reviewerView = await reviewer.get(previewPath)
+    need(equal(reviewerView, before), 'review_changed_during_receipt_read')
+    // The reviewer reads their own original receipt; the operator independently
+    // checks the current publication target and access, not the reviewer's chat.
+    const command = await reviewer.get('tool-invocations/' + review.invocation_id)
+    const manifest = (await operator.get(base + '?view=working')).source_manifest
+    const revisions = await codeRevisions(operator.get, base)
+    members = await operator.get(project + '/members')
+    const preview = await operator.get(previewPath)
+    need(equal(preview, before), 'review_changed_during_receipt_read')
+    const handoff = preflightRetainedReview({ action: 'publish', session, pins, conversation, actor: operator,
+      members, manifest, revisions, preview, command, nowMs: Date.now() })
+    need(handoff.status === 'awaiting_operator_publication', handoff.reason)
+    return { status: handoff.status, acceptance_id: run, pins: { ...pins, ...handoff.pins },
+      review_invocation_id: command.id, knowledge_url: portal + '/' + project + '/knowledge',
+      review_recorded: true, published: false, full_m3_verified: false }
+  }
   const manifest = (await reviewer.get(base + '?view=working')).source_manifest
   const revisions = await codeRevisions(reviewer.get, base)
   const inspect = async () => {

@@ -595,6 +595,17 @@ account's present access. Once the exact initial publication is recorded,
 The last step does not confirm a live model evaluation. None of these commands
 claims generated tests, model approval, a target run, or full M3 acceptance.
 
+To resume at the initial review, run
+`node scripts/realworld-retained-publication.mjs <acceptance-id>` without
+`--grant-reviewer`. An unsigned candidate returns
+`independent_human_publication_review_required`. After a real approval and
+before promotion, the same command reads the reviewer's original command and
+rechecks the operator's current preview, membership, source pins and expiry.
+`awaiting_operator_publication` means the review receipt was verified, **not**
+that the baseline was promoted. Both handoffs exit 2 without submitting a
+decision. After promotion, use the original Build session's `propose` step,
+which verifies the published head before proposing an iteration.
+
 ### Remaining Exit Criteria
 
 The following foundations now exist, but are not yet a connected target runtime:

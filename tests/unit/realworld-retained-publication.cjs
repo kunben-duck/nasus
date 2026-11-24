@@ -231,6 +231,53 @@ test('grant is opt-in, project-only and not repeated after a verified grant', as
   assert.deepEqual(s.writes, ['intent', 'grant'])
 })
 
+function recordedApproval(s) {
+  const { target, image, preview_digest } = s.preview
+  const review = { review_id: 'approval', invocation_id: 'signed', actor_id: 'reviewer', decision: 'approve',
+    project_id: target.project_id, baseline_id: target.target_baseline_id, image_revision_id: target.image_revision_id,
+    image_artifact_hash: image.artifact_hash, manifest_id: image.manifest_id, manifest_hash: image.manifest_hash,
+    preview_digest, policy_revision: target.policy_revision, previous_review_id: null, claim_digest: digest({ target, preview_digest }),
+    quality_generation_authorized: false, release_authorized: false, recorded_at: new Date(Date.now() - 5000).toISOString() }
+  const command = { id: review.invocation_id, status: 'completed', tool_id: 'system_image.revisions.review_publication',
+    input_payload: { ...target, expected_preview_digest: preview_digest, expected_review_id: null,
+      confirmed_by_user: true, confirmed_actor_id: 'reviewer', decision: 'approve' },
+    result: { invocation_id: review.invocation_id, status: 'completed', object_refs: ['publication_review:approval', 'approval:approval'] } }
+  s.preview.review = review
+  s.overrides.set('reviewer:tool-invocations/signed', () => structuredClone(command))
+  return { review, command }
+}
+
+test('resume after independent signature verifies its original command without publishing', async () => {
+  const s = scenario()
+  recordedApproval(s)
+  const result = await prepare(s.args)
+  assert.equal(result.status, 'awaiting_operator_publication')
+  assert.equal(result.review_recorded, true)
+  assert.equal(result.published, false)
+  assert.equal(result.pins.approval_id, 'approval')
+  assert.equal(result.review_invocation_id, 'signed')
+  assert.deepEqual(s.writes, [])
+})
+
+test('reject stale, foreign or superseded approval without granting or replaying writes', async () => {
+  for (const [alter, expected] of [
+    [(r) => { r.decision = 'reject' }, /approval_not_approved/],
+    [(r) => { r.recorded_at = new Date(Date.now() - 3600000).toISOString() }, /approval_expired/],
+    [(_, c) => { c.input_payload.image_revision_id = 'another' }, /confirmed_review_command_mismatch/],
+    [(_, c) => { c.input_payload.confirmed_actor_id = 'operator' }, /confirmed_review_command_mismatch/],
+    [(_, __, s) => { s.members.pop() }, /reviewer_project_admin_required/],
+    [(_, c, s) => { s.overrides.set('reviewer:tool-invocations/signed', () => {
+      s.preview.review = null
+      return structuredClone(c)
+    }) }, /review_changed_during_receipt_read/],
+  ]) {
+    const s = scenario(), { review, command } = recordedApproval(s)
+    alter(review, command, s)
+    await assert.rejects(prepare({ ...s.args, grantReviewer: true }), expected)
+    assert.deepEqual(s.writes, [])
+  }
+})
+
 test('stale commits, broken evidence and rescoping the authenticated reviewer cannot produce a handoff', async () => {
   for (const [mutate, code] of [
     [s => { s.revisions.items[0].external_revision = '0'.repeat(40) }, /repository_commit_mismatch/],
