@@ -28,16 +28,14 @@ export function useProjectWorkspaceSourceBindings({
   const preparation = useMutation({ mutationFn: buildSystemImageFromSources })
   const uploadMutation = useMutation({
     mutationFn: ({ key, files }: { key: SourceBindingKey; files: File[] }) => {
-      if (key === 'code') {
-        throw new Error('Code repositories must be connected with a Git URL or an approved server path.')
-      }
       return uploadSystemImageSourceFiles(
         projectId,
-        key === 'usDoc' ? 'us_doc' : 'test_asset',
+        key === 'code' ? 'code' : key === 'usDoc' ? 'us_doc' : 'test_asset',
         files,
       )
     },
     onSuccess: (result, variables) => {
+      if (variables.key === 'code') sourceBindingDrafts.updateSourceBinding('codeRef', '')
       sourceBindingDrafts.updateSourceBinding(variables.key, result.source_uri)
     },
   })

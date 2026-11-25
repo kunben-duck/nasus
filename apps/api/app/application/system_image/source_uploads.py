@@ -3,15 +3,17 @@ from __future__ import annotations
 import hashlib
 import os
 import posixpath
+import re
 from dataclasses import dataclass
 from typing import Literal, Protocol, Sequence
 
 from pydantic import BaseModel
 
 from .ports import SystemImageWorkspacePort
+from ...domain.system_image.directory_snapshot import code_file_path
 
 
-UploadSourceType = Literal["us_doc", "test_asset"]
+UploadSourceType = Literal["us_doc", "test_asset", "code"]
 
 
 @dataclass(frozen=True)
@@ -47,12 +49,14 @@ class SourceUploadApplicationService:
         workspace: SystemImageWorkspacePort,
         storage: SourceUploadStoragePort,
         *,
+        code_write_scope=None,
         max_files: int | None = None,
         max_bytes: int | None = None,
         max_single_file_bytes: int | None = None,
     ) -> None:
         self._workspace = workspace
         self._storage = storage
+        self._code_write_scope = code_write_scope
         self.max_files = max_files or self._env_int("NASUS_SOURCE_UPLOAD_MAX_FILES", 100)
         self.max_bytes = max_bytes or self._env_int(
             "NASUS_SOURCE_UPLOAD_MAX_BYTES",
@@ -69,9 +73,9 @@ class SourceUploadApplicationService:
         source_type: str,
         files: Sequence[SourceUploadFile],
     ) -> SourceUploadResult:
-        self.authorize_project(project_id)
-        if source_type not in {"us_doc", "test_asset"}:
-            raise ValueError("source_type must be us_doc or test_asset for file uploads")
+        self.authorize_project(project_id, source_type)
+        if source_type not in {"us_doc", "test_asset", "code"}:
+            raise ValueError("Unknown upload source type")
         if not files:
             raise ValueError("at least one source file is required")
         if len(files) > self.max_files:
@@ -81,12 +85,13 @@ class SourceUploadApplicationService:
         normalized: list[SourceUploadFile] = []
         seen_names: set[str] = set()
         for item in files:
-            filename = self._safe_filename(item.filename)
-            if filename in seen_names:
+            filename = code_file_path(item.filename) if source_type == "code" else self._safe_filename(item.filename)
+            identity = filename.casefold() if source_type == "code" else filename
+            if identity in seen_names:
                 raise ValueError(f"duplicate source filename: {filename}")
-            seen_names.add(filename)
+            seen_names.add(identity)
             size = len(item.body)
-            if size == 0:
+            if size == 0 and source_type != "code":
                 raise ValueError(f"source file is empty: {filename}")
             if size > self.max_single_file_bytes:
                 raise ValueError(
@@ -102,17 +107,27 @@ class SourceUploadApplicationService:
                     body=item.body,
                 )
             )
+        if source_type == "code":
+            for name in seen_names:
+                parts = name.split("/")
+                if any("/".join(parts[:i]) in seen_names for i in range(1, len(parts))):
+                    raise ValueError("Directory contains conflicting file and directory paths")
+            if any(re.search(br"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----", item.body) for item in normalized):
+                raise ValueError("Directory contains private key material")
         return self._storage.put_source_bundle(
             project_id,
             source_type,  # type: ignore[arg-type]
             normalized,
         )
 
-    def authorize_project(self, project_id: str) -> None:
+    def authorize_project(self, project_id: str, source_type: str = "") -> None:
         """Fail before reading a multipart body when project access is invalid."""
         if not self._workspace.has_project(project_id):
             raise KeyError(project_id)
         self._workspace.require_project_access(project_id)
+        if source_type == "code" and (not self._code_write_scope or self._code_write_scope(project_id).effective_project_role
+                                     not in {"tester", "qa_lead", "project_admin", "platform_admin"}):
+            raise PermissionError("Project write access required")
 
     @staticmethod
     def _safe_filename(filename: str) -> str:

@@ -11,6 +11,10 @@ import type {
 } from './types'
 
 export const agentApi = {
+  recentBuild: (params: URLSearchParams, signal: AbortSignal) =>
+    request<{ items: { id: string; title: string; project_id: string | null; activity_at: string | null;
+      task_status: 'confirmation' | 'paused' | 'running' | null }[]; has_more: boolean }>(
+      '/v1/conversations/recent-build?' + params, { signal, cache: 'no-store' }),
   readProjectConversation: async (projectId: string, signal: AbortSignal) => {
     const sessions = await request<ConversationSession[]>(`/v1/conversations?${new URLSearchParams({ project_id: projectId, space_type: 'project' })}`,
       { signal, cache: 'no-store' })

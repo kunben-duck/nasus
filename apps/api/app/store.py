@@ -134,6 +134,7 @@ from .application.platform.tool_models import (
 from .domain.agent.name_extraction import extract_project_name, extract_version_name
 from .domain.agent.state_machine import AgentGoalStateMachine
 from .infrastructure.persistence.database import init_database
+from .infrastructure.persistence.build_history import build_history_rows
 from .infrastructure.persistence.project_mutation_lock import (
     SQLAlchemyProjectMutationLock,
 )
@@ -621,9 +622,11 @@ class RuntimeAssembly:
             self.system_image_workspace_adapters,
             require_live_model_routes=current_runtime_profile().production_like,
         )
+        self.source_access = SourceAccessApplicationService(SourceAccessRepository(), self.project_access)
         self.source_uploads = SourceUploadApplicationService(
             self.system_image_workspace,
             ObjectStorageSourceUploadStorage(self.object_storage),
+            code_write_scope=self.source_access.scope,
         )
         self.source_ingestion = SourceIngestionService(
             object_storage=self.object_storage,
@@ -633,7 +636,6 @@ class RuntimeAssembly:
             )
         )
         self.code_graph_config = CodeGraphConfig.from_env()
-        self.source_access = SourceAccessApplicationService(SourceAccessRepository(), self.project_access)
         self.code_analysis = CodeAnalysisQueryApplicationService(CodeAnalysisRepository(), self.source_access,
             ArchivedCodeObservations(self.object_storage))
         self.source_deltas = SourceDeltaQueryApplicationService(SourceDeltaRepository(), ArchivedSourceDeltaReader(
@@ -1045,6 +1047,7 @@ class RuntimeAssembly:
             self.agent_application_ports.conversation_management,
             creation_guard=SQLAlchemyProjectMutationLock("conversation-create").acquire,
             read_guard=self.delivery_conversation_read_access.require_access,
+            history_rows=build_history_rows, history_guard=self.delivery_conversation_read_access.require_metadata_access,
         )
         self.conversation_memory = build_conversation_memory(
             memory=self.agent_memory, summaries=self.conversation_summary_checkpoints_app,

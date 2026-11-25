@@ -25,7 +25,7 @@ for (const mode of ['local checkout', 'HTTPS and commit SHA', 'HTTPS with review
     localStorage.setItem('nasus_api_token', token)
     localStorage.setItem('nasus.locale', 'en')
   }, owner.token)
-  await page.goto('/build')
+  await page.goto('/build?session=shortcut')
   const prompt = page.getByTestId('build-agent-input')
   const send = async (text: string) => {
     await expect(prompt).toBeEnabled()
@@ -36,7 +36,7 @@ for (const mode of ['local checkout', 'HTTPS and commit SHA', 'HTTPS with review
   }
   await send('Help me build a system image')
   await send('Project name: exweb fixed-source trial')
-  await expect(page).toHaveURL(/\/build$/)
+  await expect(page).toHaveURL(/\/build\?session=shortcut$/)
   const projectLink = page.getByRole('link', { name: 'View system image', exact: true })
   const projectId = (await projectLink.getAttribute('href'))!.split('/')[2]
   await send(`Code ${root ?? repository}\ncommit ${revision}`)
@@ -52,7 +52,7 @@ for (const mode of ['local checkout', 'HTTPS and commit SHA', 'HTTPS with review
   const gate = page.getByTestId('build-progress')
   await expect(gate.getByTestId('build-goal-continue')).toBeEnabled({ timeout: 75_000 })
 
-  const conversationList = await request.get(`${analysisApi}/v1/conversations?space_type=build&space_id=build`,
+  const conversationList = await request.get(`${analysisApi}/v1/conversations?space_type=build&space_id=build-shortcut`,
     { headers: owner.headers })
   expect(conversationList.ok()).toBeTruthy()
   const conversations = await conversationList.json()

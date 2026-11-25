@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Header, Request, status
+from fastapi import APIRouter, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
 
 from ....application.agent.agent_models import (
@@ -48,6 +48,13 @@ def list_conversations(
 @router.get("/v1/conversations/search")
 def search_conversations(q: str, agent: AgentApp) -> Any:
     return agent.search_conversations(q)
+
+
+@router.get("/v1/conversations/recent-build")
+def recent_build(agent: AgentApp, project_id: Optional[str] = None, unbound: bool = False,
+                 q: str = Query("", max_length=200), offset: int = Query(0, ge=0),
+                 limit: int = Query(25, ge=1, le=100)):
+    return agent.recent_build(project_id, unbound, q.strip(), offset, limit)
 
 
 @router.get("/v1/conversations/{conversation_id}")

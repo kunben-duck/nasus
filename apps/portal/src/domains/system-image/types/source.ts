@@ -39,7 +39,7 @@ export interface RawAssetChunk {
 }
 
 export interface SourceUploadResult {
-  source_type: 'us_doc' | 'test_asset'
+  source_type: 'code' | 'us_doc' | 'test_asset'
   source_uri: string
   content_hash: string
   file_count: number

@@ -1,7 +1,7 @@
 import { systemImageApi } from './api'
 import type { SourceUploadResult } from './types'
 
-export type UploadableSystemImageSourceType = 'us_doc' | 'test_asset'
+export type UploadableSystemImageSourceType = SourceUploadResult['source_type']
 
 export function uploadSystemImageSourceFiles(
   projectId: string,

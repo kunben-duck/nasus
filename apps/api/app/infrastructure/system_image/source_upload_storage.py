@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import io
+from hashlib import sha256
 from datetime import datetime, timezone
 from typing import Sequence
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from ...application.system_image.source_uploads import (
     SourceUploadApplicationService,
@@ -29,11 +30,17 @@ class ObjectStorageSourceUploadStorage:
         body = io.BytesIO()
         with ZipFile(body, "w", compression=ZIP_DEFLATED, compresslevel=6) as archive:
             for item in sorted(files, key=lambda value: value.filename):
-                archive.writestr(item.filename, item.body)
+                if source_type == "code":
+                    archive.writestr(ZipInfo(item.filename), item.body, compress_type=ZIP_DEFLATED, compresslevel=6)
+                else:
+                    archive.writestr(item.filename, item.body)
         payload = body.getvalue()
         fingerprint = SourceUploadApplicationService.fingerprint(files)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         key = f"source-uploads/{project_id}/{source_type}/{timestamp}-{fingerprint[7:23]}.zip"
+        if source_type == "code":
+            fingerprint = "sha256:" + sha256(payload).hexdigest()
+            key = f"source-uploads/{project_id}/code/{fingerprint[7:]}.zip"
         stored = self._object_storage.put_bytes(
             key,
             payload,

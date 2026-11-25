@@ -14,6 +14,7 @@ import fcntl
 from ...application.system_image.source_ports import MaterializedSource
 from ...application.system_image.system_image_models import RawAssetRecord
 from ..storage import ObjectStorage
+from ...domain.system_image.directory_snapshot import check_upload_scope
 
 
 class ObjectStorageSourceConnectorError(OSError):
@@ -48,11 +49,17 @@ class ObjectStorageSourceConnector:
         )
 
     def supports(self, source: RawAssetRecord) -> bool:
-        return source.source_type in {"us_doc", "test_asset"} and source.source_uri.startswith(
+        return source.source_type in {"code", "us_doc", "test_asset"} and source.source_uri.startswith(
             ("s3://", "local-object://")
         )
 
     def materialize(self, source: RawAssetRecord, *, refresh: bool) -> MaterializedSource:
+        check_upload_scope(source.project_id, source.source_type, source.source_uri, source.tracked_ref)
+        if source.source_type == "code":
+            config = self._object_storage.config
+            prefix = ("s3://" if config.s3_enabled else "local-object://") + config.bucket + f"/source-uploads/{source.project_id}/code/"
+            if not source.source_uri.startswith(prefix):
+                raise ObjectStorageSourceConnectorError("Code snapshot storage origin mismatch")
         try:
             body = self._object_storage.get_bytes(
                 source.source_uri,
@@ -61,7 +68,10 @@ class ObjectStorageSourceConnector:
         except (OSError, RuntimeError, ValueError) as exc:
             raise ObjectStorageSourceConnectorError(str(exc)) from exc
         revision = hashlib.sha256(body).hexdigest()
-        target = self.cache_dir / revision
+        if source.source_type == "code" and source.source_uri != prefix + revision + ".zip":
+            raise ObjectStorageSourceConnectorError("Code snapshot digest mismatch")
+        code = source.source_type == "code"
+        target = self.cache_dir / (("code-" if code else "") + revision)
         with self._materialization_lock(revision):
             complete_marker = target / ".nasus-complete"
             # Content-addressed targets are immutable. Refreshing the source
@@ -72,7 +82,9 @@ class ObjectStorageSourceConnector:
                     tempfile.mkdtemp(prefix=f".{revision}.", dir=str(self.cache_dir))
                 )
                 try:
-                    self._extract_bundle(body, temp_target)
+                    content = temp_target / "tree" if code else temp_target
+                    content.mkdir(exist_ok=True)
+                    self._extract_bundle(body, content)
                     complete_marker_temp = temp_target / ".nasus-complete"
                     complete_marker_temp.write_text(revision, encoding="utf-8")
                     if target.exists():
@@ -82,7 +94,7 @@ class ObjectStorageSourceConnector:
                     shutil.rmtree(temp_target, ignore_errors=True)
                     raise
         return MaterializedSource(
-            local_path=target,
+            local_path=target / "tree" if code else target,
             connector_kind=self.connector_kind,
             source_ref=source.source_uri,
             revision=revision,

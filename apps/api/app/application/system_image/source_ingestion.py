@@ -77,6 +77,9 @@ class SystemImageSourceIngestionApplicationService:
         registered_from_invocation_id: str | None,
         ensure_draft_state: Callable[[], None],
     ) -> None:
+        from ...domain.system_image.directory_snapshot import check_upload_scope
+        for spec in source_specs or []:
+            check_upload_scope(project_id, spec.source_type, spec.source_uri, spec.tracked_ref)
         if not self._projection.list_sources(project_id):
             ensure_draft_state()
         now = _now_iso()

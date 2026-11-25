@@ -1,0 +1,11 @@
+.build-inbox { width: min(54rem, 100%); box-sizing: border-box; margin: 0 auto; padding: clamp(3.5rem, 7vw, 6rem) clamp(1rem, 4vw, 3rem); }
+.build-inbox header, .inbox-filters, .build-inbox li a, .build-inbox footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .8rem; }
+.build-inbox h1 { font-size: clamp(1.6rem, 3vw, 2.3rem); font-weight: 500; }
+.inbox-filters input, .inbox-filters select { padding: .65rem .8rem; background: var(--surface, Canvas); color: inherit; border: 1px solid color-mix(in srgb, currentColor 22%, transparent); border-radius: .65rem; }
+.inbox-filters input { flex: 1 1 12rem; }
+.build-inbox ul { list-style: none; padding: 0; }
+.build-inbox li { border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent); }
+.build-inbox li a { color: inherit; text-decoration: none; padding: 1rem .3rem; }
+.build-inbox li a:hover { background: color-mix(in srgb, currentColor 5%, transparent); }
+.build-inbox li span { display: grid; gap: .4rem; overflow-wrap: anywhere; }
+.build-inbox small, .build-inbox time { opacity: .72; font-size: .8rem; }

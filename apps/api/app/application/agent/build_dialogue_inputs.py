@@ -46,7 +46,7 @@ class BuildIntake(BaseModel):
             {"source_type": kind, "source_uri": uri, "label": label,
              **({"tracked_ref": self.code_ref} if kind == "code" and self.code_ref else {})}
             for kind, uri, label in (
-                ("code", self.code, "Code repository"),
+                ("code", self.code, "Local directory snapshot" if self.code.startswith(("s3://", "local-object://")) else "Code repository"),
                 ("us_doc", self.requirements, "Historical requirements"),
                 ("test_asset", self.tests, "Historical test assets"),
             ) if uri
@@ -156,6 +156,8 @@ class BuildIntakeExtractor:
         # The Portal submits upload receipts as labelled chat messages. Neither
         # these nor unambiguous project/repository fields need model egress.
         text = text.strip()
+        if values.get("code") and text == "代码快照 " + values["code"]:
+            return True
         name = values.get("project_name")
         if name and re.fullmatch(r"(?:创建项目\n项目名称：|Create project\nProject name: )" + re.escape(name), text, re.I):
             return True
@@ -173,6 +175,9 @@ class BuildIntakeExtractor:
         if is_intake_question(text) or re.fullmatch(r"(?:你好|您好|谢谢|好的|hello|hi|thanks|thank you)[。.!！]?", text.strip(), re.I):
             return {}
         values = {}
+        snapshot = re.fullmatch(r"代码快照 ((?:s3|local-object)://[^/\s]+/source-uploads/([^/\s]+)/code/[a-f0-9]{64}\.zip)", text.strip())
+        if snapshot and snapshot[2] == state.project_id:
+            return {"code": snapshot[1], "code_ref": "", "additional_code_sources": [], "source_input_issue": ""}
         patterns = {
             "project_name": r"(?:项目(?:名(?:称)?)?(?:叫|为|是|[：:])|名字(?:叫|为|是|[：:])|(?:project(?: name)?\s*(?:is|:|called|named)))\s*[\"“]?([^\n，,。\"”]+)",
             "code": r"(?:代码(?:路径|仓库|地址)?|仓库(?:地址)?|(?:git|code)(?:\s+(?:url|path|repository))?)\s*[：:=]?\s*((?:https?://|git@|/|file://)[^\s，,；;。]+)",

@@ -8,6 +8,7 @@ import { MarkdownContent } from '../../../shared/ui/MarkdownContent'
 import { useBuildHistoryScroll } from '../useBuildHistoryScroll'
 import { BuildImageStatus } from './BuildImageStatus'
 import { BuildDeliveryCard } from './BuildDeliveryCard'
+import { CodeDirectoryPicker } from '../../../domains/system-image/CodeDirectoryPicker'
 
 export function BuildConversation({ conversation, sendPrompt, busy }: {
   conversation?: ConversationSession
@@ -37,13 +38,13 @@ export function BuildConversation({ conversation, sendPrompt, busy }: {
   const canContinue = goal?.status === 'paused' && ['waiting_confirmation', 'structural_candidate_review', 'reference_candidate_review'].includes(goal.pause_reason ?? '')
   const zh = locale === 'zh'
 
-  async function upload(kind: 'us_doc' | 'test_asset', files: File[]) {
+  async function upload(kind: 'code' | 'us_doc' | 'test_asset', files: File[]) {
     if (!intake?.project_id || !files.length || busy || uploading) return
     setUploading(true)
     setError(null)
     try {
       const result = await uploadSystemImageSourceFiles(intake.project_id, kind, files)
-      await sendPrompt(`${kind === 'us_doc' ? '需求文档地址' : '测试资产地址'} ${result.source_uri}`)
+      await sendPrompt(`${kind === 'code' ? '代码快照' : kind === 'us_doc' ? '需求文档地址' : '测试资产地址'} ${result.source_uri}`)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('Upload failed'))
     } finally {
@@ -74,6 +75,7 @@ export function BuildConversation({ conversation, sendPrompt, busy }: {
       ) : null}
       {intake?.stage === 'sources' || intake?.stage === 'review' ? (
         <div className="build-intake-actions">
+          {intake.project_id && !intake.capture_started && <CodeDirectoryPicker disabled={busy || uploading} onUpload={files => void upload('code', files)} />}
           {intake.project_id && !intake.capture_started ? (['us_doc', 'test_asset'] as const).map((kind) => (
             <label className="build-upload-button" key={kind}>
               {t(kind === 'us_doc' ? 'Upload requirements' : 'Upload test assets')}

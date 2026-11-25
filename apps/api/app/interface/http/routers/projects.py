@@ -61,10 +61,10 @@ async def upload_project_source_files(
     source_type: str = Form(...),
     files: List[UploadFile] = File(...),
 ) -> SourceUploadResult:
-    if source_type not in {"us_doc", "test_asset"}:
+    if source_type not in {"us_doc", "test_asset", "code"}:
         raise error_response(
             "validation_error",
-            "source_type must be us_doc or test_asset for file uploads",
+            "source_type must be code, us_doc or test_asset for file uploads",
         )
     if len(files) > source_uploads.max_files:
         raise error_response(
@@ -73,7 +73,7 @@ async def upload_project_source_files(
             413,
         )
     try:
-        source_uploads.authorize_project(project_id)
+        source_uploads.authorize_project(project_id, source_type)
     except KeyError as exc:
         raise error_response("not_found", f"project {project_id} was not found", 404) from exc
     except PermissionError as exc:

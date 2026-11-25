@@ -12,7 +12,8 @@ export function useBuildRouteModel() {
   const session = search.get('session')
   const spaceId = session && /^[a-zA-Z0-9-]{1,64}$/.test(session) ? `build-${session}` : 'build'
   const queryClient = useQueryClient()
-  const buildConversation = useConversation('build', spaceId, t('Build'))
+  const requestedId = search.get('conversation') ?? undefined
+  const buildConversation = useConversation('build', spaceId, t('Build'), { requestedId })
   const buildProjects = useBuildProjects()
   const promptRunner = useBuildPromptRunner({ buildConversation, queryClient })
   const buildSkillSelection = useBuildSkillSelection({
@@ -21,6 +22,7 @@ export function useBuildRouteModel() {
   })
 
   return {
+    unavailable: buildConversation.unavailable,
     conversation: buildConversation.conversation,
     sendPrompt: promptRunner.sendPrompt,
     newBuild: () => {

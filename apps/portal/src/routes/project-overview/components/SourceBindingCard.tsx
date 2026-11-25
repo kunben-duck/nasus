@@ -1,5 +1,6 @@
 import type { SourceBindingCardConfig, SourceBindingSource } from './sourceBindingCards'
 import { useI18n } from '../../../shared/i18n/I18nProvider'
+import { CodeDirectoryPicker } from '../../../domains/system-image/CodeDirectoryPicker'
 
 export function SourceBindingCard({
   card,
@@ -65,7 +66,8 @@ export function SourceBindingCard({
           </label>
         ) : null}
       </div>
-      {onTrackedRefChange ? (
+      {card.key === 'code' && <CodeDirectoryPicker disabled={uploading} onUpload={onUpload} />}
+      {onTrackedRefChange && !/^(?:s3|local-object):/.test(value) ? (
         <label className="source-tracked-ref-field">
           <span>{t('Git branch, tag, or commit')}</span>
           <input className="source-field-control" type="text" value={trackedRef ?? ''}

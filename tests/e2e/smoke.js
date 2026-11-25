@@ -221,7 +221,10 @@ async function main() {
       }
     }, session.access_token)
     await page.goto(`${portalUrl}/build`, { waitUntil: 'domcontentloaded' })
+    await expectVisible(page.getByRole('heading', { name: 'My conversations' }), 'build inbox loaded')
+    await page.getByRole('button', { name: 'New build conversation' }).click()
     await expectVisible(page.getByRole('heading', { name: /Build quality projects with Nasus/i }), 'build shell loaded')
+    const buildSessionUrl = page.url()
 
     await page.getByTestId('build-agent-input').fill(`Help me create a new project called ${projectName}`)
     await page.getByTestId('build-agent-submit').click()
@@ -230,7 +233,7 @@ async function main() {
     await expectVisible(imageLink, 'created project entry visible in Build conversation')
     await expect(page.getByRole('button', { name: 'New build conversation', exact: true })).toBeEnabled({ timeout: 15000 })
     await expect(buildConversation.locator('.build-project-context').getByText(projectName, { exact: true })).toBeVisible()
-    await expect(page).toHaveURL(`${portalUrl}/build`)
+    await expect(page).toHaveURL(buildSessionUrl)
     await expect(page.getByTestId('agent-workspace')).toHaveCount(0)
     console.log('ok: completed project creation stays on Build')
 

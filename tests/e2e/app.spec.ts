@@ -83,6 +83,8 @@ test('unauthenticated users register with email before entering build', async ({
   await page.getByRole('button', { name: /创建账号/ }).click()
 
   await expect(page).toHaveURL(/\/build$/)
+  await expect(page.getByRole('heading', { name: '我的对话' })).toBeVisible()
+  await page.getByRole('button', { name: '开始新的构建对话' }).click()
   await expect(page.getByRole('heading', { name: /用 Nasus 构建质量项目/ })).toBeVisible()
   await expect(page.getByRole('button', { name: new RegExp(email, 'i') })).toBeVisible()
 
@@ -97,6 +99,7 @@ test('language setting switches immediately and persists after reload', async ({
   const welcomeTitle = page.getByRole('heading', { name: /Build quality projects with Nasus|用 Nasus 构建质量项目/ })
   await page.goto('/build')
   await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  await page.getByRole('button', { name: 'New build conversation' }).click()
   await expect(page.getByRole('heading', { name: /Build quality projects with Nasus/i })).toBeVisible()
   await expect(buildConversation).toHaveCount(0)
 
@@ -130,7 +133,7 @@ test('language setting switches immediately and persists after reload', async ({
   await page.getByTestId('build-agent-submit').click()
   const localizedImageLink = page.getByRole('link', { name: '查看系统画像', exact: true })
   await expect(localizedImageLink).toBeVisible({ timeout: 15_000 })
-  await expect(page).toHaveURL(/\/build$/)
+  await expect(page).toHaveURL(/\/build\?session=/)
   await expect(buildConversation.getByRole('log')).toContainText(projectPrompt)
   await expect(welcomeTitle).toHaveCount(0)
   await page.goto((await localizedImageLink.getAttribute('href'))!.replace(/\/knowledge$/, ''))
@@ -146,6 +149,7 @@ test('language setting switches immediately and persists after reload', async ({
 
   await page.goto('/build')
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
+  await page.getByRole('link', { name: new RegExp(localizedProjectName) }).click()
   await expect(buildConversation.getByRole('log')).toContainText(projectPrompt)
   await expect(localizedImageLink).toBeVisible()
   await expect(welcomeTitle).toHaveCount(0)
@@ -223,7 +227,7 @@ test('build agent feedback renders controlled markdown', async ({ page }) => {
     })
   })
 
-  await page.goto('/build')
+  await page.goto('/build?session=markdown')
   const welcomeTitle = page.getByRole('heading', { name: 'Build quality projects with Nasus', exact: true })
   await expect(welcomeTitle).toBeVisible()
   const composer = page.locator('.hero-composer')
@@ -257,7 +261,7 @@ test('agent-first build preserves the original goal through structural candidate
 
   const session = await createBrowserSession(page)
   const headers = { Authorization: `Bearer ${session.access_token}` }
-  await page.goto('/build')
+  await page.goto('/build?session=structural-review')
   await expect(page.getByRole('heading', { name: /Build quality projects with Nasus/i })).toBeVisible()
   await expect(page.getByTestId('backend-status-pill')).toContainText(/Live/i)
 
@@ -267,7 +271,7 @@ test('agent-first build preserves the original goal through structural candidate
   const imageLink = page.getByRole('link', { name: 'View system image', exact: true })
   await expect(imageLink).toBeVisible({ timeout: 15_000 })
   await expect(page.getByRole('heading', { name: /Build quality projects with Nasus/i })).toHaveCount(0)
-  await expect(page).toHaveURL(/\/build$/)
+  await expect(page).toHaveURL(/\/build\?session=structural-review$/)
   await page.goto((await imageLink.getAttribute('href'))!.replace(/\/knowledge$/, ''))
   await expect(page).toHaveURL(/\/projects\//, { timeout: 15_000 })
   await expect(page.getByRole('heading', { name: /Build with Agents/i })).toBeVisible()

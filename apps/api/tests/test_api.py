@@ -3219,10 +3219,37 @@ def test_source_upload_rejects_unknown_projects_and_unsafe_source_types():
     project = client.post("/v1/projects", json={"name": "Invalid Source Upload"}).json()
     invalid_type = client.post(
         f"/v1/projects/{project['id']}/source-files",
-        data={"source_type": "code"},
+        data={"source_type": "unknown"},
         files=[("files", ("code.py", b"print('x')", "text/x-python"))],
     )
     assert invalid_type.status_code == 400
+
+
+def test_directory_upload_is_content_addressed_and_project_scoped():
+    from apps.api.app.domain.system_image.directory_snapshot import check_upload_scope
+
+    project_id = client.post("/v1/projects", json={"name": "Directory snapshot"}).json()["id"]
+    def upload(entries):
+        return client.post(
+            f"/v1/projects/{project_id}/source-files", data={"source_type": "code"},
+            files=[("files", (name, body, "application/octet-stream")) for name, body in entries],
+        )
+
+    files = [("pkg/__init__.py", b""), ("tests/__init__.py", b""), ("pkg/code.py", b"a = 1")]
+    first = upload(files)
+    assert first.status_code == 200, first.text
+    receipt = first.json()
+    assert receipt["file_count"] == 3
+    uri = receipt["source_uri"]
+    assert uri.endswith(f"/{project_id}/code/{receipt['content_hash'][7:]}.zip")
+    assert upload(files[::-1]).json()["source_uri"] == uri
+    assert upload(files + [("README.md", b"note")]).json()["source_uri"] != uri
+    for name in ("../hidden", "config/.env.local", "PKG/code.py", "pkg"):
+        assert upload(files + [(name, b"x")]).status_code == 400
+    check_upload_scope(project_id, "code", uri)
+    for project, kind, ref in (("other", "code", None), (project_id, "us_doc", None), (project_id, "code", "main")):
+        with pytest.raises(ValueError):
+            check_upload_scope(project, kind, uri, ref)
 
 
 def test_code_only_source_can_initialize_official_system_image_baseline():

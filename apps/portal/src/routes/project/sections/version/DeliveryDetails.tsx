@@ -45,11 +45,15 @@ export function DeliveryDetails({ projectId, versionId }: { projectId: string; v
           <DeliveryPin title={t('Current iteration image')} pin={view.iteration_image!} href={imageHref(view.iteration_image!)} />
         </div>}
       <p className="delivery-notice">{t('Image binding is not test completion or release approval. Those decisions remain independently governed.')}</p>
-      <h3>{t('Pinned source commits')}</h3>
+      <h3>{view.code_revisions.some(s => !s.commit_sha && /\/code\/[a-f0-9]{64}\.zip$/.test(s.repository))
+        ? t('Pinned code sources') : t('Pinned source commits')}</h3>
       {view.code_revisions.length ? <ul className="delivery-evidence">{view.code_revisions.map((source) =>
         <li key={JSON.stringify([source.binding_id, source.source_revision_id])}>
           <span>{source.repository}</span><code>{source.binding_id}</code><code>{source.source_revision_id}</code>
           {source.tracked_ref && <span>{source.tracked_ref}</span>}<code>{source.commit_sha ?? source.external_revision}</code>
+          {!source.commit_sha && /\/code\/[a-f0-9]{64}\.zip$/.test(source.repository) && <span>
+            {t('Directory snapshot for image and requirement review; not an executable Git build.')}
+          </span>}
         </li>)}</ul> : <p>{t('No source commits recorded for this iteration.')}</p>}
       <h3>{t('Delivery blockers')}</h3>
       {view.blockers.length ? <ul>{view.blockers.map((item) => <li key={item}>{blockerLabel(item)}</li>)}</ul>

@@ -7,12 +7,12 @@ def prompt_for(state):
         return ("代码仓库与提交的对应关系还不明确，暂不采集。请每行填写一个不同的仓库及其分支或提交 SHA，最多 10 个；同一仓库不要同时填写多个引用。"
                 if zh else "Repository/revision pairs are ambiguous; nothing will be captured. Provide one distinct repository and its branch or commit per line, up to 10. Do not assign multiple refs to one repository.")
     if state.stage == "name":
-        return ("可以，我会引导你接入资料，再构建系统画像。\n\n**先给项目起个名字。** 确认名称后，我会创建项目。\n\n接下来需要代码仓库地址或已授权的服务端目录；需求文档和历史测试用例可选，没有也可以先构建。"
-                if zh else "I can guide you from source inputs to a system image.\n\n**What project name would you like to use?** I will create it with that name, then ask for a Git repository or approved server path. Requirements and historical tests are optional.")
+        return ("可以，我会引导你接入资料，再构建系统画像。\n\n**先给项目起个名字。** 创建项目后，你可以上传本地代码目录，也可以提供 Git 仓库地址或已授权的服务端目录。需求文档和历史测试用例可选。"
+                if zh else "I can guide you from source inputs to a system image.\n\n**What project name would you like to use?** After I create it, upload a local code directory or provide a Git repository or approved server path. Requirements and historical tests are optional.")
     if state.stage == "sources":
         if not state.code:
-            return (f"项目 **{state.project_name}** 已创建。请提供 **Git 仓库地址或已授权的服务端代码目录**，也可以注明分支或提交 SHA。\n\n如果有需求文档和历史测试用例，可以一起提供或上传；没有的话回复“跳过可选资料”。不要在聊天里粘贴密码或访问令牌。"
-                    if zh else f"Project **{state.project_name}** is ready. Send a **Git repository URL or approved server code path**, optionally with a branch or commit SHA. You can also provide or upload requirements and historical tests, or say **skip optional sources**. Do not paste passwords or access tokens.")
+            return (f"项目 **{state.project_name}** 已创建。请提供 **Git 仓库地址**，或选择下方的 **上传代码目录**。只有 Git 来源需要指定分支或提交。需求文档和历史测试可选，没有的话回复“跳过可选资料”。不要在聊天里粘贴密码或访问令牌。"
+                    if zh else f"Project **{state.project_name}** is ready. Send a **Git repository URL** or choose **Upload code directory** below. Requirements and historical tests are optional. Do not paste passwords or access tokens.")
         return ("代码来源已记下。**是否还要接入需求文档或历史测试用例？**\n\n可以提供资料地址或上传文件；如果暂时没有，回复“跳过可选资料”，我会先基于代码构建，并明确标出知识缺口。"
                 if zh else "The code source is recorded. **Would you like to add requirements or historical tests?** Provide source paths or upload files, or say **skip optional sources**. A code-only image will explicitly report missing context.")
     if state.stage == "review":
@@ -21,6 +21,8 @@ def prompt_for(state):
                 f"- {'分支 / 提交' if zh else 'Ref / commit'}: {state.code_ref or ('仓库默认引用' if zh else 'repository default')}",
                 f"- {'需求文档' if zh else 'Requirements'}: {state.requirements or ('未提供' if zh else 'not provided')}",
                 f"- {'历史测试' if zh else 'Historical tests'}: {state.tests or ('未提供' if zh else 'not provided')}"]
+        if state.code.startswith(("s3://", "local-object://")):
+            rows[2] = ("- 本地目录快照：" if zh else "- Local directory snapshot: ") + state.code.rsplit("/", 1)[-1].removesuffix(".zip")
         for index, source in enumerate(state.additional_code_sources):
             rows.append(f"- {'代码' if zh else 'Code'} {index + 2}: `{source.code}` · "
                 + (source.code_ref or ('仓库默认引用' if zh else 'repository default')))

@@ -96,6 +96,9 @@ class AgentApplicationService:
         result = self._conversations.search_conversations(q)
         return {**result, "conversations": [self._conversation_view(item) for item in result["conversations"]]}
 
+    def recent_build(self, project_id, unbound, q, offset, limit):
+        return self._conversations.recent_build(project_id, unbound, q, offset, limit)
+
     def get_conversation(self, conversation_id: str) -> Any:
         return self._conversation_view(self._conversations.get_conversation(conversation_id))
 

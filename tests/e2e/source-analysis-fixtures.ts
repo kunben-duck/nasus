@@ -31,7 +31,8 @@ export function analysisSource() {
   return directory
 }
 
-export async function captureAnalysis(request: APIRequestContext, source: string, options: { materialize?: boolean } = {}) {
+export async function captureAnalysis(request: APIRequestContext, source: string, options: { materialize?: boolean;
+  chooseSource?: (projectId: string, owner: Awaited<ReturnType<typeof analysisAccount>>) => Promise<string> } = {}) {
   const owner = await analysisAccount(request)
   const created = await request.post(`${analysisApi}/v1/projects`, {
     headers: owner.headers, data: { name: `Analysis browser ${randomUUID()}` },
@@ -52,7 +53,8 @@ export async function captureAnalysis(request: APIRequestContext, source: string
     expect(invocation.status).toBe(status)
     return invocation
   }
-  await invoke('system_image.sources.register', { source_specs: [{ source_type: 'code', source_uri: source }] })
+  const sourceUri = options.chooseSource ? await options.chooseSource(projectId, owner) : source
+  await invoke('system_image.sources.register', { source_specs: [{ source_type: 'code', source_uri: sourceUri }] })
   await invoke('system_image.sources.ingest')
   if (options.materialize !== false) await invoke('system_image.context.materialize')
   const revisions = async () => {

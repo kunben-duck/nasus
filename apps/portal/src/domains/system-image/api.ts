@@ -11,12 +11,16 @@ export const systemImageApi = {
     request<KnowledgeObject>(`/v1/projects/${projectId}/knowledge/${objectId}`),
   uploadSourceFiles: (
     projectId: string,
-    sourceType: 'us_doc' | 'test_asset',
+    sourceType: SourceUploadResult['source_type'],
     files: File[],
   ) => {
     const payload = new FormData()
     payload.set('source_type', sourceType)
-    files.forEach((file) => payload.append('files', file, file.name))
+    files.forEach(file => {
+      const path = sourceType === 'code' ? file.webkitRelativePath.split('/').slice(1).join('/') : file.name
+      if (!path) throw new Error('Choose a code directory')
+      payload.append('files', file, path)
+    })
     return request<SourceUploadResult>(`/v1/projects/${projectId}/source-files`, {
       method: 'POST',
       body: payload,

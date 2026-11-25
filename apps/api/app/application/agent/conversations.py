@@ -28,10 +28,32 @@ class ConversationManagementApplicationService:
 
     def __init__(self, state: ConversationManagementStatePort, *,
                  creation_guard: Optional[Callable[[str], ContextManager]] = None,
-                 read_guard: Optional[Callable[[ConversationSession], None]] = None) -> None:
+                 read_guard: Optional[Callable[[ConversationSession], None]] = None,
+                 history_rows=None, history_guard=None) -> None:
         self._state = state
         self._creation_guard = creation_guard or (lambda key: nullcontext())
         self._read_guard = read_guard
+        self._history_rows = history_rows
+        self._history_guard = history_guard
+
+    def recent_build(self, project_id, unbound, q, offset, limit):
+        items = []
+        for chat, metadata, summary in self._history_rows(self._state.current_user_id(), project_id, unbound, q):
+            if not self._state.can_access_conversation(chat):
+                continue
+            try:
+                self._history_guard(chat.project_id, metadata)
+            except PlatformApplicationError as exc:
+                if exc.status_code == 403:
+                    continue
+                raise
+            if offset:
+                offset -= 1
+            elif len(items) == limit:
+                return {"items": items, "has_more": True}
+            else:
+                items.append(summary)
+        return {"items": items, "has_more": False}
 
     def _require_read_access(self, conversation):
         if self._read_guard is not None:

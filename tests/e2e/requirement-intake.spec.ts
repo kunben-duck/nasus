@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { analysisApi, analysisSource, captureAnalysis } from './source-analysis-fixtures'
 import { frozenRevisions } from './image-revision-fixtures'
@@ -9,7 +9,26 @@ for (const theme of ['light', 'dark']) test(`requirement intake revisions, refre
   const source = analysisSource(), errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
   try {
-    const v = await captureAnalysis(request, source)
+    const v = await captureAnalysis(request, source, theme === 'dark' ? { chooseSource: async (projectId, owner) => {
+      for (const folder of ['lib', 'core']) {
+        mkdirSync(resolve(source, folder))
+        writeFileSync(resolve(source, folder, '__init__.py'), '')
+      }
+      writeFileSync(resolve(source, '.env.local'), 'TEST_ONLY=true')
+      await page.addInitScript(token => localStorage.setItem('nasus_api_token', token), owner.token)
+      await page.goto('/projects/' + projectId)
+      await page.getByTestId('agent-card-system-image-builder').click()
+      await page.getByTestId('code-directory-input').setInputFiles(source)
+      await expect(page.locator('.directory-picker')).toContainText('.env.local')
+      const uploaded = page.waitForResponse(r => r.url().endsWith('/source-files') && r.request().method() === 'POST')
+      await page.locator('.directory-picker button').first().click()
+      const response = await uploaded
+      expect(response.ok(), await response.text()).toBeTruthy()
+      const snapshot = await response.json()
+      expect(snapshot.file_count).toBe(29)
+      expect(snapshot.evidence_refs).not.toContain('file:.env.local')
+      return snapshot.source_uri
+    } } : {})
     const image = (await frozenRevisions(request, v.projectId, v.owner.headers))[0]
     const publicationRoot = `${analysisApi}/v1/projects/${v.projectId}/system-image/publications`
     const params = { image_revision_id: image.image_revision_id, image_artifact_hash: image.artifact_hash, target_baseline_id: image.baseline_id }
@@ -27,6 +46,12 @@ for (const theme of ['light', 'dark']) test(`requirement intake revisions, refre
       image_artifact_hash: image.artifact_hash, expected_head_id: head.publication_id,
     } })
     const version = creation.result.object_refs.find((ref: string) => ref.startsWith('version:')).slice(8)
+    if (theme === 'dark') {
+      const delivery = await (await request.get(`${analysisApi}/v1/projects/${v.projectId}/versions/${version}/delivery`, { headers: v.owner.headers })).json()
+      expect(delivery.code_revisions[0].commit_sha).toBeNull()
+      expect(delivery.code_revisions[0].repository).toContain('/code/')
+      expect(delivery.iteration_image.image_revision_id).toBe(image.image_revision_id)
+    }
     await request.patch(`${analysisApi}/v1/settings`, { headers: v.owner.headers, data: { theme } })
     await page.addInitScript((token) => { localStorage.setItem('nasus_api_token', token); localStorage.setItem('nasus.locale', 'en') }, v.owner.token)
     await page.goto(`/projects/${v.projectId}/versions?version_id=${version}`)

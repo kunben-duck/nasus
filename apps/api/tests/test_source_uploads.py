@@ -115,8 +115,9 @@ def test_source_upload_application_validates_project_scope_paths_and_limits() ->
     assert workspace.access_checks[-1] == "proj_1"
     with pytest.raises(KeyError):
         service.upload("missing", "us_doc", [SourceUploadFile("US.md", "text/markdown", b"US")])
-    with pytest.raises(ValueError, match="source_type"):
+    with pytest.raises(PermissionError, match="Project write access"):
         service.upload("proj_1", "code", [SourceUploadFile("code.py", "text/plain", b"x")])
+    assert not storage.uploads
     with pytest.raises(ValueError, match="invalid|unsafe path"):
         service.upload("proj_1", "us_doc", [SourceUploadFile("../US.md", "text/markdown", b"US")])
     with pytest.raises(ValueError, match="single file"):
@@ -189,7 +190,7 @@ def test_object_storage_connector_rejects_zip_path_traversal(tmp_path: Path) -> 
     with ZipFile(archive_body, "w") as archive:
         archive.writestr("../escape.txt", "unsafe")
     stored = object_storage.put_bytes(
-        "source-uploads/proj/us_doc/unsafe.zip",
+        "source-uploads/proj_upload/us_doc/unsafe.zip",
         archive_body.getvalue(),
         content_type="application/zip",
     )

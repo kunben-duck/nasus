@@ -10,7 +10,7 @@ export function useConversation(
   spaceType: SpaceType,
   spaceId: string,
   title: string,
-  options: { enabled?: boolean; existingOnly?: boolean; canReadWorkspace?: () => boolean } = {},
+  options: { enabled?: boolean; existingOnly?: boolean; canReadWorkspace?: () => boolean; requestedId?: string } = {},
 ) {
   const queryClient = useQueryClient()
   const enabled = options.enabled ?? true, existingOnly = options.existingOnly ?? false
@@ -19,25 +19,27 @@ export function useConversation(
     queryFn: ({ signal }) => readConversationScope(spaceType, spaceId, title, existingOnly, signal, options.canReadWorkspace),
     gcTime: existingOnly ? 0 : undefined,
     retry: existingOnly ? false : undefined,
-    enabled,
+    enabled: enabled && options.requestedId === undefined,
   })
-  const conversationId = conversationQuery.data?.id
+  const conversationId = options.requestedId ?? conversationQuery.data?.id
   const snapshotQuery = useQuery({
     queryKey: ['conversation', conversationId],
     queryFn: () => agentApi.getConversation(conversationId!),
     enabled: enabled && Boolean(conversationId),
   })
-  useConversationEvents({ conversationId, enabled, existingOnly, canReadWorkspace: options.canReadWorkspace })
+  const wrongSpace = Boolean(options.requestedId && snapshotQuery.data && snapshotQuery.data.space_type !== spaceType)
+  useConversationEvents({ conversationId, enabled: enabled && !wrongSpace && (!options.requestedId || snapshotQuery.isSuccess), existingOnly, canReadWorkspace: options.canReadWorkspace })
   const activeTurn = snapshotQuery.data?.active_turn
   const turn = useConversationTurn({ conversationId, activeTurn, queryClient })
   const turnIsActive = Boolean(activeTurn && !['completed', 'delegated', 'interrupted', 'failed'].includes(activeTurn.status))
 
   return {
-    conversation: snapshotQuery.isError ? undefined : snapshotQuery.data as ConversationSession | undefined,
+    conversation: snapshotQuery.isError || wrongSpace ? undefined : snapshotQuery.data as ConversationSession | undefined,
+    unavailable: wrongSpace || snapshotQuery.isError || (!options.requestedId && conversationQuery.isError),
     conversationId,
     isLoading: conversationQuery.isLoading || snapshotQuery.isLoading,
     sendMessage: createConversationMessageSender({ conversationId, enabled, existingOnly,
-      isError: conversationQuery.isError, canReadWorkspace: options.canReadWorkspace,
+      isError: conversationQuery.isError || snapshotQuery.isError || wrongSpace, canReadWorkspace: options.canReadWorkspace,
       send: turn.mutation.mutateAsync }),
     waitForTurn: turn.waitForTurn,
     activeTurn,
