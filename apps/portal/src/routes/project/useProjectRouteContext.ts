@@ -3,6 +3,7 @@ import { useProjectConversationModel } from './useProjectConversationModel'
 import { useProjectRouteActions } from './useProjectRouteActions'
 import { useProjectRouteData } from './useProjectRouteData'
 import { useSearchParams } from 'react-router-dom'
+import { recentUserPrompts } from '../../domains/agent/recentUserPrompts'
 
 export function useProjectRouteContext() {
   const [params] = useSearchParams()
@@ -36,6 +37,7 @@ export function useProjectRouteContext() {
         reviewingBuild,
         releaseReadiness: routeData.releaseReadiness,
         messages: visibleMessages,
+        promptHistory: recentUserPrompts(projectConversation.conversation?.messages),
         agentGoal: latestProjectGoal,
         agentGoalExplanation,
         memoryContext,

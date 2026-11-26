@@ -1,5 +1,6 @@
 import { BuildComposerActions } from './build-composer/BuildComposerActions'
-import { BuildPromptInput } from './build-composer/BuildPromptInput'
+import { ChatPromptInput } from './chat-composer/ChatPromptInput'
+import { useI18n } from '../i18n/I18nProvider'
 import type { BuildComposerProps } from './build-composer/BuildComposerTypes'
 import { SelectedSkillGrid } from './build-composer/SelectedSkillGrid'
 
@@ -8,11 +9,12 @@ export function BuildComposer({
   loading, streaming, selectedSkills, onToggleSkill, onGuessYou,
 }: BuildComposerProps) {
   const hasPrompt = prompt.trim().length > 0
+  const { t } = useI18n()
   return (
     <div className="hero-composer">
       <div className="hero-composer-content">
         <SelectedSkillGrid selectedSkills={selectedSkills} onToggleSkill={onToggleSkill} />
-        <BuildPromptInput
+        <ChatPromptInput testId="build-agent-input" placeholder={t('Describe a quality project and let Nasus do the rest')}
           prompt={prompt} promptHistory={promptHistory} setPrompt={setPrompt}
           runPrompt={runPrompt} busy={loading || streaming}
         />

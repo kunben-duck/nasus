@@ -286,8 +286,9 @@ test('project chat waits for its original conversation before sending a build re
     expect(posts).toEqual([])
     release()
     await expect(input).toBeEnabled()
-    await expect(send).toBeEnabled()
+    await expect(send).toBeDisabled()
     await input.fill('构建系统画像')
+    await expect(send).toBeEnabled()
     const accepted = page.waitForResponse((response) => new URL(response.url()).pathname ===
       `/v1/conversations/${value.conversationId}/messages` && response.request().method() === 'POST')
     await send.click()

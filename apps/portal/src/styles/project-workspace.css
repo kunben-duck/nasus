@@ -1558,16 +1558,48 @@
   right: 300px;
   bottom: 22px;
   z-index: 4;
-  padding: 14px;
-  border: 1px solid var(--border-strong);
-  border-radius: 18px;
+  max-width: 640px;
+  margin-inline: auto;
+  padding: 12px 14px 10px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
   background: var(--surface);
-  box-shadow: var(--shadow);
+  box-shadow: 0 6px 24px color-mix(in srgb, var(--text) 8%, transparent);
 }
 
+.nasus-app.sidebar-collapsed .task-composer { left: 16px; }
+.task-composer:focus-within { border-color: color-mix(in srgb, var(--blue) 52%, var(--border)); }
+.task-composer textarea { display: block; padding: 2px 3px 4px; }
+.agent-composer-footer { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
 .task-chip-row {
+  flex: 1;
+  min-width: 0;
   justify-content: flex-start;
-  flex-wrap: wrap;
+  gap: 6px;
+  padding: 3px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.task-chip-row > button { flex: none; white-space: nowrap; }
+.agent-composer-send {
+  display: grid;
+  place-items: center;
+  flex: 0 0 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--surface);
+  cursor: pointer;
+}
+.agent-composer-send:not(:disabled):hover { background: color-mix(in srgb, var(--text) 88%, var(--surface)); }
+.agent-composer-send:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.agent-composer-send:disabled {
+  color: var(--subtle);
+  background: var(--surface-2);
+  border-color: var(--border);
+  cursor: default;
 }
 
 .run-panel {

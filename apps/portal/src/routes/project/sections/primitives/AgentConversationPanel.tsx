@@ -1,6 +1,7 @@
 import type { ProjectRouteContext } from '../../ProjectRouteTypes'
 import { useI18n } from '../../../../shared/i18n/I18nProvider'
 import { MarkdownContent } from '../../../../shared/ui/MarkdownContent'
+import { AgentComposer } from '../../../../shared/ui/chat-composer/AgentComposer'
 
 export function AgentConversationPanel({ context, placeholder }: { context: ProjectRouteContext; placeholder: string }) {
   const { t } = useI18n()
@@ -14,24 +15,11 @@ export function AgentConversationPanel({ context, placeholder }: { context: Proj
           </div>
         ))}
       </div>
-      <div className="task-composer">
-        <textarea
-          value={context.prompt}
-          onChange={(event) => context.setPrompt(event.target.value)}
-          placeholder={placeholder}
-          disabled={context.loading}
-        />
-        <div className="task-chip-row">
-          <button className="tool-chip active" disabled={context.loading}>
-            {t('Tools')} ×
-          </button>
-          {context.streaming ? (
-            <button className="round-icon" onClick={context.stopPrompt} aria-label={t('Stop')}>■</button>
-          ) : (
-            <button className="round-icon" onClick={context.runPrompt} disabled={context.loading}>↵</button>
-          )}
-        </div>
-      </div>
+      <AgentComposer key={context.project.id} prompt={context.prompt} promptHistory={context.promptHistory}
+        setPrompt={context.setPrompt} runPrompt={context.runPrompt} stopPrompt={context.stopPrompt}
+        streaming={context.streaming} disabled={context.loading} placeholder={placeholder}>
+        <button className="tool-chip active" disabled={context.loading}>{t('Tools')} ×</button>
+      </AgentComposer>
     </>
   )
 }

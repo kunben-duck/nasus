@@ -30,6 +30,7 @@ export function ProjectWorkspaceView({
   toolInvocations,
   pendingGoal,
   prompt,
+  promptHistory,
   setPrompt,
   runPrompt,
   stopPrompt,
@@ -89,8 +90,8 @@ export function ProjectWorkspaceView({
         confirmToolInvocation={confirmToolInvocation}
       />
       <AgentLog messages={messages} />
-      <ProjectTaskComposer
-        prompt={prompt}
+      <ProjectTaskComposer key={project.id}
+        prompt={prompt} promptHistory={promptHistory}
         setPrompt={setPrompt}
         runPrompt={runPrompt}
         stopPrompt={stopPrompt}
@@ -98,7 +99,6 @@ export function ProjectWorkspaceView({
         initializeSystemImage={initializeSystemImage}
         invokeProjectAction={invokeProjectAction}
         disabled={actionControlsDisabled}
-        actionControlsDisabled={actionControlsDisabled}
       />
     </section>
   )

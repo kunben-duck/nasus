@@ -2,31 +2,39 @@ import { useRef } from 'react'
 import { useI18n } from '../../i18n/I18nProvider'
 import { canRecallPrompt, recallPrompt, type PromptHistoryCursor } from './promptHistory'
 
-export function BuildPromptInput({
+export function ChatPromptInput({
   prompt,
   setPrompt,
   runPrompt,
   busy,
   promptHistory = [],
+  placeholder,
+  testId,
+  disabled = false,
 }: {
   prompt: string
   setPrompt: (value: string) => void
   runPrompt: () => void
   busy: boolean
   promptHistory?: readonly string[]
+  placeholder: string
+  testId: string
+  disabled?: boolean
 }) {
   const { t } = useI18n()
   const historyCursor = useRef<PromptHistoryCursor | null>(null)
   return (
     <textarea
-      data-testid="build-agent-input"
+      data-testid={testId}
+      disabled={disabled}
       value={prompt}
       onChange={(event) => {
         historyCursor.current = null
         setPrompt(event.target.value)
       }}
       onPointerDown={() => { historyCursor.current = null }}
-      placeholder={t('Describe a quality project and let Nasus do the rest')}
+      placeholder={placeholder}
+      aria-label={placeholder}
       title={t('Enter to send, Shift+Enter for a new line; Up/Down to recall the last 5 inputs')}
       aria-keyshortcuts="Enter ArrowUp ArrowDown"
       onKeyDown={(event) => {

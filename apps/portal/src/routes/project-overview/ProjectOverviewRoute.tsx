@@ -29,6 +29,7 @@ export function ProjectOverviewRoute() {
           toolInvocations={context.toolInvocations}
           pendingGoal={context.pendingGoal}
           prompt={context.prompt}
+          promptHistory={context.promptHistory}
           setPrompt={context.setPrompt}
           runPrompt={context.runPrompt}
           stopPrompt={context.stopPrompt}

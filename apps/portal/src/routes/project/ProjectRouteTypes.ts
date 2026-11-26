@@ -21,6 +21,7 @@ export type ProjectRouteContext = {
   toolInvocations: ToolInvocation[]
   pendingGoal?: AgentGoal
   prompt: string
+  promptHistory: string[]
   setPrompt: (value: string) => void
   runPrompt: () => void
   stopPrompt: () => void

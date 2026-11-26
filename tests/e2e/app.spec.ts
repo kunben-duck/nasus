@@ -329,9 +329,27 @@ test('agent-first build preserves the original goal through structural candidate
   expect(finished).toHaveLength(1)
   expect(finished[0]).toMatchObject({ id: originalGoal.id, status: 'paused', pause_reason: 'structural_candidate_review' })
 
-  await page.getByTestId('project-agent-input').fill('Show me the current system image freshness and baseline status')
-  await page.getByTestId('project-agent-submit').click()
+  const input = page.getByTestId('project-agent-input')
+  const query = 'Show me the current system image freshness and baseline status'
+  await input.fill(query)
+  await input.press('Enter')
   await expect(page.getByText(/source groups are indexed|system image is/i).first()).toBeVisible({ timeout: 15_000 })
+  await page.reload()
+  await expect(input).toBeEnabled()
+  await input.fill('Next question')
+  await input.press('ArrowUp')
+  await expect(input).toHaveValue(query)
+  await input.press('ArrowDown')
+  await expect(input).toHaveValue('Next question')
+  await input.press('Shift+Enter')
+  await expect(input).toHaveValue('Next question\n')
+  const composer = page.locator('.task-composer')
+  expect((await composer.boundingBox())!.width).toBeLessThanOrEqual(640)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeInViewport()
+  const mobileBox = (await composer.boundingBox())!
+  expect(mobileBox.x).toBeGreaterThanOrEqual(0)
+  expect(mobileBox.x + mobileBox.width).toBeLessThanOrEqual(390)
 })
 
 test('quality agent runs and exposes the release evidence blockers', async ({ page, request }) => {

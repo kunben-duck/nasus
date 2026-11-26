@@ -16,7 +16,7 @@ function load(file, imports = {}) {
     if (imports[name]) return imports[name]
     if (name === 'react') return { useRef: (value) => ({ current: value }) }
     if (name === 'react/jsx-runtime') return jsx
-    if (name === '../../i18n/I18nProvider') return { useI18n: () => ({ t: (key) => key }) }
+    if (name.endsWith('/i18n/I18nProvider')) return { useI18n: () => ({ t: (key) => key }) }
     if (name === './promptHistory') return history
     assert.ok(imports[name], `Unexpected import: ${name}`)
     return imports[name]
@@ -24,13 +24,13 @@ function load(file, imports = {}) {
   return exports
 }
 
-const history = load('build-composer/promptHistory.ts')
-const { BuildPromptInput } = load('build-composer/BuildPromptInput.tsx')
+const history = load('chat-composer/promptHistory.ts')
+const { ChatPromptInput } = load('chat-composer/ChatPromptInput.tsx')
 
 function keydown(overrides = {}, props = {}) {
   let submitted = 0
   let prevented = false
-  const input = BuildPromptInput({ prompt: 'Build a project', setPrompt() {},
+  const input = ChatPromptInput({ prompt: 'Build a project', setPrompt() {},
     runPrompt: () => submitted++, busy: false, ...props })
   input.props.onKeyDown({ key: 'Enter', shiftKey: false, repeat: false,
     currentTarget: { selectionStart: 0, selectionEnd: 0 },
@@ -65,13 +65,13 @@ test('Enter ignores empty drafts, held keys and in-flight turns', () => {
 
 test('Composer blocks keyboard submission while loading or streaming', () => {
   const { BuildComposer } = load('BuildComposer.tsx', {
-    './build-composer/BuildPromptInput': { BuildPromptInput },
+    './chat-composer/ChatPromptInput': { ChatPromptInput },
     './build-composer/BuildComposerActions': { BuildComposerActions: () => null },
     './build-composer/SelectedSkillGrid': { SelectedSkillGrid: () => null },
   })
   for (const [loading, streaming] of [[true, false], [false, true], [false, false]]) {
     const composer = BuildComposer({ prompt: 'Draft', promptHistory: ['Previous'], loading, streaming, selectedSkills: [] })
-    const input = composer.props.children.props.children.find((child) => child.type === BuildPromptInput)
+    const input = composer.props.children.props.children.find((child) => child.type === ChatPromptInput)
     assert.equal(input.props.busy, loading || streaming)
     assert.deepEqual(input.props.promptHistory, ['Previous'])
   }
@@ -79,7 +79,7 @@ test('Composer blocks keyboard submission while loading or streaming', () => {
 
 test('Up/Down fills recent prompts without sending and restores the draft', () => {
   const ref = { current: null }
-  const { BuildPromptInput: Input } = load('build-composer/BuildPromptInput.tsx', { react: { useRef: () => ref } })
+  const { ChatPromptInput: Input } = load('chat-composer/ChatPromptInput.tsx', { react: { useRef: () => ref } })
   let value = 'Unsent draft'
   let sent = 0
   const render = () => Input({ prompt: value, promptHistory: ['Older', 'Newest\nsecond line'], busy: false,

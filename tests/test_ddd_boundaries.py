@@ -8218,7 +8218,7 @@ def test_portal_feature_skeleton_and_provider_are_present() -> None:
         portal_root / "shared" / "ui" / "BuildComposer.tsx",
         portal_root / "shared" / "ui" / "build-composer" / "BuildComposerActions.tsx",
         portal_root / "shared" / "ui" / "build-composer" / "BuildComposerTypes.ts",
-        portal_root / "shared" / "ui" / "build-composer" / "BuildPromptInput.tsx",
+        portal_root / "shared" / "ui" / "chat-composer" / "ChatPromptInput.tsx",
         portal_root / "shared" / "ui" / "build-composer" / "SelectedSkillGrid.tsx",
         portal_root / "shared" / "ui" / "StudioSidebarIcon.tsx",
         portal_root / "shared" / "ui" / "ProjectGallery.tsx",
@@ -8649,7 +8649,7 @@ def test_top_level_routes_are_not_backed_by_nasus_studio_singleton() -> None:
         portal_root / "shared" / "ui" / "build-composer" / "SelectedSkillGrid.tsx"
     ).read_text()
     build_prompt_input_source = (
-        portal_root / "shared" / "ui" / "build-composer" / "BuildPromptInput.tsx"
+        portal_root / "shared" / "ui" / "chat-composer" / "ChatPromptInput.tsx"
     ).read_text()
     build_route_model_source = (portal_root / "routes" / "build" / "useBuildRouteModel.ts").read_text()
     build_projects_source = (portal_root / "routes" / "build" / "useBuildProjects.ts").read_text()
@@ -8739,7 +8739,7 @@ def test_top_level_routes_are_not_backed_by_nasus_studio_singleton() -> None:
     assert "ProjectGallery" in build_gallery_panel_source
     assert "buildSkillCards.map" in build_skill_strip_source
     assert "SelectedSkillGrid" in build_composer_source
-    assert "BuildPromptInput" in build_composer_source
+    assert "ChatPromptInput" in build_composer_source
     assert "BuildComposerActions" in build_composer_source
     assert "selectedSkills" in build_composer_source
     assert "BuildComposerSkill" in build_composer_types_source

@@ -161,6 +161,7 @@ export const zhCN = {
   'View the pinned image': '查看固定画像',
   'Build conversation': '构建对话',
   'New build conversation': '开始新的构建对话',
+  'Send message': '发送消息',
   'View system image': '查看系统画像',
   'Upload requirements': '上传需求文档',
   'Upload test assets': '上传测试资产',
